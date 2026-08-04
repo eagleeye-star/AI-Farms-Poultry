@@ -1,7 +1,21 @@
-# AI Farms — Poultry Tracker
+# AI Farms — Farm Tracker
 
-A dashboard for tracking the broiler flock: daily log, feed & inventory,
-vaccinations and medications, seeded from the current tracker spreadsheet.
+Two workspaces under one AI Farms roof, switched from the toggle at the top:
+
+- **Poultry** — daily log, feed & inventory, growth sampling, vaccinations
+  and medications (unchanged).
+- **Bell Pepper Fields** — two-field pepper operation with a Dashboard,
+  Crop Cycle, Scouting (pest & disease), Spray & Fertigation, and
+  Harvest & Sales. A Field A / Field B / Both selector filters every view.
+
+### Pepper workspace highlights
+- Per-field days-after-transplant counter and expected first-harvest date.
+- Scouting log with a pest-pressure trend chart (aphids, whitefly, CMV, etc.).
+- Spray log with an automatic **pre-harvest interval** hold — a field won't
+  read "safe to harvest" until enough days have passed since the last spray.
+- Resistance nudge if the last two insecticides on a field share the same
+  active ingredient.
+- Harvest & sales feeding revenue, cost (inputs + setup), and margin cards.
 
 ## Run locally
 ```

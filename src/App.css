@@ -379,3 +379,116 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   font-family: var(--font-mono);
   font-size: 11px;
 }
+
+/* ---------- Workspace switch (Poultry / Pepper) ---------- */
+.workspace-switch {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 4px;
+  margin-bottom: 22px;
+}
+
+.ws-btn {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 6px;
+  transition: color .15s ease, background .15s ease;
+}
+
+.ws-btn:hover { color: var(--text-dim); }
+
+.ws-btn.active {
+  background: var(--surface-raised);
+  color: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.ws-btn.active.pepper { color: var(--green); }
+
+/* ---------- Pepper accents ---------- */
+.brand-eyebrow.pepper { color: var(--green); }
+.day-stamp .num.pepper { color: var(--green); }
+.tabs.pepper .tab.active {
+  color: var(--green);
+  border-bottom-color: var(--green);
+}
+
+.btn-green {
+  background: var(--green);
+  color: #16200E;
+  border-color: var(--green);
+}
+.btn-green:hover { background: #8aab74; }
+
+/* ---------- Field segmented selector ---------- */
+.field-seg {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.field-seg button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.field-seg button:hover { border-color: var(--gold-dim); }
+
+.field-seg button.active {
+  background: rgba(122, 154, 102, 0.12);
+  border-color: rgba(122, 154, 102, 0.5);
+  color: var(--green);
+}
+
+/* ---------- Alerts & field cards ---------- */
+.alert-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(66, 56, 39, 0.5);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.alert-row:last-child { border-bottom: none; }
+.alert-row .tag { flex-shrink: 0; }
+
+.field-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+@media (max-width: 700px) {
+  .field-card-grid { grid-template-columns: 1fr; }
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(66, 56, 39, 0.4);
+}
+.kv:last-child { border-bottom: none; }
+.kv .k {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.kv .v { color: var(--text); font-size: 13.5px; }
