@@ -23,3 +23,11 @@ npm run dev
 - Seeded with the daily log, feed inventory, medication and vaccination records
   from `advanced_poultry_tracker_Current_Updated.xlsx` (through 6 June 2026).
   Use the "+" buttons in each tab to log new entries going forward.
+- Flock is Hy-Line layers, arrived 1 May 2026. Day/week counters on the header
+  are based on today's date, not the last log entry.
+- New in this pass: hen-day egg %, egg crack tracking, feed cost in GH₵,
+  water & light-hours logging, cause-of-death tagging on mortality, a
+  "Growth" tab for weekly weight sampling against the breed's own feeding/
+  growth standard (pulled from your "Quantity to feed per week" sheet), a
+  point-of-lay countdown, and a "Export weekly report" button on the
+  Dashboard that downloads a plain-text summary.

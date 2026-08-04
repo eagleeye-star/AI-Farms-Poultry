@@ -32,6 +32,24 @@ function num(v, digits = 0) {
   return Number(v).toLocaleString('en-GB', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
+function feedPhaseForWeek(week) {
+  let phase = null;
+  for (const r of FEED_STANDARD) {
+    if (r.week > week) break;
+    if (r.feedType) phase = r.feedType;
+  }
+  return phase;
+}
+
+function standardWeightForWeek(week) {
+  const list = FEED_STANDARD;
+  const exact = list.find((r) => r.week === week);
+  if (exact) return exact.estWeightG;
+  if (week < list[0].week) return null;
+  if (week > list[list.length - 1].week) return list[list.length - 1].estWeightG;
+  return null;
+}
+
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -39,7 +57,7 @@ function loadData() {
       const saved = JSON.parse(raw);
       // Flock metadata (name/breed/start date) always comes from the app's
       // current defaults, so corrections ship without wiping logged entries.
-      return { ...saved, flock: SEED.flock };
+      return { weightSamples: [], ...saved, flock: SEED.flock };
     }
   } catch (e) { /* ignore corrupt storage */ }
   return {
@@ -48,8 +66,12 @@ function loadData() {
     meds: SEED.meds,
     vax: SEED.vax,
     feed: SEED.feed,
+    weightSamples: SEED.weightSamples,
   };
 }
+
+const FEED_STANDARD = SEED.feedStandard;
+const POINT_OF_LAY_WEEK = (FEED_STANDARD.find((r) => (r.feedType || '').toLowerCase().includes('layer')) || {}).week || 21;
 
 /* ---------------- small building blocks ---------------- */
 
@@ -123,6 +145,10 @@ export default function App() {
     () => [...data.vax].sort((a, b) => new Date(a.date) - new Date(b.date)),
     [data.vax]
   );
+  const weightSamples = useMemo(
+    () => [...(data.weightSamples || [])].sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.weightSamples]
+  );
 
   const latest = dailyLog[dailyLog.length - 1];
   const currentBirds = latest ? latest.closing : data.flock.initialBirds;
@@ -137,6 +163,41 @@ export default function App() {
   const isStale = daysSinceLastEntry !== null && daysSinceLastEntry > 3;
 
   const feedBalance = feed.length ? feed[feed.length - 1].balance : null;
+  const totalFeedCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const feedCostPerBird = currentBirds ? totalFeedCost / currentBirds : null;
+
+  const totalEggs = dailyLog.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+  const totalCracked = dailyLog.reduce((s, r) => s + (Number(r.eggsCracked) || 0), 0);
+  const henDayPct = latest && latest.closing
+    ? ((Number(latest.eggs) || 0) / latest.closing) * 100
+    : null;
+  const weeksToPOL = POINT_OF_LAY_WEEK - weekNumber;
+  const currentFeedPhase = feedPhaseForWeek(weekNumber);
+  const standardWeight = standardWeightForWeek(weekNumber);
+  const latestSample = weightSamples[weightSamples.length - 1];
+
+  const mortalityByCause = useMemo(() => {
+    const m = {};
+    dailyLog.forEach((r) => {
+      if (Number(r.mortality) > 0 && r.mortalityCause) {
+        m[r.mortalityCause] = (m[r.mortalityCause] || 0) + Number(r.mortality);
+      }
+    });
+    return m;
+  }, [dailyLog]);
+
+  const growthChartData = useMemo(() => {
+    const sampleByWeek = {};
+    weightSamples.forEach((s) => {
+      const wk = Math.ceil((daysBetween(data.flock.startDate, s.date) + 1) / 7);
+      sampleByWeek[wk] = s.avgWeightG;
+    });
+    return FEED_STANDARD.filter((r) => r.week <= Math.max(weekNumber, POINT_OF_LAY_WEEK)).map((r) => ({
+      week: `W${r.week}`,
+      standard: r.estWeightG,
+      actual: sampleByWeek[r.week] ?? null,
+    }));
+  }, [weightSamples, weekNumber, data.flock.startDate]);
 
   // vaccine status: latest occurrence of each vaccine family + its next-due date
   const vaxStatus = useMemo(() => {
@@ -156,7 +217,9 @@ export default function App() {
     closing: r.closing,
     mortality: Number(r.mortality) || 0,
     feedGiven: r.feedGiven ?? null,
-    feedPerBird: r.closing ? Math.round(((r.feedGiven || 0) * 1000) / r.closing) : null,
+    eggs: r.eggs ?? null,
+    water: r.waterGiven ?? null,
+    henDay: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
   }));
 
   const feedChartData = feed
@@ -174,6 +237,44 @@ export default function App() {
   }
   function addVax(entry) {
     setData((d) => ({ ...d, vax: [...d.vax, entry] }));
+  }
+  function addWeightSample(entry) {
+    setData((d) => ({ ...d, weightSamples: [...(d.weightSamples || []), entry] }));
+  }
+
+  function exportWeeklyReport() {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    const recent = dailyLog.filter((r) => new Date(r.date) >= cutoff);
+    const weekMortality = recent.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
+    const weekFeed = recent.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
+    const weekEggs = recent.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+    const lines = [
+      `AI FARMS — ${data.flock.flockName} — Weekly Report`,
+      `Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}`,
+      '',
+      `Current flock: ${num(currentBirds)} birds (${num(survivalRate, 1)}% survival)`,
+      `Mortality (last 7 days logged): ${num(weekMortality)}`,
+      `Feed used (last 7 days logged): ${num(weekFeed, 1)} kg`,
+      `Eggs collected (last 7 days logged): ${num(weekEggs)}`,
+      `Feed store balance: ${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}`,
+      `Total feed cost to date: ${totalFeedCost ? 'GH₵ ' + num(totalFeedCost, 2) : '—'}`,
+      `Current feed phase: ${currentFeedPhase || '—'}`,
+      `Weeks to point-of-lay (standard): ${weeksToPOL > 0 ? weeksToPOL : 'reached'}`,
+      '',
+      'Vaccination status:',
+      ...vaxStatus.map((v) => `  - ${v.disease || v.vaccine}: last ${fmtDate(v.date)}, next due ${fmtDate(v.nextDue)}`),
+      '',
+      `Entries logged this week: ${recent.length}`,
+      ...recent.map((r) => `  ${fmtDate(r.date)} — closing ${num(r.closing)}, deaths ${num(r.mortality)}, feed ${r.feedGiven ?? '—'}kg, eggs ${r.eggs ?? '—'}${r.notes ? ' — ' + r.notes : ''}`),
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ai-farms-weekly-report-${todayISO()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -204,6 +305,7 @@ export default function App() {
           ['dashboard', 'Dashboard'],
           ['log', 'Daily Log'],
           ['feed', 'Feed & Inventory'],
+          ['growth', 'Growth'],
           ['health', 'Health'],
         ].map(([id, label]) => (
           <button key={id} className={`tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
@@ -219,9 +321,21 @@ export default function App() {
           survivalRate={survivalRate}
           totalFeed={totalFeed}
           feedBalance={feedBalance}
+          totalFeedCost={totalFeedCost}
+          feedCostPerBird={feedCostPerBird}
+          henDayPct={henDayPct}
+          totalEggs={totalEggs}
+          totalCracked={totalCracked}
+          weeksToPOL={weeksToPOL}
+          currentFeedPhase={currentFeedPhase}
+          standardWeight={standardWeight}
+          latestSample={latestSample}
+          mortalityByCause={mortalityByCause}
           chartData={chartData}
           feedChartData={feedChartData}
+          growthChartData={growthChartData}
           vaxStatus={vaxStatus}
+          onExport={exportWeeklyReport}
         />
       )}
 
@@ -231,6 +345,15 @@ export default function App() {
 
       {tab === 'feed' && (
         <FeedTab feed={[...feed].reverse()} onAdd={() => setModal('feed')} />
+      )}
+
+      {tab === 'growth' && (
+        <GrowthTab
+          weightSamples={[...weightSamples].reverse()}
+          growthChartData={growthChartData}
+          feedStandard={FEED_STANDARD}
+          onAdd={() => setModal('weight')}
+        />
       )}
 
       {tab === 'health' && (
@@ -263,20 +386,60 @@ export default function App() {
       {modal === 'vax' && (
         <VaxForm onClose={() => setModal(null)} onSave={(e) => { addVax(e); setModal(null); }} />
       )}
+      {modal === 'weight' && (
+        <WeightForm onClose={() => setModal(null)} onSave={(e) => { addWeightSample(e); setModal(null); }} />
+      )}
     </div>
   );
 }
 
 /* ---------------- Dashboard ---------------- */
 
-function DashboardTab({ currentBirds, totalMortality, survivalRate, totalFeed, feedBalance, chartData, feedChartData, vaxStatus }) {
+function DashboardTab({
+  currentBirds, totalMortality, survivalRate, totalFeed, feedBalance,
+  totalFeedCost, feedCostPerBird, henDayPct, totalEggs, totalCracked,
+  weeksToPOL, currentFeedPhase, standardWeight, latestSample,
+  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, onExport,
+}) {
+  const causeEntries = Object.entries(mortalityByCause);
   return (
     <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Overview</h3>
+        <button className="btn" onClick={onExport}>⤓ Export weekly report</button>
+      </div>
+
       <div className="grid grid-4">
         <StatCard title="Current Flock" value={num(currentBirds)} tone="gold" foot="birds on hand" />
         <StatCard title="Total Mortality" value={num(totalMortality)} tone="rust" foot={`${num(survivalRate, 1)}% survival`} />
-        <StatCard title="Feed Used" value={`${num(totalFeed, 1)} kg`} foot="cumulative to date" />
+        <StatCard title="Feed Used" value={`${num(totalFeed, 1)} kg`} foot={totalFeedCost ? `GH₵ ${num(totalFeedCost, 2)} spent` : 'cumulative to date'} />
         <StatCard title="Feed Balance" value={feedBalance !== null ? `${num(feedBalance, 1)} kg` : '—'} tone="green" foot="in store" />
+      </div>
+
+      <div className="grid grid-4" style={{ marginTop: 16 }}>
+        <StatCard
+          title="Hen-Day Egg %"
+          value={henDayPct !== null ? `${num(henDayPct, 1)}%` : '—'}
+          tone="green"
+          foot={totalEggs ? `${num(totalEggs)} eggs total, ${num(totalCracked)} cracked` : 'not laying yet'}
+        />
+        <StatCard
+          title="Point of Lay"
+          value={weeksToPOL > 0 ? `${weeksToPOL} wks away` : 'Reached'}
+          tone="gold"
+          foot={`standard ~week ${POINT_OF_LAY_WEEK}`}
+        />
+        <StatCard
+          title="Feed Phase"
+          value={currentFeedPhase || '—'}
+          foot="per breed feeding standard"
+        />
+        <StatCard
+          title="Weight vs Standard"
+          value={latestSample ? `${num(latestSample.avgWeightG)} g` : '—'}
+          tone={latestSample && standardWeight ? (latestSample.avgWeightG >= standardWeight ? 'green' : 'rust') : undefined}
+          foot={standardWeight ? `target ${num(standardWeight)} g this week` : 'no standard for this week'}
+        />
       </div>
 
       <div className="panel">
@@ -329,6 +492,43 @@ function DashboardTab({ currentBirds, totalMortality, survivalRate, totalFeed, f
         </div>
       </div>
 
+      <div className="grid grid-2">
+        <div className="panel">
+          <div className="panel-head"><h3>Growth vs. breed standard (g)</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={growthChartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="week" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Line type="monotone" dataKey="standard" name="Standard" stroke="#83786A" strokeWidth={2} dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="actual" name="Your sample" stroke="#D4A537" strokeWidth={2} connectNulls dot={{ r: 3 }} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head"><h3>Mortality by cause</h3></div>
+          {causeEntries.length === 0 ? (
+            <p className="empty">No cause-of-death tags recorded yet — add one next time you log a death.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead><tr><th>Cause</th><th>Birds lost</th></tr></thead>
+                <tbody>
+                  {causeEntries.map(([cause, n]) => (
+                    <tr key={cause}><td>{cause}</td><td className="mono">{num(n)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
       <p className="section-title">Vaccination status</p>
       <div className="table-wrap">
         <table className="data">
@@ -371,8 +571,8 @@ function LogTab({ dailyLog, onAdd }) {
         <table className="data">
           <thead>
             <tr>
-              <th>Date</th><th>Age (d)</th><th>Opening</th><th>Mortality</th><th>Culls</th>
-              <th>Closing</th><th>Feed (kg)</th><th>Eggs</th><th>Meds/Vax</th><th>Notes</th>
+              <th>Date</th><th>Age (d)</th><th>Opening</th><th>Mortality</th><th>Cause</th><th>Culls</th>
+              <th>Closing</th><th>Feed (kg)</th><th>Water (L)</th><th>Light (h)</th><th>Eggs</th><th>Cracked</th><th>Meds/Vax</th><th>Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -382,15 +582,19 @@ function LogTab({ dailyLog, onAdd }) {
                 <td className="mono">{r.birdAge ?? '—'}</td>
                 <td className="mono">{num(r.opening)}</td>
                 <td className="mono">{r.mortality ? <span style={{ color: 'var(--rust)' }}>{num(r.mortality)}</span> : num(r.mortality)}</td>
+                <td>{r.mortalityCause ? <span className="tag rust">{r.mortalityCause}</span> : '—'}</td>
                 <td className="mono">{num(r.culls)}</td>
                 <td className="mono">{num(r.closing)}</td>
                 <td className="mono">{r.feedGiven != null ? num(r.feedGiven, 2) : '—'}</td>
+                <td className="mono">{r.waterGiven != null ? num(r.waterGiven, 1) : '—'}</td>
+                <td className="mono">{r.lightHours != null ? num(r.lightHours, 1) : '—'}</td>
                 <td className="mono">{num(r.eggs)}</td>
+                <td className="mono">{num(r.eggsCracked)}</td>
                 <td>{r.medication || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
               </tr>
             ))}
-            {dailyLog.length === 0 && <tr><td colSpan={10} className="empty">No entries yet — log the first day.</td></tr>}
+            {dailyLog.length === 0 && <tr><td colSpan={14} className="empty">No entries yet — log the first day.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -400,8 +604,8 @@ function LogTab({ dailyLog, onAdd }) {
 
 function LogForm({ lastClosing, onClose, onSave }) {
   const [f, setF] = useState({
-    date: todayISO(), birdAge: '', opening: lastClosing ?? '', mortality: 0, culls: 0,
-    feedGiven: '', eggs: '', medication: '', notes: '',
+    date: todayISO(), birdAge: '', opening: lastClosing ?? '', mortality: 0, mortalityCause: '', culls: 0,
+    feedGiven: '', waterGiven: '', lightHours: '', eggs: '', eggsCracked: '', medication: '', notes: '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
@@ -413,10 +617,14 @@ function LogForm({ lastClosing, onClose, onSave }) {
       birdAge: f.birdAge === '' ? null : Number(f.birdAge),
       opening: Number(f.opening),
       mortality: Number(f.mortality) || 0,
+      mortalityCause: Number(f.mortality) > 0 ? (f.mortalityCause || null) : null,
       culls: Number(f.culls) || 0,
       closing,
       feedGiven: f.feedGiven === '' ? null : Number(f.feedGiven),
+      waterGiven: f.waterGiven === '' ? null : Number(f.waterGiven),
+      lightHours: f.lightHours === '' ? null : Number(f.lightHours),
       eggs: f.eggs === '' ? null : Number(f.eggs),
+      eggsCracked: f.eggsCracked === '' ? null : Number(f.eggsCracked),
       medication: f.medication || null,
       notes: f.notes || null,
     });
@@ -429,10 +637,24 @@ function LogForm({ lastClosing, onClose, onSave }) {
         <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
         <Field label="Opening birds"><input type="number" value={f.opening} onChange={set('opening')} /></Field>
         <Field label="Mortality"><input type="number" value={f.mortality} onChange={set('mortality')} /></Field>
+        <Field label="Cause of death">
+          <select value={f.mortalityCause} onChange={set('mortalityCause')} disabled={!Number(f.mortality)}>
+            <option value="">—</option>
+            <option>Disease</option>
+            <option>Predator</option>
+            <option>Heat/cold stress</option>
+            <option>Injury</option>
+            <option>Unknown</option>
+            <option>Other</option>
+          </select>
+        </Field>
         <Field label="Culls"><input type="number" value={f.culls} onChange={set('culls')} /></Field>
-        <Field label="Feed given (kg)"><input type="number" step="0.01" value={f.feedGiven} onChange={set('feedGiven')} /></Field>
-        <Field label="Eggs collected"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
         <Field label="Closing (auto)"><input value={closing} disabled /></Field>
+        <Field label="Feed given (kg)"><input type="number" step="0.01" value={f.feedGiven} onChange={set('feedGiven')} /></Field>
+        <Field label="Water given (L)"><input type="number" step="0.1" value={f.waterGiven} onChange={set('waterGiven')} /></Field>
+        <Field label="Light hours"><input type="number" step="0.5" value={f.lightHours} onChange={set('lightHours')} /></Field>
+        <Field label="Eggs collected"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
+        <Field label="Eggs cracked/broken"><input type="number" value={f.eggsCracked} onChange={set('eggsCracked')} /></Field>
         <Field label="Medication / vaccine given" span2><input value={f.medication} onChange={set('medication')} /></Field>
         <Field label="Notes / observations" span2><textarea rows={3} value={f.notes} onChange={set('notes')} /></Field>
       </div>
@@ -447,16 +669,20 @@ function LogForm({ lastClosing, onClose, onSave }) {
 /* ---------------- Feed tab ---------------- */
 
 function FeedTab({ feed, onAdd }) {
+  const totalCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Feed &amp; Inventory</h3>
         <button className="btn btn-gold" onClick={onAdd}>+ Add feed record</button>
       </div>
+      {totalCost > 0 && (
+        <p className="stat-foot" style={{ marginBottom: 10 }}>Total feed spend logged: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(totalCost, 2)}</strong></p>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Used (kg)</th><th>Balance (kg)</th><th>Supplier</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Cost (GH₵)</th><th>Used (kg)</th><th>Balance (kg)</th><th>Supplier</th><th>Notes</th></tr>
           </thead>
           <tbody>
             {feed.map((r, i) => (
@@ -464,13 +690,14 @@ function FeedTab({ feed, onAdd }) {
                 <td className="mono">{fmtDate(r.date)}</td>
                 <td>{r.feedType || '—'}</td>
                 <td className="mono">{r.purchased != null ? num(r.purchased, 1) : '—'}</td>
+                <td className="mono">{r.cost != null ? num(r.cost, 2) : '—'}</td>
                 <td className="mono">{r.used != null ? num(r.used, 2) : '—'}</td>
                 <td className="mono">{r.balance != null ? num(r.balance, 1) : '—'}</td>
                 <td>{r.supplier || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
               </tr>
             ))}
-            {feed.length === 0 && <tr><td colSpan={7} className="empty">No feed records yet.</td></tr>}
+            {feed.length === 0 && <tr><td colSpan={8} className="empty">No feed records yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -479,7 +706,7 @@ function FeedTab({ feed, onAdd }) {
 }
 
 function FeedForm({ lastBalance, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), feedType: '', purchased: '', used: '', supplier: '', notes: '' });
+  const [f, setF] = useState({ date: todayISO(), feedType: '', purchased: '', cost: '', used: '', supplier: '', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const balance = (Number(lastBalance) || 0) + (Number(f.purchased) || 0) - (Number(f.used) || 0);
 
@@ -489,6 +716,7 @@ function FeedForm({ lastBalance, onClose, onSave }) {
       date: f.date,
       feedType: f.feedType || null,
       purchased: f.purchased === '' ? null : Number(f.purchased),
+      cost: f.cost === '' ? null : Number(f.cost),
       used: f.used === '' ? null : Number(f.used),
       balance,
       supplier: f.supplier || null,
@@ -502,6 +730,7 @@ function FeedForm({ lastBalance, onClose, onSave }) {
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Feed type"><input value={f.feedType} onChange={set('feedType')} placeholder="e.g. Grower Mash" /></Field>
         <Field label="Purchased (kg)"><input type="number" step="0.1" value={f.purchased} onChange={set('purchased')} /></Field>
+        <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} placeholder="if purchased today" /></Field>
         <Field label="Used (kg)"><input type="number" step="0.01" value={f.used} onChange={set('used')} /></Field>
         <Field label="Supplier"><input value={f.supplier} onChange={set('supplier')} /></Field>
         <Field label="Balance (auto)"><input value={num(balance, 1)} disabled /></Field>
@@ -632,6 +861,99 @@ function VaxForm({ onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Growth tab ---------------- */
+
+function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Growth &amp; Weight Sampling</h3>
+        <button className="btn btn-gold" onClick={onAdd}>+ Add weight sample</button>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head"><h3>Sample average vs. breed standard (g)</h3></div>
+        <div className="chart-card">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={growthChartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="week" tickLine={false} axisLine={{ stroke: '#423827' }} />
+              <YAxis tickLine={false} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+              <Line type="monotone" dataKey="standard" name="Standard" stroke="#83786A" strokeWidth={2} dot={false} strokeDasharray="4 3" />
+              <Line type="monotone" dataKey="actual" name="Your sample" stroke="#D4A537" strokeWidth={2} connectNulls dot={{ r: 3 }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <p className="section-title">Weight samples logged</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Date</th><th>Sample size</th><th>Avg weight (g)</th><th>Notes</th></tr></thead>
+          <tbody>
+            {weightSamples.map((s, i) => (
+              <tr key={i}>
+                <td className="mono">{fmtDate(s.date)}</td>
+                <td className="mono">{num(s.sampleSize)}</td>
+                <td className="mono">{num(s.avgWeightG)}</td>
+                <td className="notes">{s.notes || ''}</td>
+              </tr>
+            ))}
+            {weightSamples.length === 0 && <tr><td colSpan={4} className="empty">No weight samples yet — weigh 10–20 birds and log the average weekly.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="section-title">Breed feeding &amp; growth standard (Hy-Line)</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Week</th><th>Feed type</th><th>Feed intake (g/bird/day)</th><th>Target weight (g)</th></tr></thead>
+          <tbody>
+            {feedStandard.map((r) => (
+              <tr key={r.week}>
+                <td className="mono">W{r.week}</td>
+                <td>{r.feedType || '—'}</td>
+                <td className="mono">{num(r.feedIntakePerBirdG)}</td>
+                <td className="mono">{num(r.estWeightG)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function WeightForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), sampleSize: '', avgWeightG: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date || f.avgWeightG === '') return;
+    onSave({
+      date: f.date,
+      sampleSize: f.sampleSize === '' ? null : Number(f.sampleSize),
+      avgWeightG: Number(f.avgWeightG),
+      notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add weight sample" sub="Weigh 10–20 birds and enter the average — the more you sample, the more reliable the trend." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Sample size (birds weighed)"><input type="number" value={f.sampleSize} onChange={set('sampleSize')} /></Field>
+        <Field label="Average weight (g)" span2><input type="number" step="1" value={f.avgWeightG} onChange={set('avgWeightG')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save sample</button>
       </div>
     </Modal>
   );
