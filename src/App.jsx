@@ -35,7 +35,12 @@ function num(v, digits = 0) {
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      // Flock metadata (name/breed/start date) always comes from the app's
+      // current defaults, so corrections ship without wiping logged entries.
+      return { ...saved, flock: SEED.flock };
+    }
   } catch (e) { /* ignore corrupt storage */ }
   return {
     flock: SEED.flock,
@@ -126,7 +131,8 @@ export default function App() {
     ? (currentBirds / data.flock.initialBirds) * 100
     : null;
   const totalFeed = dailyLog.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
-  const dayNumber = daysBetween(data.flock.startDate, latest ? latest.date : todayISO()) + 1;
+  const dayNumber = daysBetween(data.flock.startDate, todayISO()) + 1;
+  const weekNumber = Math.ceil(dayNumber / 7);
   const daysSinceLastEntry = latest ? daysBetween(latest.date, todayISO()) : null;
   const isStale = daysSinceLastEntry !== null && daysSinceLastEntry > 3;
 
@@ -181,7 +187,7 @@ export default function App() {
         <div className="day-stamp">
           <DayRing pct={survivalRate ? survivalRate / 100 : 1} />
           <div>
-            <div className="num">Day {dayNumber}</div>
+            <div className="num">Day {dayNumber} <span className="week-chip">Wk {weekNumber}</span></div>
             <div className="label">{num(survivalRate, 1)}% survival</div>
           </div>
         </div>

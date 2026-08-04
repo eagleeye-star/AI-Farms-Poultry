@@ -6,8 +6,8 @@ import feed from './feed.json';
 export const SEED = {
   flock: {
     farmName: 'AI Farms',
-    flockName: 'Broiler Batch — Ross 308',
-    breed: 'Ross 308',
+    flockName: 'Layer Flock — Hy-Line',
+    breed: 'Hy-Line Layers',
     startDate: '2026-05-01',
     initialBirds: 472,
     location: 'Eikwe, Western Region',
