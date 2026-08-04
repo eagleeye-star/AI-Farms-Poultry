@@ -1,6 +1,6 @@
 # AI Farms — Poultry Tracker
 
-A dashboard for tracking the broiler flock: daily log, feed & inventory,
+A dashboard for tracking the layer flock: daily log, feed & inventory,
 vaccinations and medications, seeded from the current tracker spreadsheet.
 
 ## Run locally
