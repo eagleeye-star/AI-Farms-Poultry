@@ -492,3 +492,59 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   text-transform: uppercase;
 }
 .kv .v { color: var(--text); font-size: 13.5px; }
+
+/* ---------- Flock selector + data tools row ---------- */
+.seg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.flock-seg {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.flock-seg button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.flock-seg button:hover { border-color: var(--gold-dim); }
+
+.flock-seg button.active {
+  background: rgba(212, 165, 55, 0.12);
+  border-color: rgba(212, 165, 55, 0.5);
+  color: var(--gold);
+}
+
+.flock-seg .seg-add {
+  color: var(--text-faint);
+  border-style: dashed;
+}
+.flock-seg .seg-add:hover { color: var(--gold); }
+
+.data-tools { display: inline-flex; gap: 8px; }
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 0;
+  text-decoration: underline;
+}
+.link-btn:hover { color: #e2b446; }
+.link-btn.rust { color: var(--rust); }
+.link-btn.rust:hover { color: #d1794f; }

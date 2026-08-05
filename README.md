@@ -2,11 +2,20 @@
 
 Two workspaces under one AI Farms roof, switched from the toggle at the top:
 
-- **Poultry** — daily log, feed & inventory, growth sampling, vaccinations
-  and medications (unchanged).
+- **Poultry** — now **multi-flock**: switch between your Ross 308 broilers and
+  Hy-Line layers (or add a new batch), each with its own daily log, feed,
+  growth curve, breed standard, sales and vaccinations. Broiler flocks show
+  **FCR** (feed conversion) against a Ross 308 target; layers keep hen-day %
+  and point-of-lay. A **Sales & Profit** tab and dashboard cards track
+  revenue, cost (feed + setup), and margin per flock.
 - **Bell Pepper Fields** — two-field pepper operation with a Dashboard,
   Crop Cycle, Scouting (pest & disease), Spray & Fertigation, and
   Harvest & Sales. A Field A / Field B / Both selector filters every view.
+
+Both workspaces have a **Reminders** tab (vaccinations, harvest holds, and
+scouting show up automatically; add your own one-off or repeating tasks), and
+the poultry header has **Backup / Restore** buttons that save or reload the
+whole farm's data as a `.json` file — a safety net until cloud sync is added.
 
 ### Pepper workspace highlights
 - Per-field days-after-transplant counter and expected first-harvest date.

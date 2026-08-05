@@ -1,12 +1,18 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ResponsiveContainer, ComposedChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart,
 } from 'recharts';
 import { SEED } from './data/seed';
+import ROSS308 from './data/ross308_standard.json';
 import './App.css';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
+
+const STANDARDS = {
+  hyline_layer: SEED.feedStandard,
+  ross308_broiler: ROSS308,
+};
 
 /* ---------------- utils ---------------- */
 
@@ -32,22 +38,29 @@ function num(v, digits = 0) {
   return Number(v).toLocaleString('en-GB', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
-function feedPhaseForWeek(week) {
+function feedPhaseForWeek(week, standard) {
+  const list = standard || FEED_STANDARD;
   let phase = null;
-  for (const r of FEED_STANDARD) {
+  for (const r of list) {
     if (r.week > week) break;
     if (r.feedType) phase = r.feedType;
   }
   return phase;
 }
 
-function standardWeightForWeek(week) {
-  const list = FEED_STANDARD;
+function standardWeightForWeek(week, standard) {
+  const list = standard || FEED_STANDARD;
   const exact = list.find((r) => r.week === week);
   if (exact) return exact.estWeightG;
   if (week < list[0].week) return null;
   if (week > list[list.length - 1].week) return list[list.length - 1].estWeightG;
   return null;
+}
+
+function polWeek(standard) {
+  const list = standard || FEED_STANDARD;
+  const layer = list.find((r) => (r.feedType || '').toLowerCase().includes('layer'));
+  return layer ? layer.week : 21;
 }
 
 function defaultPepper() {
@@ -62,31 +75,64 @@ function defaultPepper() {
   };
 }
 
-function loadData() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      // Flock metadata (name/breed/start date) always comes from the app's
-      // current defaults, so corrections ship without wiping logged entries.
-      // `pepper` is defaulted first so existing users get the new workspace,
-      // but their saved pepper data (if any) wins via the spread.
-      return { weightSamples: [], pepper: defaultPepper(), ...saved, flock: SEED.flock };
-    }
-  } catch (e) { /* ignore corrupt storage */ }
+function tagEntries(arr, flockId) {
+  return (arr || []).map((e) => (e.flockId ? e : { ...e, flockId }));
+}
+
+function makeLayerFlock(meta) {
+  return { type: 'layer', standardKey: 'hyline_layer', setupCost: null, ...(meta || SEED.flock), id: 'layers' };
+}
+
+function makeBroilerFlock() {
   return {
-    flock: SEED.flock,
-    dailyLog: SEED.dailyLog,
-    meds: SEED.meds,
-    vax: SEED.vax,
-    feed: SEED.feed,
-    weightSamples: SEED.weightSamples,
+    id: 'broilers', flockName: 'Broiler Batch — Ross 308', breed: 'Ross 308 (+ cockerels)', type: 'broiler',
+    startDate: '2026-06-15', initialBirds: 69, location: 'Eikwe, Western Region',
+    standardKey: 'ross308_broiler', setupCost: null,
+  };
+}
+
+function freshData() {
+  return {
+    flocks: [makeLayerFlock(), makeBroilerFlock()],
+    dailyLog: tagEntries(SEED.dailyLog, 'layers'),
+    meds: tagEntries(SEED.meds, 'layers'),
+    vax: tagEntries(SEED.vax, 'layers'),
+    feed: tagEntries(SEED.feed, 'layers'),
+    weightSamples: tagEntries(SEED.weightSamples, 'layers'),
+    sales: [],
+    reminders: [],
     pepper: defaultPepper(),
   };
 }
 
+function migrate(saved) {
+  let flocks = saved.flocks;
+  if (!flocks || !flocks.length) {
+    // Old single-flock save: the existing flock becomes the layer flock.
+    flocks = [makeLayerFlock(saved.flock), makeBroilerFlock()];
+  }
+  return {
+    flocks,
+    dailyLog: tagEntries(saved.dailyLog || SEED.dailyLog, 'layers'),
+    meds: tagEntries(saved.meds || SEED.meds, 'layers'),
+    vax: tagEntries(saved.vax || SEED.vax, 'layers'),
+    feed: tagEntries(saved.feed || SEED.feed, 'layers'),
+    weightSamples: tagEntries(saved.weightSamples || [], 'layers'),
+    sales: saved.sales || [],
+    reminders: saved.reminders || [],
+    pepper: saved.pepper || defaultPepper(),
+  };
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return migrate(JSON.parse(raw));
+  } catch (e) { /* ignore corrupt storage */ }
+  return freshData();
+}
+
 const FEED_STANDARD = SEED.feedStandard;
-const POINT_OF_LAY_WEEK = (FEED_STANDARD.find((r) => (r.feedType || '').toLowerCase().includes('layer')) || {}).week || 21;
 
 /* ---------------- small building blocks ---------------- */
 
@@ -139,41 +185,51 @@ export default function App() {
   const [data, setData] = useState(loadData);
   const [workspace, setWorkspace] = useState('poultry');
   const [tab, setTab] = useState('dashboard');
-  const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | null
+  const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
+  const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
+  const restoreInputRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data]);
 
+  const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
+  const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
+  const POL_WEEK = polWeek(flockStandard);
+
   const dailyLog = useMemo(
-    () => [...data.dailyLog].sort((a, b) => new Date(a.date) - new Date(b.date)),
-    [data.dailyLog]
+    () => data.dailyLog.filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.dailyLog, activeFlock.id]
   );
   const feed = useMemo(
-    () => [...data.feed].sort((a, b) => new Date(a.date) - new Date(b.date)),
-    [data.feed]
+    () => data.feed.filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.feed, activeFlock.id]
   );
   const meds = useMemo(
-    () => [...data.meds].sort((a, b) => new Date(b.date) - new Date(a.date)),
-    [data.meds]
+    () => data.meds.filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(b.date) - new Date(a.date)),
+    [data.meds, activeFlock.id]
   );
   const vax = useMemo(
-    () => [...data.vax].sort((a, b) => new Date(a.date) - new Date(b.date)),
-    [data.vax]
+    () => data.vax.filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.vax, activeFlock.id]
   );
   const weightSamples = useMemo(
-    () => [...(data.weightSamples || [])].sort((a, b) => new Date(a.date) - new Date(b.date)),
-    [data.weightSamples]
+    () => (data.weightSamples || []).filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.weightSamples, activeFlock.id]
+  );
+  const sales = useMemo(
+    () => (data.sales || []).filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.sales, activeFlock.id]
   );
 
   const latest = dailyLog[dailyLog.length - 1];
-  const currentBirds = latest ? latest.closing : data.flock.initialBirds;
+  const currentBirds = latest ? latest.closing : activeFlock.initialBirds;
   const totalMortality = dailyLog.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
-  const survivalRate = data.flock.initialBirds
-    ? (currentBirds / data.flock.initialBirds) * 100
+  const survivalRate = activeFlock.initialBirds
+    ? (currentBirds / activeFlock.initialBirds) * 100
     : null;
   const totalFeed = dailyLog.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
-  const dayNumber = daysBetween(data.flock.startDate, todayISO()) + 1;
+  const dayNumber = daysBetween(activeFlock.startDate, todayISO()) + 1;
   const weekNumber = Math.ceil(dayNumber / 7);
   const daysSinceLastEntry = latest ? daysBetween(latest.date, todayISO()) : null;
   const isStale = daysSinceLastEntry !== null && daysSinceLastEntry > 3;
@@ -187,10 +243,21 @@ export default function App() {
   const henDayPct = latest && latest.closing
     ? ((Number(latest.eggs) || 0) / latest.closing) * 100
     : null;
-  const weeksToPOL = POINT_OF_LAY_WEEK - weekNumber;
-  const currentFeedPhase = feedPhaseForWeek(weekNumber);
-  const standardWeight = standardWeightForWeek(weekNumber);
+  const weeksToPOL = POL_WEEK - weekNumber;
+  const currentFeedPhase = feedPhaseForWeek(weekNumber, flockStandard);
+  const standardWeight = standardWeightForWeek(weekNumber, flockStandard);
   const latestSample = weightSamples[weightSamples.length - 1];
+
+  // Feed conversion ratio — meaningful for broilers: kg feed per kg liveweight to date.
+  const fcr = (activeFlock.type === 'broiler' && latestSample && latestSample.avgWeightG && currentBirds && totalFeed)
+    ? totalFeed / (currentBirds * (latestSample.avgWeightG / 1000))
+    : null;
+  const fcrTarget = activeFlock.type === 'broiler' ? 1.6 : null;
+
+  // Sales & simple profit for this flock.
+  const totalRevenue = sales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const flockCost = totalFeedCost + (Number(activeFlock.setupCost) || 0);
+  const flockMargin = totalRevenue - flockCost;
 
   const mortalityByCause = useMemo(() => {
     const m = {};
@@ -205,15 +272,15 @@ export default function App() {
   const growthChartData = useMemo(() => {
     const sampleByWeek = {};
     weightSamples.forEach((s) => {
-      const wk = Math.ceil((daysBetween(data.flock.startDate, s.date) + 1) / 7);
+      const wk = Math.ceil((daysBetween(activeFlock.startDate, s.date) + 1) / 7);
       sampleByWeek[wk] = s.avgWeightG;
     });
-    return FEED_STANDARD.filter((r) => r.week <= Math.max(weekNumber, POINT_OF_LAY_WEEK)).map((r) => ({
+    return flockStandard.filter((r) => r.week <= Math.max(weekNumber, POL_WEEK)).map((r) => ({
       week: `W${r.week}`,
       standard: r.estWeightG,
       actual: sampleByWeek[r.week] ?? null,
     }));
-  }, [weightSamples, weekNumber, data.flock.startDate]);
+  }, [weightSamples, weekNumber, activeFlock.startDate, flockStandard, POL_WEEK]);
 
   // vaccine status: latest occurrence of each vaccine family + its next-due date
   const vaxStatus = useMemo(() => {
@@ -243,19 +310,63 @@ export default function App() {
     .map((f) => ({ date: fmtDate(f.date).slice(0, 6), balance: f.balance, used: f.used, purchased: f.purchased }));
 
   function addDailyLog(entry) {
-    setData((d) => ({ ...d, dailyLog: [...d.dailyLog, entry] }));
+    setData((d) => ({ ...d, dailyLog: [...d.dailyLog, { ...entry, flockId: activeFlock.id }] }));
   }
   function addFeed(entry) {
-    setData((d) => ({ ...d, feed: [...d.feed, entry] }));
+    setData((d) => ({ ...d, feed: [...d.feed, { ...entry, flockId: activeFlock.id }] }));
   }
   function addMed(entry) {
-    setData((d) => ({ ...d, meds: [...d.meds, entry] }));
+    setData((d) => ({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
   }
   function addVax(entry) {
-    setData((d) => ({ ...d, vax: [...d.vax, entry] }));
+    setData((d) => ({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id }] }));
   }
   function addWeightSample(entry) {
-    setData((d) => ({ ...d, weightSamples: [...(d.weightSamples || []), entry] }));
+    setData((d) => ({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
+  }
+  function addSale(entry) {
+    setData((d) => ({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
+  }
+  function saveFlock(flock) {
+    setData((d) => {
+      const exists = d.flocks.some((f) => f.id === flock.id);
+      return { ...d, flocks: exists ? d.flocks.map((f) => (f.id === flock.id ? flock : f)) : [...d.flocks, flock] };
+    });
+    setActiveFlockId(flock.id);
+  }
+  function addReminder(entry) {
+    setData((d) => ({ ...d, reminders: [...(d.reminders || []), entry] }));
+  }
+  function toggleReminder(id) {
+    setData((d) => ({ ...d, reminders: (d.reminders || []).map((r) => (r.id === id ? { ...r, done: !r.done } : r)) }));
+  }
+  function deleteReminder(id) {
+    setData((d) => ({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
+  }
+
+  function backupData() {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ai-farms-backup-${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  function restoreData(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        const merged = migrate(parsed);
+        setData(merged);
+        setActiveFlockId(merged.flocks[0].id);
+        alert('Backup restored successfully.');
+      } catch (err) {
+        alert('Could not read that file — make sure it is an AI Farms backup (.json).');
+      }
+    };
+    reader.readAsText(file);
   }
 
   function exportWeeklyReport() {
@@ -266,7 +377,7 @@ export default function App() {
     const weekFeed = recent.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
     const weekEggs = recent.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
     const lines = [
-      `AI FARMS — ${data.flock.flockName} — Weekly Report`,
+      `AI FARMS — ${activeFlock.flockName} — Weekly Report`,
       `Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}`,
       '',
       `Current flock: ${num(currentBirds)} birds (${num(survivalRate, 1)}% survival)`,
@@ -323,8 +434,8 @@ export default function App() {
       <header className="header">
         <div>
           <p className="brand-eyebrow">AI Farms · Poultry Operations</p>
-          <h1 className="brand-title">{data.flock.flockName}</h1>
-          <p className="brand-sub">{data.flock.breed} · started {fmtDate(data.flock.startDate)} · {data.flock.location}</p>
+          <h1 className="brand-title">{activeFlock.flockName}</h1>
+          <p className="brand-sub">{activeFlock.breed} · started {fmtDate(activeFlock.startDate)} · {activeFlock.location}</p>
         </div>
         <div className="day-stamp">
           <DayRing pct={survivalRate ? survivalRate / 100 : 1} />
@@ -334,6 +445,25 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <div className="seg-row">
+        <div className="flock-seg">
+          {data.flocks.map((f) => (
+            <button key={f.id} className={activeFlockId === f.id ? 'active' : ''} onClick={() => { setActiveFlockId(f.id); setModal(null); }}>
+              {f.flockName}
+            </button>
+          ))}
+          <button className="seg-add" onClick={() => setModal('flock:new')} title="Add a flock / new batch">+ Flock</button>
+        </div>
+        <div className="data-tools">
+          <button className="btn" onClick={backupData} title="Download all data as a backup file">⤓ Backup</button>
+          <button className="btn" onClick={() => restoreInputRef.current && restoreInputRef.current.click()} title="Restore from a backup file">⤒ Restore</button>
+          <input
+            ref={restoreInputRef} type="file" accept="application/json,.json" style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files[0]) restoreData(e.target.files[0]); e.target.value = ''; }}
+          />
+        </div>
+      </div>
 
       {isStale && (
         <div className="stale-banner">
@@ -347,7 +477,9 @@ export default function App() {
           ['log', 'Daily Log'],
           ['feed', 'Feed & Inventory'],
           ['growth', 'Growth'],
+          ['sales', 'Sales & Profit'],
           ['health', 'Health'],
+          ['reminders', 'Reminders'],
         ].map(([id, label]) => (
           <button key={id} className={`tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
             {label}
@@ -368,9 +500,16 @@ export default function App() {
           totalEggs={totalEggs}
           totalCracked={totalCracked}
           weeksToPOL={weeksToPOL}
+          polWeek={POL_WEEK}
           currentFeedPhase={currentFeedPhase}
           standardWeight={standardWeight}
           latestSample={latestSample}
+          flockType={activeFlock.type}
+          fcr={fcr}
+          fcrTarget={fcrTarget}
+          totalRevenue={totalRevenue}
+          flockCost={flockCost}
+          flockMargin={flockMargin}
           mortalityByCause={mortalityByCause}
           chartData={chartData}
           feedChartData={feedChartData}
@@ -392,8 +531,39 @@ export default function App() {
         <GrowthTab
           weightSamples={[...weightSamples].reverse()}
           growthChartData={growthChartData}
-          feedStandard={FEED_STANDARD}
+          feedStandard={flockStandard}
+          flockType={activeFlock.type}
           onAdd={() => setModal('weight')}
+        />
+      )}
+
+      {tab === 'sales' && (
+        <SalesTab
+          sales={[...sales].reverse()}
+          flock={activeFlock}
+          totalRevenue={totalRevenue}
+          flockCost={flockCost}
+          flockMargin={flockMargin}
+          totalFeedCost={totalFeedCost}
+          onAdd={() => setModal('sale')}
+          onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
+        />
+      )}
+
+      {tab === 'reminders' && (
+        <RemindersTab
+          reminders={data.reminders || []}
+          scope="poultry"
+          autoItems={vaxStatus.filter((v) => v.daysLeft !== null).map((v) => ({
+            id: `vax-${v.disease || v.vaccine}`,
+            title: `${v.disease || v.vaccine} vaccination`,
+            dueDate: v.nextDue,
+            daysLeft: v.daysLeft,
+            source: activeFlock.flockName,
+          }))}
+          onAdd={() => setModal('reminder')}
+          onToggle={toggleReminder}
+          onDelete={deleteReminder}
         />
       )}
 
@@ -409,7 +579,8 @@ export default function App() {
 
       {modal === 'log' && (
         <LogForm
-          lastClosing={latest ? latest.closing : data.flock.initialBirds}
+          lastClosing={latest ? latest.closing : activeFlock.initialBirds}
+          flockType={activeFlock.type}
           onClose={() => setModal(null)}
           onSave={(e) => { addDailyLog(e); setModal(null); }}
         />
@@ -430,15 +601,33 @@ export default function App() {
       {modal === 'weight' && (
         <WeightForm onClose={() => setModal(null)} onSave={(e) => { addWeightSample(e); setModal(null); }} />
       )}
+      {modal === 'sale' && (
+        <SaleForm flock={activeFlock} onClose={() => setModal(null)} onSave={(e) => { addSale(e); setModal(null); }} />
+      )}
+      {modal === 'reminder' && (
+        <ReminderForm scope="poultry" onClose={() => setModal(null)} onSave={(e) => { addReminder(e); setModal(null); }} />
+      )}
+      {modal && modal.startsWith('flock:') && (
+        <FlockForm
+          flock={modal === 'flock:new' ? null : data.flocks.find((f) => f.id === modal.split(':')[1])}
+          existingIds={data.flocks.map((f) => f.id)}
+          onClose={() => setModal(null)}
+          onSave={(f) => { saveFlock(f); setModal(null); }}
+        />
+      )}
       </>)}
 
       {workspace === 'pepper' && (
         <PepperWorkspace
           pepper={data.pepper}
+          reminders={data.reminders || []}
           onUpdateField={updateField}
           onAddScouting={addScouting}
           onAddSpray={addSpray}
           onAddHarvest={addHarvest}
+          onAddReminder={addReminder}
+          onToggleReminder={toggleReminder}
+          onDeleteReminder={deleteReminder}
         />
       )}
     </div>
@@ -450,10 +639,12 @@ export default function App() {
 function DashboardTab({
   currentBirds, totalMortality, survivalRate, totalFeed, feedBalance,
   totalFeedCost, feedCostPerBird, henDayPct, totalEggs, totalCracked,
-  weeksToPOL, currentFeedPhase, standardWeight, latestSample,
+  weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
+  flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
+  const isBroiler = flockType === 'broiler';
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -469,29 +660,58 @@ function DashboardTab({
       </div>
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
-        <StatCard
-          title="Hen-Day Egg %"
-          value={henDayPct !== null ? `${num(henDayPct, 1)}%` : '—'}
-          tone="green"
-          foot={totalEggs ? `${num(totalEggs)} eggs total, ${num(totalCracked)} cracked` : 'not laying yet'}
-        />
-        <StatCard
-          title="Point of Lay"
-          value={weeksToPOL > 0 ? `${weeksToPOL} wks away` : 'Reached'}
-          tone="gold"
-          foot={`standard ~week ${POINT_OF_LAY_WEEK}`}
-        />
+        {isBroiler ? (
+          <StatCard
+            title="FCR (to date)"
+            value={fcr != null ? num(fcr, 2) : '—'}
+            tone={fcr != null ? (fcr <= fcrTarget ? 'green' : 'rust') : undefined}
+            foot={fcr != null ? `target ≤ ${num(fcrTarget, 2)} · kg feed / kg bird` : 'log feed + a weight sample'}
+          />
+        ) : (
+          <StatCard
+            title="Hen-Day Egg %"
+            value={henDayPct !== null ? `${num(henDayPct, 1)}%` : '—'}
+            tone="green"
+            foot={totalEggs ? `${num(totalEggs)} eggs total, ${num(totalCracked)} cracked` : 'not laying yet'}
+          />
+        )}
+        {isBroiler ? (
+          <StatCard
+            title="Avg Weight"
+            value={latestSample ? `${num(latestSample.avgWeightG)} g` : '—'}
+            tone={latestSample && standardWeight ? (latestSample.avgWeightG >= standardWeight ? 'green' : 'rust') : undefined}
+            foot={standardWeight ? `target ${num(standardWeight)} g this week` : 'weigh a sample to compare'}
+          />
+        ) : (
+          <StatCard
+            title="Point of Lay"
+            value={weeksToPOL > 0 ? `${weeksToPOL} wks away` : 'Reached'}
+            tone="gold"
+            foot={`standard ~week ${polWeek}`}
+          />
+        )}
         <StatCard
           title="Feed Phase"
           value={currentFeedPhase || '—'}
           foot="per breed feeding standard"
         />
-        <StatCard
-          title="Weight vs Standard"
-          value={latestSample ? `${num(latestSample.avgWeightG)} g` : '—'}
-          tone={latestSample && standardWeight ? (latestSample.avgWeightG >= standardWeight ? 'green' : 'rust') : undefined}
-          foot={standardWeight ? `target ${num(standardWeight)} g this week` : 'no standard for this week'}
-        />
+        {isBroiler ? (
+          <StatCard title="Feed / Bird" value={feedCostPerBird ? `GH₵ ${num(feedCostPerBird, 2)}` : '—'} foot="feed cost per bird" />
+        ) : (
+          <StatCard
+            title="Weight vs Standard"
+            value={latestSample ? `${num(latestSample.avgWeightG)} g` : '—'}
+            tone={latestSample && standardWeight ? (latestSample.avgWeightG >= standardWeight ? 'green' : 'rust') : undefined}
+            foot={standardWeight ? `target ${num(standardWeight)} g this week` : 'no standard for this week'}
+          />
+        )}
+      </div>
+
+      <div className="grid grid-4" style={{ marginTop: 16 }}>
+        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="sales logged for this flock" />
+        <StatCard title="Cost" value={`GH₵ ${num(flockCost, 2)}`} tone="rust" foot="feed + flock setup cost" />
+        <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
+        <StatCard title="Break-even" value={totalRevenue >= flockCost ? 'Reached' : `GH₵ ${num(flockCost - totalRevenue, 2)}`} foot={totalRevenue >= flockCost ? 'sales cover costs' : 'more sales to break even'} />
       </div>
 
       <div className="panel">
@@ -1031,7 +1251,7 @@ function addDaysISO(iso, days) {
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
-function PepperWorkspace({ pepper, onUpdateField, onAddScouting, onAddSpray, onAddHarvest }) {
+function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddReminder, onToggleReminder, onDeleteReminder }) {
   const [ptab, setPtab] = useState('dashboard');
   const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest'
@@ -1093,6 +1313,19 @@ function PepperWorkspace({ pepper, onUpdateField, onAddScouting, onAddSpray, onA
   }).filter(Boolean);
   const scopeResistance = resistanceFlags.filter((w) => inScope(w.field.id));
 
+  // Auto reminders for the pepper side: active harvest holds + scouting overdue.
+  const lastScoutByField = {};
+  scouting.forEach((s) => { lastScoutByField[s.fieldId] = s.date; });
+  const pepperAuto = [
+    ...phiWindows.map((w) => ({ id: `phi-${w.field.id}`, title: `${w.field.name}: harvest hold (${w.product || 'spray'})`, dueDate: w.safe, source: w.field.name })),
+    ...fields.map((f) => {
+      const last = lastScoutByField[f.id];
+      const days = last ? daysBetween(last, todayISO()) : null;
+      if (last && days <= 4) return null;
+      return { id: `scout-${f.id}`, title: `Scout ${f.name}${last ? ` (last ${days}d ago)` : ' (not scouted yet)'}`, dueDate: todayISO(), source: f.name };
+    }).filter(Boolean),
+  ];
+
   const harvestChart = harvestScoped.map((h) => ({
     date: fmtDate(h.date).slice(0, 6),
     kg: Number(h.weightKg) || 0,
@@ -1152,6 +1385,7 @@ function PepperWorkspace({ pepper, onUpdateField, onAddScouting, onAddSpray, onA
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
           ['harvest', 'Harvest & Sales'],
+          ['reminders', 'Reminders'],
         ].map(([id, label]) => (
           <button key={id} className={`tab${ptab === id ? ' active' : ''}`} onClick={() => setPtab(id)}>{label}</button>
         ))}
@@ -1187,6 +1421,18 @@ function PepperWorkspace({ pepper, onUpdateField, onAddScouting, onAddSpray, onA
         <HarvestTab rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue} onAdd={() => setModal('harvest')} />
       )}
 
+      {ptab === 'reminders' && (
+        <RemindersTab
+          reminders={reminders}
+          scope="pepper"
+          accent="green"
+          autoItems={pepperAuto}
+          onAdd={() => setModal('reminder')}
+          onToggle={onToggleReminder}
+          onDelete={onDeleteReminder}
+        />
+      )}
+
       {modal && modal.startsWith('field:') && (
         <FieldForm
           field={fields.find((f) => f.id === modal.split(':')[1])}
@@ -1205,6 +1451,9 @@ function PepperWorkspace({ pepper, onUpdateField, onAddScouting, onAddSpray, onA
       {modal === 'harvest' && (
         <HarvestForm fields={fields} defaultField={scope === 'all' ? fields[0].id : scope}
           onClose={() => setModal(null)} onSave={(e) => { onAddHarvest(e); setModal(null); }} />
+      )}
+      {modal === 'reminder' && (
+        <ReminderForm scope="pepper" onClose={() => setModal(null)} onSave={(e) => { onAddReminder(e); setModal(null); }} />
       )}
     </>
   );
@@ -1663,6 +1912,268 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-green" onClick={submit}>Save harvest</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ============= FLOCK / SALES / REMINDERS COMPONENTS ========== */
+/* ============================================================= */
+
+const SALE_ITEMS = ['Eggs (crates)', 'Eggs (pieces)', 'Spent hens', 'Broilers', 'Cockerels', 'Other'];
+
+function FlockForm({ flock, onClose, onSave }) {
+  const isNew = !flock;
+  const [f, setF] = useState({
+    flockName: flock?.flockName || '', type: flock?.type || 'broiler',
+    breed: flock?.breed || '', startDate: flock?.startDate || todayISO(),
+    initialBirds: flock?.initialBirds ?? '', location: flock?.location || 'Eikwe, Western Region',
+    setupCost: flock?.setupCost ?? '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.flockName || f.initialBirds === '') return;
+    onSave({
+      id: flock?.id || newId(),
+      flockName: f.flockName,
+      type: f.type,
+      breed: f.breed || (f.type === 'broiler' ? 'Ross 308' : 'Layers'),
+      startDate: f.startDate,
+      initialBirds: Number(f.initialBirds),
+      location: f.location || '',
+      standardKey: f.type === 'broiler' ? 'ross308_broiler' : 'hyline_layer',
+      setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+    });
+  }
+  return (
+    <Modal title={isNew ? 'Add flock / new batch' : `Edit ${flock.flockName}`} sub={isNew ? 'Start a new broiler batch or layer flock — each keeps its own log and standard.' : 'Flock details and setup cost.'} onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Flock name" span2><input value={f.flockName} onChange={set('flockName')} placeholder="e.g. Broilers — Aug batch" /></Field>
+        <Field label="Type">
+          <select value={f.type} onChange={set('type')}>
+            <option value="broiler">Broiler (Ross 308 standard)</option>
+            <option value="layer">Layer (Hy-Line standard)</option>
+          </select>
+        </Field>
+        <Field label="Breed"><input value={f.breed} onChange={set('breed')} placeholder={f.type === 'broiler' ? 'Ross 308' : 'Hy-Line'} /></Field>
+        <Field label="Start / arrival date"><input type="date" value={f.startDate} onChange={set('startDate')} /></Field>
+        <Field label="Birds placed"><input type="number" value={f.initialBirds} onChange={set('initialBirds')} /></Field>
+        <Field label="Location"><input value={f.location} onChange={set('location')} /></Field>
+        <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="chicks, brooding, etc." /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>{isNew ? 'Create flock' : 'Save flock'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Sales & profit ---------------- */
+
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, onAdd, onEditFlock }) {
+  const setup = Number(flock.setupCost) || 0;
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Sales &amp; Profit — {flock.flockName}</h3>
+        <button className="btn btn-gold" onClick={onAdd}>+ Log sale</button>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s)`} />
+        <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
+        <StatCard title="Setup Cost" value={`GH₵ ${num(setup, 2)}`} foot="chicks, brooding, etc." />
+        <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
+      </div>
+
+      <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
+        Profit = revenue − (feed cost GH₵ {num(totalFeedCost, 2)} + setup cost GH₵ {num(setup, 2)}).
+        {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> to include chick purchase, brooding, and other one-off costs.
+      </p>
+
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            {sales.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{fmtDate(r.date)}</td>
+                <td>{r.item}</td>
+                <td className="mono">{num(r.quantity)}</td>
+                <td className="mono">{r.unitPrice != null ? num(r.unitPrice, 2) : '—'}</td>
+                <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                <td>{r.buyer || '—'}</td>
+                <td className="notes">{r.notes || ''}</td>
+              </tr>
+            ))}
+            {sales.length === 0 && <tr><td colSpan={7} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function SaleForm({ flock, onClose, onSave }) {
+  const layer = flock.type === 'layer';
+  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
+  const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  function submit() {
+    if (!f.date || (f.quantity === '' && f.amount === '')) return;
+    onSave({
+      id: newId(), date: f.date, item: f.item,
+      quantity: f.quantity === '' ? null : Number(f.quantity),
+      unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
+      amount, buyer: f.buyer || null, notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Log sale" sub={amount ? `Amount: GH₵ ${num(amount, 2)}.` : 'Enter quantity × unit price, or type the amount directly.'} onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Item">
+          <select value={f.item} onChange={set('item')}>
+            {SALE_ITEMS.map((i) => <option key={i}>{i}</option>)}
+          </select>
+        </Field>
+        <Field label="Quantity"><input type="number" step="0.01" value={f.quantity} onChange={set('quantity')} /></Field>
+        <Field label="Unit price (GH₵)"><input type="number" step="0.01" value={f.unitPrice} onChange={set('unitPrice')} /></Field>
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Reminders ---------------- */
+
+function reminderStatusTag(d) {
+  if (d == null) return <span className="tag">no date</span>;
+  if (d < 0) return <span className="tag rust">Overdue {Math.abs(d)}d</span>;
+  if (d === 0) return <span className="tag gold">Today</span>;
+  if (d <= 5) return <span className="tag gold">In {d}d</span>;
+  return <span className="tag green">In {d}d</span>;
+}
+
+function RemindersTab({ reminders, scope, autoItems, onAdd, onToggle, onDelete, accent }) {
+  const withDays = (iso) => (iso ? daysBetween(todayISO(), iso) : null);
+  const custom = (reminders || []).filter((r) => r.scope === scope || r.scope === 'general');
+  const items = [
+    ...(autoItems || []).map((a) => ({ ...a, kind: 'auto', done: false, daysLeft: a.daysLeft != null ? a.daysLeft : withDays(a.dueDate) })),
+    ...custom.map((c) => ({ ...c, kind: 'custom', daysLeft: withDays(c.dueDate) })),
+  ];
+  const active = items.filter((i) => !i.done).sort((a, b) => {
+    if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    return 0;
+  });
+  const done = items.filter((i) => i.done);
+  const btnClass = accent === 'green' ? 'btn btn-green' : 'btn btn-gold';
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Reminders</h3>
+        <button className={btnClass} onClick={onAdd}>+ Add reminder</button>
+      </div>
+
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Status</th><th>Task</th><th>Due</th><th>Source / repeat</th><th></th></tr>
+          </thead>
+          <tbody>
+            {active.map((i) => (
+              <tr key={i.id}>
+                <td>{reminderStatusTag(i.daysLeft)}</td>
+                <td>{i.title}</td>
+                <td className="mono">{i.dueDate ? fmtDate(i.dueDate) : '—'}</td>
+                <td>{i.kind === 'auto' ? <span className="tag">{i.source || 'auto'}</span> : (i.repeatDays ? `every ${i.repeatDays}d` : (i.source || 'one-off'))}</td>
+                <td>
+                  {i.kind === 'custom' ? (
+                    <span style={{ display: 'flex', gap: 8 }}>
+                      <button className="link-btn" onClick={() => onToggle(i.id)}>Done</button>
+                      <button className="link-btn rust" onClick={() => onDelete(i.id)}>Delete</button>
+                    </span>
+                  ) : <span className="stat-foot" style={{ margin: 0 }}>auto</span>}
+                </td>
+              </tr>
+            ))}
+            {active.length === 0 && <tr><td colSpan={5} className="empty">Nothing due — add a reminder, or vaccinations and harvest holds will show here automatically.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {done.length > 0 && (
+        <>
+          <p className="section-title">Completed</p>
+          <div className="table-wrap">
+            <table className="data">
+              <tbody>
+                {done.map((i) => (
+                  <tr key={i.id}>
+                    <td style={{ width: 90 }}><span className="tag green">Done</span></td>
+                    <td style={{ textDecoration: 'line-through', color: 'var(--text-faint)' }}>{i.title}</td>
+                    <td className="mono">{i.dueDate ? fmtDate(i.dueDate) : '—'}</td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn" onClick={() => onToggle(i.id)}>Undo</button>
+                        <button className="link-btn rust" onClick={() => onDelete(i.id)}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function ReminderForm({ scope, onClose, onSave }) {
+  const [f, setF] = useState({ title: '', dueDate: todayISO(), repeatDays: '', scope: scope || 'general', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.title) return;
+    onSave({
+      id: newId(), title: f.title, dueDate: f.dueDate || null,
+      repeatDays: f.repeatDays === '' ? null : Number(f.repeatDays),
+      scope: f.scope, notes: f.notes || null, done: false,
+    });
+  }
+  return (
+    <Modal title="Add reminder" sub="A one-off or repeating task — it shows up here when due." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Task" span2><input value={f.title} onChange={set('title')} placeholder="e.g. Fertigate Field A, deworm layers" /></Field>
+        <Field label="Due date"><input type="date" value={f.dueDate} onChange={set('dueDate')} /></Field>
+        <Field label="Repeat every (days)"><input type="number" value={f.repeatDays} onChange={set('repeatDays')} placeholder="optional" /></Field>
+        <Field label="Applies to">
+          <select value={f.scope} onChange={set('scope')}>
+            <option value="poultry">Poultry</option>
+            <option value="pepper">Bell pepper</option>
+            <option value="general">General / whole farm</option>
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save reminder</button>
       </div>
     </Modal>
   );
