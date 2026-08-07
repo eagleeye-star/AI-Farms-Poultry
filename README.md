@@ -116,6 +116,21 @@ You sign in with an email and password. The Supabase URL and key are built
 into the app, so there is nothing to type on each device — install, sign in,
 and your farm data is there.
 
+### If the app says "Saved on this device only"
+
+That means the build had no Supabase details. Either:
+
+- **Best:** set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel and
+  **redeploy** — env vars are read at build time, so adding them without a
+  redeploy changes nothing. Then close and reopen the installed app.
+- **Or, right now:** tap **Set up cloud sync** on the sync bar and paste the
+  Project URL and anon key. It checks the connection before saving, and stores
+  them on that device.
+
+Installed app still showing the old version after a redeploy? Close it fully and
+reopen — the service worker fetches a fresh copy on launch. On Android you can
+also clear the app's cache from the browser's site settings.
+
 ### One-time setup
 
 1. Create a free project at supabase.com.
@@ -130,6 +145,13 @@ and your farm data is there.
 6. Open the app, choose **Create an account**, and sign in.
 7. Once your account exists, go to **Authentication → Sign In / Up** and turn
    **Allow new users to sign up** OFF, so nobody else can register.
+
+### Vaccinations
+
+Loading a programme creates **scheduled** shots — the app never assumes one was
+given. Each appears under **To confirm** in the Health tab with **Done** and
+**Not given** buttons, and stays there until you say which. Confirming Done
+stamps it with today's date. You can undo a confirmation at any time.
 
 ### Security
 

@@ -16,13 +16,56 @@
  * last overwrites the other. Sync when you arrive and when you finish.
  */
 
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-
 const SESSION_KEY = 'aifarms_session_v1';
+const CONFIG_KEY = 'aifarms_cloud_config_v1';
+
+/**
+ * Connection details come from build-time env vars when they're set (so you
+ * never type them), and otherwise from whatever was entered in the app. The
+ * in-app path matters: if a build ships without env vars, you can still
+ * connect from the phone without waiting on a redeploy.
+ */
+export function getCloudConfig() {
+  const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  if (envUrl && envKey) return { url: envUrl, key: envKey, source: 'env' };
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null');
+    if (saved && saved.url && saved.key) {
+      return { url: saved.url.replace(/\/$/, ''), key: saved.key, source: 'device' };
+    }
+  } catch (e) { /* corrupt config */ }
+  return { url: '', key: '', source: 'none' };
+}
+
+export function saveCloudConfig({ url, key }) {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify({ url: (url || '').trim(), key: (key || '').trim() }));
+}
+
+export function clearCloudConfig() {
+  localStorage.removeItem(CONFIG_KEY);
+}
 
 export function isCloudConfigured() {
-  return Boolean(SUPABASE_URL && SUPABASE_KEY);
+  const c = getCloudConfig();
+  return Boolean(c.url && c.key);
+}
+
+/** Verify a URL/key pair actually points at a Supabase project. */
+export async function testCloudConfig(url, key) {
+  const clean = (url || '').trim().replace(/\/$/, '');
+  if (!/^https:\/\/.+/.test(clean)) throw new Error('URL must start with https://');
+  if (!key || key.trim().length < 20) throw new Error('That anon key looks too short.');
+  let res;
+  try {
+    res = await fetch(`${clean}/auth/v1/settings`, { headers: { apikey: key.trim() } });
+  } catch (e) {
+    throw new Error('Could not reach that URL — check it and your connection.');
+  }
+  if (res.status === 401 || res.status === 403) throw new Error('Project reachable, but that anon key was rejected.');
+  if (!res.ok) throw new Error(`Project responded with ${res.status}. Check the URL.`);
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -52,9 +95,11 @@ export function getUser() {
 /* ------------------------------------------------------------------ */
 
 async function authRequest(path, body) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
+  const { url, key } = getCloudConfig();
+  if (!url || !key) throw new Error('Cloud is not set up on this device yet.');
+  const res = await fetch(`${url}/auth/v1/${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+    headers: { 'Content-Type': 'application/json', apikey: key },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -147,7 +192,7 @@ function friendlyAuthError(data, status) {
 function restHeaders(session) {
   return {
     'Content-Type': 'application/json',
-    apikey: SUPABASE_KEY,
+    apikey: getCloudConfig().key,
     Authorization: `Bearer ${session.access_token}`,
   };
 }
@@ -156,7 +201,7 @@ function restHeaders(session) {
 export async function pullRemote() {
   const session = await validSession();
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/farm_state?user_id=eq.${session.user.id}&select=state,updated_at`,
+    `${getCloudConfig().url}/rest/v1/farm_state?user_id=eq.${session.user.id}&select=state,updated_at`,
     { headers: restHeaders(session) }
   );
   if (!res.ok) throw new Error(await describeError(res));
@@ -176,7 +221,7 @@ export async function pushRemote(data) {
     updated_at: updatedAt,
   }];
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/farm_state?on_conflict=user_id`, {
+  const res = await fetch(`${getCloudConfig().url}/rest/v1/farm_state?on_conflict=user_id`, {
     method: 'POST',
     headers: { ...restHeaders(session), Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify(body),

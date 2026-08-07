@@ -6,7 +6,8 @@ import {
 import { SEED } from './data/seed';
 import ROSS308 from './data/ross308_standard.json';
 import {
-  pullRemote, pushRemote, isCloudConfigured,
+  pullRemote, pushRemote, isCloudConfigured, getCloudConfig,
+  saveCloudConfig, clearCloudConfig, testCloudConfig,
   getUser, signIn, signUp, signOut, resetPassword,
 } from './sync';
 import './App.css';
@@ -253,6 +254,8 @@ export default function App() {
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
   const [user, setUser] = useState(getUser);
+  const [cloudReady, setCloudReady] = useState(isCloudConfigured);
+  const [showCloudSetup, setShowCloudSetup] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -380,17 +383,32 @@ export default function App() {
   }, [weightSamples, weekNumber, activeFlock.startDate, flockStandard, POL_WEEK]);
 
   // vaccine status: latest occurrence of each vaccine family + its next-due date
+  /* Every scheduled shot, with how many days until it's due. `status` is
+     what the farmer confirms: 'planned' until they say otherwise, then
+     'done' or 'skipped'. Entries logged manually count as done. */
+  const vaxSchedule = useMemo(() => vax.map((v) => {
+    const status = v.status || (v.planned ? 'planned' : 'done');
+    const dueDate = v.dueDate || v.date;
+    return { ...v, status, dueDate, daysLeft: dueDate ? daysBetween(todayISO(), dueDate) : null };
+  }), [vax]);
+
+  const vaxPending = useMemo(
+    () => vaxSchedule.filter((v) => v.status === 'planned'),
+    [vaxSchedule]
+  );
+
+  // Kept for the weekly report and the "next booster due" view.
   const vaxStatus = useMemo(() => {
     const map = {};
-    vax.forEach((v) => {
+    vaxSchedule.filter((v) => v.status === 'done').forEach((v) => {
       const key = v.disease || v.vaccine;
       if (!map[key] || new Date(v.date) > new Date(map[key].date)) map[key] = v;
     });
-    return Object.values(map).map((v) => {
-      const daysLeft = v.nextDue ? daysBetween(todayISO(), v.nextDue) : null;
-      return { ...v, daysLeft };
-    });
-  }, [vax]);
+    return Object.values(map).map((v) => ({
+      ...v,
+      daysLeft: v.nextDue ? daysBetween(todayISO(), v.nextDue) : null,
+    }));
+  }, [vaxSchedule]);
 
   const chartData = dailyLog.map((r) => ({
     date: fmtDate(r.date).slice(0, 6),
@@ -416,7 +434,19 @@ export default function App() {
     setData((d) => ({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
   }
   function addVax(entry) {
-    setData((d) => ({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => ({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id, status: 'done' }] }));
+  }
+  /** Farmer confirms a scheduled shot: 'done', 'skipped', or back to 'planned'. */
+  function setVaxStatus(id, status) {
+    setData((d) => ({
+      ...d,
+      vax: d.vax.map((v) => (v.id === id
+        ? { ...v, status, date: status === 'done' ? todayISO() : v.date }
+        : v)),
+    }));
+  }
+  function deleteVax(id) {
+    setData((d) => ({ ...d, vax: d.vax.filter((v) => v.id !== id) }));
   }
   function addWeightSample(entry) {
     setData((d) => ({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
@@ -456,9 +486,10 @@ export default function App() {
     const rows = tpl.map((t) => {
       const date = addDaysISO(activeFlock.startDate, t.day);
       return {
-        id: newId(), flockId: activeFlock.id, date, disease: t.disease, vaccine: t.vaccine,
-        route: t.route, nextDue: null, notes: `Day ${t.day} — from ${activeFlock.type} programme`,
-        planned: true,
+        id: newId(), flockId: activeFlock.id, date, dueDate: date,
+        disease: t.disease, vaccine: t.vaccine, method: t.route, nextDue: null,
+        notes: `Day ${t.day} — from ${activeFlock.type} programme`,
+        status: 'planned',
       };
     }).filter((r) => !existing.has(`${r.disease}|${r.date}`));
     if (!rows.length) {
@@ -615,9 +646,18 @@ export default function App() {
     setData((d) => ({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
   }
 
+  if (showCloudSetup) {
+    return (
+      <CloudSetupScreen
+        onDone={() => { setCloudReady(isCloudConfigured()); setShowCloudSetup(false); }}
+        onCancel={() => setShowCloudSetup(false)}
+      />
+    );
+  }
+
   // Cloud is configured but nobody is signed in — show the login screen.
-  if (isCloudConfigured() && !user) {
-    return <AuthScreen onSignedIn={handleSignedIn} />;
+  if (cloudReady && !user) {
+    return <AuthScreen onSignedIn={handleSignedIn} onSetupCloud={() => setShowCloudSetup(true)} />;
   }
 
   return (
@@ -641,6 +681,8 @@ export default function App() {
       <SyncBar
         sync={sync}
         user={user}
+        cloudReady={cloudReady}
+        onSetupCloud={() => setShowCloudSetup(true)}
         onSync={() => syncNow('auto')}
         onPull={() => syncNow('pull')}
         onSignOut={handleSignOut}
@@ -739,6 +781,7 @@ export default function App() {
           feedChartData={feedChartData}
           growthChartData={growthChartData}
           vaxStatus={vaxStatus}
+          vaxPending={vaxPending}
           onExport={exportWeeklyReport}
         />
       )}
@@ -805,9 +848,16 @@ export default function App() {
           reminders={data.reminders || []}
           scope="poultry"
           autoItems={[
+            ...vaxPending.map((v) => ({
+              id: `vax-${v.id}`,
+              title: `${v.disease || v.vaccine} vaccination — confirm in Health`,
+              dueDate: v.dueDate,
+              daysLeft: v.daysLeft,
+              source: activeFlock.flockName,
+            })),
             ...vaxStatus.filter((v) => v.daysLeft !== null).map((v) => ({
-              id: `vax-${v.disease || v.vaccine}`,
-              title: `${v.disease || v.vaccine} vaccination`,
+              id: `vaxnext-${v.disease || v.vaccine}`,
+              title: `${v.disease || v.vaccine} booster due`,
               dueDate: v.nextDue,
               daysLeft: v.daysLeft,
               source: activeFlock.flockName,
@@ -840,9 +890,12 @@ export default function App() {
       {tab === 'health' && (
         <HealthTab
           meds={meds}
-          vax={[...vax].reverse()}
+          vax={[...vaxSchedule].reverse()}
           vaxStatus={vaxStatus}
+          vaxPending={vaxPending}
           flock={activeFlock}
+          onSetVaxStatus={setVaxStatus}
+          onDeleteVax={deleteVax}
           onLoadTemplate={applyVaxTemplate}
           onAddMed={() => setModal('med')}
           onAddVax={() => setModal('vax')}
@@ -935,7 +988,7 @@ function DashboardTab({
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
-  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, onExport,
+  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
@@ -1120,28 +1173,46 @@ function DashboardTab({
         </div>
       </div>
 
-      <p className="section-title">Vaccination status</p>
+      <p className="section-title">Vaccinations</p>
+      {vaxPending && vaxPending.length > 0 && (
+        <p className="stat-foot" style={{ marginTop: -6, marginBottom: 12 }}>
+          <strong style={{ color: 'var(--gold)' }}>{vaxPending.length} scheduled shot(s)</strong> waiting
+          for you to confirm whether they were given. Open the Health tab to mark them.
+        </p>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Disease</th><th>Last given</th><th>Method</th><th>Next due</th><th>Status</th></tr>
+            <tr><th>Disease</th><th>Status</th><th>Date</th><th>Method</th><th>Next due</th></tr>
           </thead>
           <tbody>
-            {vaxStatus.map((v, i) => (
-              <tr key={i}>
+            {(vaxPending || []).map((v) => (
+              <tr key={`p-${v.id}`}>
                 <td>{v.disease || v.vaccine}</td>
+                <td><span className="tag gold">To confirm</span></td>
+                <td className="mono">{fmtDate(v.dueDate)}</td>
+                <td>{v.method || '—'}</td>
+                <td className="mono">—</td>
+              </tr>
+            ))}
+            {vaxStatus.map((v, i) => (
+              <tr key={`d-${i}`}>
+                <td>{v.disease || v.vaccine}</td>
+                <td><span className="tag green">Done</span></td>
                 <td className="mono">{fmtDate(v.date)}</td>
                 <td>{v.method || '—'}</td>
-                <td className="mono">{fmtDate(v.nextDue)}</td>
-                <td>
-                  {v.daysLeft === null ? <span className="tag">—</span>
-                    : v.daysLeft < 0 ? <span className="tag rust">Overdue {Math.abs(v.daysLeft)}d</span>
-                    : v.daysLeft <= 5 ? <span className="tag gold">Due in {v.daysLeft}d</span>
-                    : <span className="tag green">OK · {v.daysLeft}d</span>}
+                <td className="mono">
+                  {v.nextDue
+                    ? (v.daysLeft < 0
+                      ? <span className="tag rust">{fmtDate(v.nextDue)}</span>
+                      : fmtDate(v.nextDue))
+                    : '—'}
                 </td>
               </tr>
             ))}
-            {vaxStatus.length === 0 && <tr><td colSpan={5} className="empty">No vaccination records yet.</td></tr>}
+            {vaxStatus.length === 0 && (!vaxPending || vaxPending.length === 0) && (
+              <tr><td colSpan={5} className="empty">No vaccination records yet — load a programme from the Health tab.</td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -1345,7 +1416,7 @@ function FeedForm({ lastBalance, onClose, onSave }) {
 
 /* ---------------- Health tab ---------------- */
 
-function HealthTab({ meds, vax, vaxStatus, flock, onLoadTemplate, onAddMed, onAddVax }) {
+function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1362,23 +1433,70 @@ function HealthTab({ meds, vax, vaxStatus, flock, onLoadTemplate, onAddMed, onAd
         Ghanaian schedules — confirm them with your vet or hatchery, since local disease pressure varies.
       </p>
 
-      <p className="section-title" style={{ marginTop: 0 }}>Vaccination schedule</p>
+      {vaxPending && vaxPending.length > 0 && (
+        <>
+          <p className="section-title" style={{ marginTop: 0 }}>
+            To confirm ({vaxPending.length})
+          </p>
+          <p className="stat-foot" style={{ marginTop: -6, marginBottom: 12 }}>
+            These are scheduled, not recorded. Tell the app what actually happened —
+            nothing is assumed either way.
+          </p>
+          <div className="confirm-list">
+            {[...vaxPending].sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate)).map((v) => (
+              <div className="confirm-row" key={v.id}>
+                <div className="confirm-main">
+                  <div className="confirm-title">{v.disease || v.vaccine}</div>
+                  <div className="confirm-sub">
+                    {v.vaccine}{v.method ? ` · ${v.method}` : ''} · scheduled {fmtDate(v.dueDate)}
+                    {v.daysLeft != null && (
+                      v.daysLeft > 0 ? ` · in ${v.daysLeft}d`
+                        : v.daysLeft === 0 ? ' · today'
+                        : ` · ${Math.abs(v.daysLeft)}d ago`
+                    )}
+                  </div>
+                </div>
+                <div className="confirm-actions">
+                  <button className="btn btn-green" onClick={() => onSetVaxStatus(v.id, 'done')}>Done</button>
+                  <button className="btn" onClick={() => onSetVaxStatus(v.id, 'skipped')}>Not given</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="section-title">Vaccination schedule</p>
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Date</th><th>Vaccine</th><th>Disease</th><th>Bird age</th><th>Method</th><th>Next due</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Status</th><th>Date</th><th>Vaccine</th><th>Disease</th><th>Method</th><th>Next due</th><th>Notes</th><th></th></tr></thead>
           <tbody>
-            {vax.map((v, i) => (
-              <tr key={i}>
-                <td className="mono">{fmtDate(v.date)}</td>
+            {vax.map((v) => (
+              <tr key={v.id || `${v.disease}-${v.date}`}>
+                <td>
+                  {v.status === 'done' ? <span className="tag green">Done</span>
+                    : v.status === 'skipped' ? <span className="tag rust">Not given</span>
+                    : <span className="tag gold">Scheduled</span>}
+                </td>
+                <td className="mono">{fmtDate(v.status === 'planned' ? v.dueDate : v.date)}</td>
                 <td>{v.vaccine}</td>
                 <td>{v.disease}</td>
-                <td className="mono">{v.birdAge ?? '—'}</td>
                 <td>{v.method || '—'}</td>
-                <td className="mono">{fmtDate(v.nextDue)}</td>
+                <td className="mono">{v.nextDue ? fmtDate(v.nextDue) : '—'}</td>
                 <td className="notes">{v.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    {v.status !== 'planned' && (
+                      <button className="link-btn" onClick={() => onSetVaxStatus(v.id, 'planned')}>Undo</button>
+                    )}
+                    {onDeleteVax && v.id && (
+                      <button className="link-btn rust" onClick={() => onDeleteVax(v.id)}>Delete</button>
+                    )}
+                  </span>
+                </td>
               </tr>
             ))}
-            {vax.length === 0 && <tr><td colSpan={7} className="empty">No vaccinations logged yet.</td></tr>}
+            {vax.length === 0 && <tr><td colSpan={8} className="empty">No vaccinations logged yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -2571,8 +2689,8 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, user, onSync, onPull, onSignOut }) {
-  const configured = isCloudConfigured();
+function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut }) {
+  const configured = cloudReady;
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
     ? 'Saved on this device only'
@@ -2589,10 +2707,14 @@ function SyncBar({ sync, user, onSync, onPull, onSignOut }) {
         {user && <span className="sync-user"> · {user.email}</span>}
       </span>
       <span className="sync-actions">
+        {!configured && (
+          <button className="link-btn" onClick={onSetupCloud}>Set up cloud sync</button>
+        )}
         {configured && user && (
           <>
             <button className="link-btn" onClick={onSync} disabled={sync.status === 'syncing'}>Sync now</button>
             <button className="link-btn" onClick={onPull} disabled={sync.status === 'syncing'}>Pull from cloud</button>
+            <button className="link-btn" onClick={onSetupCloud}>Settings</button>
             <button className="link-btn" onClick={onSignOut}>Sign out</button>
           </>
         )}
@@ -2603,7 +2725,7 @@ function SyncBar({ sync, user, onSync, onPull, onSignOut }) {
 
 /* ---------------- Login screen ---------------- */
 
-function AuthScreen({ onSignedIn }) {
+function AuthScreen({ onSignedIn, onSetupCloud }) {
   const [mode, setMode] = useState('signin');   // 'signin' | 'signup' | 'reset'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -2699,6 +2821,9 @@ function AuthScreen({ onSignedIn }) {
         <p className="auth-foot">
           Signing in keeps your farm data in step across your phone and PC.
           Your records are private to your account.
+          {onSetupCloud && (
+            <> <button className="link-btn" onClick={onSetupCloud}>Change cloud connection</button></>
+          )}
         </p>
       </div>
     </div>
@@ -3703,6 +3828,99 @@ function InstallPrompt() {
           : <button className="btn btn-gold" onClick={() => setShowIosHelp(true)}>How?</button>}
         <button className="link-btn" onClick={hide}>Not now</button>
       </span>
+    </div>
+  );
+}
+
+/* ---------------- Cloud connection setup ---------------- */
+
+/**
+ * Shown when the app was built without Supabase env vars, or when you want
+ * to point a device at a different project. Entering details here saves them
+ * on the device, so a deploy that forgot its env vars is still usable.
+ */
+function CloudSetupScreen({ onDone, onCancel }) {
+  const current = getCloudConfig();
+  const [url, setUrl] = useState(current.source === 'device' ? current.url : '');
+  const [key, setKey] = useState(current.source === 'device' ? current.key : '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const fromEnv = current.source === 'env';
+
+  async function save() {
+    setError(''); setBusy(true);
+    try {
+      await testCloudConfig(url, key);
+      saveCloudConfig({ url, key });
+      onDone();
+    } catch (err) {
+      setError(err.message || 'Could not connect.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function disconnect() {
+    clearCloudConfig();
+    onDone();
+  }
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <p className="brand-eyebrow">AI Farms</p>
+        <h1 className="brand-title" style={{ fontSize: 24, marginBottom: 4 }}>Connect cloud sync</h1>
+        <p className="brand-sub" style={{ marginBottom: 20 }}>
+          So your phone and PC share the same farm records.
+        </p>
+
+        {fromEnv ? (
+          <>
+            <p className="auth-notice">
+              This app was built with cloud details already included — there is nothing to enter.
+            </p>
+            <button className="btn btn-gold auth-submit" onClick={onCancel}>Back</button>
+          </>
+        ) : (
+          <>
+            <p className="stat-foot" style={{ marginTop: 0, marginBottom: 16 }}>
+              Paste these from your Supabase project under
+              <strong> Project Settings → API</strong>. Use the <strong>anon public</strong> key —
+              never the service_role key.
+            </p>
+
+            <div className="field">
+              <label>Project URL</label>
+              <input value={url} onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://xxxx.supabase.co" autoComplete="off" />
+            </div>
+            <div className="field">
+              <label>Anon public key</label>
+              <input value={key} onChange={(e) => setKey(e.target.value)}
+                placeholder="eyJhbGciOi…" autoComplete="off" />
+            </div>
+
+            {error && <p className="auth-error">{error}</p>}
+
+            <button className="btn btn-gold auth-submit" onClick={save} disabled={busy}>
+              {busy ? 'Checking…' : 'Connect'}
+            </button>
+
+            <div className="auth-links">
+              <button className="link-btn" onClick={onCancel}>← Back</button>
+              {current.source === 'device' && (
+                <button className="link-btn rust" onClick={disconnect}>Disconnect this device</button>
+              )}
+            </div>
+
+            <p className="auth-foot">
+              Saved on this device only. Setting <code>VITE_SUPABASE_URL</code> and
+              <code> VITE_SUPABASE_ANON_KEY</code> in Vercel means you never have to type them again.
+            </p>
+          </>
+        )}
+      </div>
     </div>
   );
 }

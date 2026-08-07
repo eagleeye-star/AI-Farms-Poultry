@@ -755,3 +755,25 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   color: var(--gold);
   box-shadow: inset 0 0 0 1px var(--border);
 }
+
+/* ---------- Vaccination confirm rows ---------- */
+.confirm-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+
+.confirm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--gold);
+  border-radius: 9px;
+  padding: 12px 14px;
+}
+
+.confirm-main { flex: 1; min-width: 180px; }
+.confirm-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.confirm-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+.confirm-actions { display: inline-flex; gap: 8px; }
+.confirm-actions .btn { padding: 7px 14px; font-size: 12.5px; }
