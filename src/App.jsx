@@ -424,21 +424,28 @@ export default function App() {
     .filter((f) => f.balance !== null && f.balance !== undefined)
     .map((f) => ({ date: fmtDate(f.date).slice(0, 6), balance: f.balance, used: f.used, purchased: f.purchased }));
 
+  /** Stamp any local edit with "now", so sync always knows this device has
+      the freshest copy — without this, a local edit could be silently
+      overwritten by an older remote copy on the next sync. */
+  function touch(obj) {
+    return { ...obj, updatedAt: new Date().toISOString() };
+  }
+
   function addDailyLog(entry) {
-    setData((d) => ({ ...d, dailyLog: [...d.dailyLog, { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, dailyLog: [...d.dailyLog, { ...entry, flockId: activeFlock.id }] }));
   }
   function addFeed(entry) {
-    setData((d) => ({ ...d, feed: [...d.feed, { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, feed: [...d.feed, { ...entry, flockId: activeFlock.id }] }));
   }
   function addMed(entry) {
-    setData((d) => ({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
   }
   function addVax(entry) {
-    setData((d) => ({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id, status: 'done' }] }));
+    setData((d) => touch({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id, status: 'done' }] }));
   }
   /** Farmer confirms a scheduled shot: 'done', 'skipped', or back to 'planned'. */
   function setVaxStatus(id, status) {
-    setData((d) => ({
+    setData((d) => touch({
       ...d,
       vax: d.vax.map((v) => (v.id === id
         ? { ...v, status, date: status === 'done' ? todayISO() : v.date }
@@ -446,37 +453,37 @@ export default function App() {
     }));
   }
   function deleteVax(id) {
-    setData((d) => ({ ...d, vax: d.vax.filter((v) => v.id !== id) }));
+    setData((d) => touch({ ...d, vax: d.vax.filter((v) => v.id !== id) }));
   }
   function addWeightSample(entry) {
-    setData((d) => ({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
   }
   function addSale(entry) {
-    setData((d) => ({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
   }
   function addLitter(entry) {
-    setData((d) => ({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
   }
   function addExpense(entry) {
-    setData((d) => ({ ...d, expenses: [...(d.expenses || []), entry] }));
+    setData((d) => touch({ ...d, expenses: [...(d.expenses || []), entry] }));
   }
   function deleteExpense(id) {
-    setData((d) => ({ ...d, expenses: (d.expenses || []).filter((r) => r.id !== id) }));
+    setData((d) => touch({ ...d, expenses: (d.expenses || []).filter((r) => r.id !== id) }));
   }
   function saveRecipe(entry) {
-    setData((d) => ({ ...d, recipes: [...(d.recipes || []), entry] }));
+    setData((d) => touch({ ...d, recipes: [...(d.recipes || []), entry] }));
   }
   function deleteRecipe(id) {
-    setData((d) => ({ ...d, recipes: (d.recipes || []).filter((r) => r.id !== id) }));
+    setData((d) => touch({ ...d, recipes: (d.recipes || []).filter((r) => r.id !== id) }));
   }
   function addInput(entry) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: [...(d.pepper.inputs || []), entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, inputs: [...(d.pepper.inputs || []), entry] } }));
   }
   function updateInput(id, patch) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).map((i) => (i.id === id ? { ...i, ...patch } : i)) } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).map((i) => (i.id === id ? { ...i, ...patch } : i)) } }));
   }
   function deleteInput(id) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).filter((i) => i.id !== id) } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).filter((i) => i.id !== id) } }));
   }
 
   /** Load a breed vaccination programme, skipping any shot already recorded. */
@@ -496,25 +503,25 @@ export default function App() {
       alert('This programme is already loaded for this flock.');
       return;
     }
-    setData((d) => ({ ...d, vax: [...d.vax, ...rows] }));
+    setData((d) => touch({ ...d, vax: [...d.vax, ...rows] }));
     alert(`Loaded ${rows.length} vaccination dates for ${activeFlock.flockName}. Check them against your vet's advice.`);
   }
 
   function saveFlock(flock) {
     setData((d) => {
       const exists = d.flocks.some((f) => f.id === flock.id);
-      return { ...d, flocks: exists ? d.flocks.map((f) => (f.id === flock.id ? flock : f)) : [...d.flocks, flock] };
+      return touch({ ...d, flocks: exists ? d.flocks.map((f) => (f.id === flock.id ? flock : f)) : [...d.flocks, flock] });
     });
     setActiveFlockId(flock.id);
   }
   function addReminder(entry) {
-    setData((d) => ({ ...d, reminders: [...(d.reminders || []), entry] }));
+    setData((d) => touch({ ...d, reminders: [...(d.reminders || []), entry] }));
   }
   function toggleReminder(id) {
-    setData((d) => ({ ...d, reminders: (d.reminders || []).map((r) => (r.id === id ? { ...r, done: !r.done } : r)) }));
+    setData((d) => touch({ ...d, reminders: (d.reminders || []).map((r) => (r.id === id ? { ...r, done: !r.done } : r)) }));
   }
   function deleteReminder(id) {
-    setData((d) => ({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
+    setData((d) => touch({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
   }
 
   /* ---- cloud sync ---- */
@@ -634,16 +641,16 @@ export default function App() {
   }
 
   function updateField(id, patch) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
   }
   function addScouting(entry) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
   }
   function addSpray(entry) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry] } }));
   }
   function addHarvest(entry) {
-    setData((d) => ({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
   }
 
   if (showCloudSetup) {
