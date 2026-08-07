@@ -5,7 +5,10 @@ import {
 } from 'recharts';
 import { SEED } from './data/seed';
 import ROSS308 from './data/ross308_standard.json';
-import { pullRemote, pushRemote, getSyncSettings, saveSyncSettings, isSyncConfigured } from './sync';
+import {
+  pullRemote, pushRemote, isCloudConfigured,
+  getUser, signIn, signUp, signOut, resetPassword,
+} from './sync';
 import './App.css';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
@@ -249,6 +252,7 @@ export default function App() {
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
+  const [user, setUser] = useState(getUser);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -322,7 +326,15 @@ export default function App() {
   // Sales & simple profit for this flock.
   const totalRevenue = sales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const litterCost = litter.reduce((s, r) => s + (Number(r.cost) || 0), 0);
-  const flockCost = totalFeedCost + litterCost + (Number(activeFlock.setupCost) || 0);
+  // Coops and other structures charged over their working life, plus running
+  // expenses booked against this flock in the Whole Farm view.
+  const flockExpenses = (data.expenses || []).filter(
+    (e) => e.scope === 'poultry' && (e.target === activeFlock.id || e.target === 'shared')
+  );
+  const coopCharge = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + chargedToDate(e), 0);
+  const coopInvested = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const flockRunning = flockExpenses.filter((e) => !e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const flockCost = totalFeedCost + litterCost + coopCharge + flockRunning + (Number(activeFlock.setupCost) || 0);
   const flockMargin = totalRevenue - flockCost;
 
   // Feed run-out projection: average daily use over the last 7 logged days.
@@ -477,7 +489,7 @@ export default function App() {
   /* ---- cloud sync ---- */
 
   async function syncNow(mode = 'auto') {
-    if (!isSyncConfigured()) { setModal('sync'); return; }
+    if (!user) return;
     setSync({ status: 'syncing', message: 'Syncing…', lastSync: sync.lastSync });
     try {
       const remote = await pullRemote();
@@ -496,8 +508,38 @@ export default function App() {
       setData((d) => ({ ...d, updatedAt: at }));
       setSync({ status: 'ok', message: 'Saved to cloud', lastSync: at });
     } catch (err) {
-      setSync({ status: 'error', message: err.message || 'Sync failed', lastSync: sync.lastSync });
+      const msg = err.message || 'Sync failed';
+      setSync({ status: 'error', message: msg, lastSync: sync.lastSync });
+      if (msg.includes('sign in')) setUser(null);
     }
+  }
+
+  // On sign-in, pull whatever is already in the cloud so a new device
+  // starts from the real data rather than the seeded defaults.
+  async function handleSignedIn(session) {
+    setUser(session.user);
+    setSync({ status: 'syncing', message: 'Loading your farm…', lastSync: null });
+    try {
+      const remote = await pullRemote();
+      if (remote) {
+        const merged = migrate(remote.state);
+        setData(merged);
+        setActiveFlockId(merged.flocks[0].id);
+        setSync({ status: 'ok', message: 'Loaded from cloud', lastSync: new Date().toISOString() });
+      } else {
+        const at = await pushRemote(data);
+        setData((d) => ({ ...d, updatedAt: at }));
+        setSync({ status: 'ok', message: 'Farm saved to cloud', lastSync: at });
+      }
+    } catch (err) {
+      setSync({ status: 'error', message: err.message || 'Could not load from cloud', lastSync: null });
+    }
+  }
+
+  function handleSignOut() {
+    signOut();
+    setUser(null);
+    setSync({ status: 'idle', message: '', lastSync: null });
   }
 
   function backupData() {
@@ -573,8 +615,14 @@ export default function App() {
     setData((d) => ({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
   }
 
+  // Cloud is configured but nobody is signed in — show the login screen.
+  if (isCloudConfigured() && !user) {
+    return <AuthScreen onSignedIn={handleSignedIn} />;
+  }
+
   return (
     <div className="app">
+      <InstallPrompt />
       <div className="workspace-switch">
         <button
           className={`ws-btn${workspace === 'poultry' ? ' active' : ''}`}
@@ -590,7 +638,13 @@ export default function App() {
         >Whole Farm</button>
       </div>
 
-      <SyncBar sync={sync} onSync={() => syncNow('auto')} onPull={() => syncNow('pull')} onSettings={() => setModal('sync')} />
+      <SyncBar
+        sync={sync}
+        user={user}
+        onSync={() => syncNow('auto')}
+        onPull={() => syncNow('pull')}
+        onSignOut={handleSignOut}
+      />
 
       {workspace === 'poultry' && (<>
       <header className="header">
@@ -738,6 +792,9 @@ export default function App() {
           flockMargin={flockMargin}
           totalFeedCost={totalFeedCost}
           litterCost={litterCost}
+          coopCharge={coopCharge}
+          coopInvested={coopInvested}
+          flockRunning={flockRunning}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
         />
@@ -843,6 +900,7 @@ export default function App() {
         <PepperWorkspace
           pepper={data.pepper}
           reminders={data.reminders || []}
+          expenses={data.expenses || []}
           onUpdateField={updateField}
           onAddScouting={addScouting}
           onAddSpray={addSpray}
@@ -864,12 +922,7 @@ export default function App() {
         />
       )}
 
-      {modal === 'sync' && (
-        <SyncSettingsForm
-          onClose={() => setModal(null)}
-          onSaved={() => { setModal(null); syncNow('auto'); }}
-        />
-      )}
+      {modal === 'sync' && null}
     </div>
   );
 }
@@ -1531,7 +1584,7 @@ function addDaysISO(iso, days) {
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
-function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder }) {
+function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder }) {
   const [ptab, setPtab] = useState('dashboard');
   const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest'
@@ -1560,7 +1613,15 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
   const revenue = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
   const inputCost = sprayScoped.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const setupCost = fieldsScoped.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
-  const totalCost = inputCost + setupCost;
+  // Structures (net houses, drip) charged over their life, plus running
+  // expenses booked against these fields in the Whole Farm view.
+  const scopedExpenses = (expenses || []).filter(
+    (e) => e.scope === 'pepper' && (scope === 'all' || e.target === scope || e.target === 'shared')
+  );
+  const structureCost = scopedExpenses.filter((e) => e.capital).reduce((s, e) => s + chargedToDate(e), 0);
+  const structureInvested = scopedExpenses.filter((e) => e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const otherRunning = scopedExpenses.filter((e) => !e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalCost = inputCost + setupCost + structureCost + otherRunning;
   const margin = revenue - totalCost;
   const avgPrice = totalKg ? revenue / totalKg : null;
 
@@ -1676,6 +1737,8 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
         <PepperDashboard
           scope={scope} fieldsScoped={fieldsScoped} totalPlants={totalPlants} totalKg={totalKg}
           revenue={revenue} totalCost={totalCost} inputCost={inputCost} setupCost={setupCost}
+          structureCost={structureCost} structureInvested={structureInvested} otherRunning={otherRunning}
+          expenses={expenses} scope={scope} fields={fields}
           margin={margin} avgPrice={avgPrice} latestScout={latestScout} pressureTone={pressureTone}
           scopePhi={scopePhi} soonestClear={soonestClear} scopeResistance={scopeResistance}
           harvestChart={harvestChart} pressureChart={pressureChart} harvestScoped={harvestScoped}
@@ -1765,10 +1828,19 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
 /* ---------------- Pepper dashboard ---------------- */
 
 function PepperDashboard({
-  scope, fieldsScoped, totalPlants, totalKg, revenue, totalCost, inputCost, setupCost,
+  fieldsScoped, totalPlants, totalKg, revenue, totalCost, inputCost, setupCost,
+  structureCost, structureInvested, otherRunning, expenses, scope, fields,
   margin, avgPrice, latestScout, pressureTone, scopePhi, soonestClear, scopeResistance,
   harvestChart, pressureChart, harvestScoped, datOf,
 }) {
+  // Structures assigned to one field, so Field A and Field B compare fairly.
+  const fieldCapex = (id) => {
+    const rows = (expenses || []).filter((e) => e.capital && e.scope === 'pepper' && e.target === id);
+    return {
+      invested: rows.reduce((s, e) => s + (Number(e.amount) || 0), 0),
+      charged: rows.reduce((s, e) => s + chargedToDate(e), 0),
+    };
+  };
   const alerts = [];
   scopePhi.forEach((w) => alerts.push({ tone: 'rust', text: `${w.field.name}: don't harvest for ${w.daysLeft} more day(s) — pre-harvest interval after ${w.product || 'last spray'} clears ${fmtDate(w.safe)}.` }));
   scopeResistance.forEach((w) => alerts.push({ tone: 'gold', text: `${w.field.name}: last two insecticides both used "${w.ai}". Rotate to a different active ingredient to slow resistance.` }));
@@ -1797,7 +1869,7 @@ function PepperDashboard({
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="from harvest sales" />
-        <StatCard title="Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot={`inputs ${num(inputCost, 0)} + setup ${num(setupCost, 0)}`} />
+        <StatCard title="Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot={`inputs ${num(inputCost, 0)} + structures ${num(structureCost, 0)}`} />
         <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot={margin >= 0 ? 'in profit' : 'below break-even'} />
         <StatCard title="Avg Price" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="per kg sold" />
       </div>
@@ -1857,10 +1929,17 @@ function PepperDashboard({
       </div>
 
       <p className="section-title">Field snapshot</p>
+      {structureInvested > 0 && (
+        <p className="stat-foot" style={{ marginTop: -6, marginBottom: 12 }}>
+          Structures on {scope === 'all' ? 'these fields' : 'this field'}: <strong>GH₵ {num(structureInvested, 2)}</strong> invested,
+          of which <strong>GH₵ {num(structureCost, 2)}</strong> is charged to the crop so far
+          (the rest sits as remaining value). Running expenses booked here: GH₵ {num(otherRunning, 2)}.
+        </p>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Field</th><th>Variety</th><th>DAT</th><th>Plants</th><th>Setup cost</th><th>Expected 1st harvest</th></tr>
+            <tr><th>Field</th><th>Variety</th><th>DAT</th><th>Plants</th><th>Structures</th><th>Charged so far</th><th>Expected 1st harvest</th></tr>
           </thead>
           <tbody>
             {fieldsScoped.map((f) => {
@@ -1872,7 +1951,8 @@ function PepperDashboard({
                   <td>{f.variety || '—'}</td>
                   <td className="mono">{dat != null ? dat : '—'}</td>
                   <td className="mono">{num(f.plantCount)}</td>
-                  <td className="mono">{f.setupCost != null ? `GH₵ ${num(f.setupCost, 2)}` : '—'}</td>
+                  <td className="mono">{fieldCapex(f.id).invested ? `GH₵ ${num(fieldCapex(f.id).invested, 2)}` : '—'}</td>
+                  <td className="mono">{fieldCapex(f.id).charged ? `GH₵ ${num(fieldCapex(f.id).charged, 2)}` : '—'}</td>
                   <td className="mono">{firstHarvest ? fmtDate(firstHarvest) : '—'}</td>
                 </tr>
               );
@@ -2276,7 +2356,7 @@ function FlockForm({ flock, onClose, onSave }) {
 
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, onAdd, onEditFlock }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock }) {
   const setup = Number(flock.setupCost) || 0;
   return (
     <>
@@ -2288,13 +2368,18 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
       <div className="grid grid-4">
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s)`} />
         <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
-        <StatCard title="Litter + Setup" value={`GH₵ ${num((litterCost || 0) + setup, 2)}`} foot={`litter ${num(litterCost || 0, 0)} + setup ${num(setup, 0)}`} />
+        <StatCard title="Housing + Setup" value={`GH₵ ${num((litterCost || 0) + setup + (coopCharge || 0), 2)}`} foot={`litter ${num(litterCost || 0, 0)} + coop ${num(coopCharge || 0, 0)} + setup ${num(setup, 0)}`} />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
       </div>
 
       <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
-        Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)} + setup GH₵ {num(setup, 2)}).
-        {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> to include chick purchase, brooding, and other one-off costs.
+        Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)}
+        + coop share GH₵ {num(coopCharge || 0, 2)} + other GH₵ {num(flockRunning || 0, 2)} + setup GH₵ {num(setup, 2)}).
+        {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> for chicks and brooding.
+        {coopInvested > 0 && (
+          <> Coops and housing: GH₵ {num(coopInvested, 2)} invested, charged over their working life
+          so one build doesn&apos;t swallow a single batch.</>
+        )}
       </p>
 
       <div className="table-wrap">
@@ -2486,12 +2571,12 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, onSync, onPull, onSettings }) {
-  const configured = isSyncConfigured();
+function SyncBar({ sync, user, onSync, onPull, onSignOut }) {
+  const configured = isCloudConfigured();
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
-    ? 'Cloud sync not set up'
-    : sync.status === 'syncing' ? 'Syncing…'
+    ? 'Saved on this device only'
+    : sync.status === 'syncing' ? (sync.message || 'Syncing…')
     : sync.status === 'error' ? sync.message
     : when ? `${sync.message || 'Synced'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : 'Not synced yet this session';
@@ -2499,51 +2584,124 @@ function SyncBar({ sync, onSync, onPull, onSettings }) {
   return (
     <div className={`sync-bar${sync.status === 'error' ? ' error' : ''}`}>
       <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
-      <span className="sync-label">{label}</span>
+      <span className="sync-label">
+        {label}
+        {user && <span className="sync-user"> · {user.email}</span>}
+      </span>
       <span className="sync-actions">
-        {configured && <button className="link-btn" onClick={onSync} disabled={sync.status === 'syncing'}>Sync now</button>}
-        {configured && <button className="link-btn" onClick={onPull} disabled={sync.status === 'syncing'}>Pull from cloud</button>}
-        <button className="link-btn" onClick={onSettings}>{configured ? 'Settings' : 'Set up'}</button>
+        {configured && user && (
+          <>
+            <button className="link-btn" onClick={onSync} disabled={sync.status === 'syncing'}>Sync now</button>
+            <button className="link-btn" onClick={onPull} disabled={sync.status === 'syncing'}>Pull from cloud</button>
+            <button className="link-btn" onClick={onSignOut}>Sign out</button>
+          </>
+        )}
       </span>
     </div>
   );
 }
 
-function SyncSettingsForm({ onClose, onSaved }) {
-  const current = getSyncSettings();
-  const [f, setF] = useState({ url: current.url, key: current.key, farmId: current.farmId, autoSync: current.autoSync });
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  function submit() {
-    saveSyncSettings({ ...f, url: f.url.trim(), key: f.key.trim(), farmId: f.farmId.trim() || 'ai-farms-eikwe' });
-    onSaved();
+/* ---------------- Login screen ---------------- */
+
+function AuthScreen({ onSignedIn }) {
+  const [mode, setMode] = useState('signin');   // 'signin' | 'signup' | 'reset'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  async function submit(e) {
+    if (e) e.preventDefault();
+    setError(''); setNotice(''); setBusy(true);
+    try {
+      if (mode === 'reset') {
+        await resetPassword(email.trim());
+        setNotice('If that email has an account, a reset link is on its way.');
+        setMode('signin');
+      } else if (mode === 'signup') {
+        const session = await signUp(email.trim(), password);
+        if (session) onSignedIn(session);
+        else {
+          setNotice('Account created. Check your email to confirm, then sign in.');
+          setMode('signin');
+        }
+      } else {
+        const session = await signIn(email.trim(), password);
+        onSignedIn(session);
+      }
+    } catch (err) {
+      setError(err.message || 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
   }
+
+  const title = mode === 'signup' ? 'Create your account'
+    : mode === 'reset' ? 'Reset your password'
+    : 'Sign in';
+
   return (
-    <Modal
-      title="Cloud sync setup"
-      sub="Connect your Supabase project so the same data follows you between phone and PC."
-      onClose={onClose}
-    >
-      <div className="form-grid">
-        <Field label="Supabase project URL" span2>
-          <input value={f.url} onChange={set('url')} placeholder="https://xxxx.supabase.co" />
-        </Field>
-        <Field label="Anon public key" span2>
-          <input value={f.key} onChange={set('key')} placeholder="eyJhbGciOi..." />
-        </Field>
-        <Field label="Farm ID" span2>
-          <input value={f.farmId} onChange={set('farmId')} placeholder="ai-farms-eikwe" />
-        </Field>
+    <div className="auth-screen">
+      <div className="auth-card">
+        <p className="brand-eyebrow">AI Farms</p>
+        <h1 className="brand-title" style={{ fontSize: 26, marginBottom: 4 }}>Farm Tracker</h1>
+        <p className="brand-sub" style={{ marginBottom: 22 }}>
+          Poultry &amp; bell pepper · Eikwe, Western Region
+        </p>
+
+        <h2 className="auth-title">{title}</h2>
+
+        <form onSubmit={submit}>
+          <div className="field">
+            <label>Email</label>
+            <input
+              type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username" placeholder="you@example.com" required
+            />
+          </div>
+
+          {mode !== 'reset' && (
+            <div className="field">
+              <label>Password</label>
+              <input
+                type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                placeholder={mode === 'signup' ? 'at least 6 characters' : ''}
+                required minLength={6}
+              />
+            </div>
+          )}
+
+          {error && <p className="auth-error">{error}</p>}
+          {notice && <p className="auth-notice">{notice}</p>}
+
+          <button className="btn btn-gold auth-submit" type="submit" disabled={busy}>
+            {busy ? 'Please wait…'
+              : mode === 'signup' ? 'Create account'
+              : mode === 'reset' ? 'Send reset link'
+              : 'Sign in'}
+          </button>
+        </form>
+
+        <div className="auth-links">
+          {mode === 'signin' && (
+            <>
+              <button className="link-btn" onClick={() => { setMode('signup'); setError(''); }}>Create an account</button>
+              <button className="link-btn" onClick={() => { setMode('reset'); setError(''); }}>Forgot password?</button>
+            </>
+          )}
+          {mode !== 'signin' && (
+            <button className="link-btn" onClick={() => { setMode('signin'); setError(''); }}>← Back to sign in</button>
+          )}
+        </div>
+
+        <p className="auth-foot">
+          Signing in keeps your farm data in step across your phone and PC.
+          Your records are private to your account.
+        </p>
       </div>
-      <p className="stat-foot" style={{ marginTop: 4 }}>
-        Use the <strong>anon public</strong> key, never the service role key. Run the SQL in
-        <code> supabase-setup.sql</code> first to create the table. Use the same Farm ID on every
-        device so they share one record.
-      </p>
-      <div className="modal-actions">
-        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save &amp; sync</button>
-      </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -2952,35 +3110,102 @@ function FeedMixTab({ recipes, flock, onSave, onDelete }) {
 
 const EXPENSE_CATEGORIES = ['Labour', 'Transport', 'Utilities', 'Repairs & maintenance', 'Equipment', 'Rent', 'Other'];
 
+/* Capital items — structures and kit that last several seasons. Tracked
+   separately from running costs so a GH₵25,000 net house doesn't make the
+   season it was built in look like a disaster. */
+const CAPEX_CATEGORIES = [
+  'Insect net house', 'Poultry coop / house', 'Irrigation / drip system',
+  'Borehole / water', 'Fencing', 'Store / shed', 'Equipment', 'Other structure',
+];
+
+/* Typical working lives, used as sensible defaults. Editable per item. */
+const CAPEX_DEFAULT_LIFE = {
+  'Insect net house': 4,
+  'Poultry coop / house': 10,
+  'Irrigation / drip system': 5,
+  'Borehole / water': 15,
+  'Fencing': 8,
+  'Store / shed': 15,
+  'Equipment': 5,
+  'Other structure': 5,
+};
+
+/**
+ * Capital cost written off so far, spread evenly over the item's useful life.
+ * This is what should hit a season's margin — not the whole purchase price.
+ */
+function chargedToDate(item, asOf = todayISO()) {
+  const amount = Number(item.amount) || 0;
+  const life = Number(item.usefulLifeYears) || 1;
+  const days = Math.max(0, daysBetween(item.date, asOf));
+  return Math.min(amount, amount * (days / 365) / life);
+}
+
+function bookValue(item, asOf = todayISO()) {
+  return Math.max(0, (Number(item.amount) || 0) - chargedToDate(item, asOf));
+}
+
+function annualCharge(item) {
+  const life = Number(item.usefulLifeYears) || 1;
+  return (Number(item.amount) || 0) / life;
+}
+
+
 function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
   const [modal, setModal] = useState(null);
+  const [view, setView] = useState('pl');   // 'pl' | 'assets'
 
-  // ---- Poultry side ----
+  const allExpenses = data.expenses || [];
+  const capital = allExpenses.filter((e) => e.capital);
+  const running = allExpenses.filter((e) => !e.capital);
+
+  const fields = (data.pepper && data.pepper.fields) || [];
+  const flocks = data.flocks || [];
+  const labelFor = (e) => {
+    if (e.target === 'shared' || !e.target) {
+      return e.scope === 'pepper' ? 'Both fields' : e.scope === 'poultry' ? 'All flocks' : 'Whole farm';
+    }
+    const f = fields.find((x) => x.id === e.target);
+    if (f) return f.name;
+    const fl = flocks.find((x) => x.id === e.target);
+    return fl ? fl.flockName : 'Whole farm';
+  };
+
+  // Capital is charged over its life, so only the written-off share hits margin.
+  const capexCharge = (scope) => capital
+    .filter((e) => e.scope === scope)
+    .reduce((s, e) => s + chargedToDate(e), 0);
+  const runningCost = (scope) => running
+    .filter((e) => e.scope === scope)
+    .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  // ---- Poultry ----
   const poultryRevenue = (data.sales || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const feedCost = (data.feed || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const litterCost = (data.litter || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
-  const flockSetup = (data.flocks || []).reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
+  const flockSetup = flocks.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
   const medCost = (data.meds || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
-  const poultryCost = feedCost + litterCost + flockSetup + medCost;
+  const poultryCost = feedCost + litterCost + flockSetup + medCost + runningCost('poultry') + capexCharge('poultry');
   const poultryMargin = poultryRevenue - poultryCost;
 
-  // ---- Pepper side ----
+  // ---- Pepper ----
   const p = data.pepper || {};
   const pepperRevenue = (p.harvests || []).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
   const sprayCost = (p.sprays || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
-  const fieldSetup = (p.fields || []).reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
-  const pepperCost = sprayCost + fieldSetup;
+  const fieldSetup = fields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
+  const pepperCost = sprayCost + fieldSetup + runningCost('pepper') + capexCharge('pepper');
   const pepperMargin = pepperRevenue - pepperCost;
 
   // ---- General ----
-  const expenses = [...(data.expenses || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
-  const generalCost = expenses.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const generalCost = runningCost('general') + capexCharge('general');
 
   const totalRevenue = poultryRevenue + pepperRevenue;
   const totalCost = poultryCost + pepperCost + generalCost;
   const netProfit = totalRevenue - totalCost;
 
-  // Manure moved from poultry to fields — the internal value the farm captures.
+  const totalInvested = capital.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalBookValue = capital.reduce((s, e) => s + bookValue(e), 0);
+
   const manureBags = (data.litter || [])
     .filter((r) => r.action === 'Removed to field')
     .reduce((s, r) => s + (Number(r.quantity) || 0), 0);
@@ -2991,8 +3216,9 @@ function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
     { name: 'General', revenue: 0, cost: Math.round(generalCost) },
   ];
 
+  const sortedRunning = [...running].sort((a, b) => new Date(b.date) - new Date(a.date));
   const byCategory = {};
-  expenses.forEach((e) => { byCategory[e.category] = (byCategory[e.category] || 0) + (Number(e.amount) || 0); });
+  sortedRunning.forEach((e) => { byCategory[e.category] = (byCategory[e.category] || 0) + (Number(e.amount) || 0); });
 
   return (
     <>
@@ -3011,136 +3237,307 @@ function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
         </div>
       </header>
 
-      <div className="grid grid-4">
-        <StatCard title="Total Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="poultry + pepper sales" />
-        <StatCard title="Total Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot="inputs + setup + general" />
-        <StatCard title="Net Profit" value={`GH₵ ${num(netProfit, 2)}`} tone={netProfit >= 0 ? 'green' : 'rust'} foot={netProfit >= 0 ? 'farm is in profit' : 'farm below break-even'} />
-        <StatCard title="Manure Recycled" value={manureBags ? `${num(manureBags, 1)} bags` : '—'} tone="green" foot="poultry litter to fields" />
+      <div className="field-seg" style={{ marginBottom: 20 }}>
+        <button className={view === 'pl' ? 'active' : ''} onClick={() => setView('pl')}>Profit &amp; loss</button>
+        <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}>Structures &amp; assets</button>
       </div>
 
-      <div className="grid grid-2" style={{ marginTop: 18 }}>
-        <div className="panel">
-          <div className="panel-head"><h3>Revenue vs cost by enterprise</h3></div>
-          <div className="chart-card">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={enterpriseChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="name" tickLine={false} axisLine={{ stroke: '#423827' }} />
-                <YAxis tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-                <Bar dataKey="revenue" name="Revenue (GH₵)" fill="#7A9A66" barSize={18} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="cost" name="Cost (GH₵)" fill="#C15F41" barSize={18} radius={[3, 3, 0, 0]} />
-              </ComposedChart>
-            </ResponsiveContainer>
+      {view === 'pl' && (<>
+        <div className="grid grid-4">
+          <StatCard title="Total Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="poultry + pepper sales" />
+          <StatCard title="Total Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot="inputs + running + structure share" />
+          <StatCard title="Net Profit" value={`GH₵ ${num(netProfit, 2)}`} tone={netProfit >= 0 ? 'green' : 'rust'} foot={netProfit >= 0 ? 'farm is in profit' : 'farm below break-even'} />
+          <StatCard title="Manure Recycled" value={manureBags ? `${num(manureBags, 1)} bags` : '—'} tone="green" foot="poultry litter to fields" />
+        </div>
+
+        <div className="grid grid-2" style={{ marginTop: 18 }}>
+          <div className="panel">
+            <div className="panel-head"><h3>Revenue vs cost by enterprise</h3></div>
+            <div className="chart-card">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={enterpriseChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                  <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                  <YAxis tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                  <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                  <Bar dataKey="revenue" name="Revenue (GH₵)" fill="#7A9A66" barSize={18} radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="cost" name="Cost (GH₵)" fill="#C15F41" barSize={18} radius={[3, 3, 0, 0]} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-head"><h3>Enterprise breakdown</h3></div>
+            <div style={{ padding: '4px 0 10px' }}>
+              <div className="kv"><span className="k">Poultry revenue</span><span className="v">GH₵ {num(poultryRevenue, 2)}</span></div>
+              <div className="kv"><span className="k">Poultry cost</span><span className="v">GH₵ {num(poultryCost, 2)}</span></div>
+              <div className="kv">
+                <span className="k">Poultry margin</span>
+                <span className="v" style={{ color: poultryMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(poultryMargin, 2)}</span>
+              </div>
+              <div className="kv"><span className="k">Pepper revenue</span><span className="v">GH₵ {num(pepperRevenue, 2)}</span></div>
+              <div className="kv"><span className="k">Pepper cost</span><span className="v">GH₵ {num(pepperCost, 2)}</span></div>
+              <div className="kv">
+                <span className="k">Pepper margin</span>
+                <span className="v" style={{ color: pepperMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(pepperMargin, 2)}</span>
+              </div>
+              <div className="kv"><span className="k">General costs</span><span className="v">GH₵ {num(generalCost, 2)}</span></div>
+              <div className="kv">
+                <span className="k">Net profit</span>
+                <span className="v" style={{ color: netProfit >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(netProfit, 2)}</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="panel">
-          <div className="panel-head"><h3>Enterprise breakdown</h3></div>
-          <div style={{ padding: '4px 0 10px' }}>
-            <div className="kv"><span className="k">Poultry revenue</span><span className="v">GH₵ {num(poultryRevenue, 2)}</span></div>
-            <div className="kv"><span className="k">Poultry cost</span><span className="v">GH₵ {num(poultryCost, 2)}</span></div>
-            <div className="kv">
-              <span className="k">Poultry margin</span>
-              <span className="v" style={{ color: poultryMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(poultryMargin, 2)}</span>
-            </div>
-            <div className="kv"><span className="k">Pepper revenue</span><span className="v">GH₵ {num(pepperRevenue, 2)}</span></div>
-            <div className="kv"><span className="k">Pepper cost</span><span className="v">GH₵ {num(pepperCost, 2)}</span></div>
-            <div className="kv">
-              <span className="k">Pepper margin</span>
-              <span className="v" style={{ color: pepperMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(pepperMargin, 2)}</span>
-            </div>
-            <div className="kv"><span className="k">General expenses</span><span className="v">GH₵ {num(generalCost, 2)}</span></div>
-            <div className="kv">
-              <span className="k">Net profit</span>
-              <span className="v" style={{ color: netProfit >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(netProfit, 2)}</span>
-            </div>
-          </div>
+        <div className="panel-head" style={{ margin: '22px 0 14px' }}>
+          <h3 style={{ fontSize: 18 }}>Running expenses</h3>
+          <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add expense</button>
         </div>
-      </div>
 
-      <div className="panel-head" style={{ margin: '22px 0 14px' }}>
-        <h3 style={{ fontSize: 18 }}>General farm expenses</h3>
-        <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add expense</button>
-      </div>
-
-      {Object.keys(byCategory).length > 0 && (
-        <div className="grid grid-4" style={{ marginBottom: 16 }}>
-          {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([cat, amt]) => (
-            <StatCard key={cat} title={cat} value={`GH₵ ${num(amt, 2)}`} tone="rust" foot="spent to date" />
-          ))}
-        </div>
-      )}
-
-      <div className="table-wrap">
-        <table className="data">
-          <thead>
-            <tr><th>Date</th><th>Category</th><th>Description</th><th>Applies to</th><th>Amount</th><th></th></tr>
-          </thead>
-          <tbody>
-            {expenses.map((r) => (
-              <tr key={r.id}>
-                <td className="mono">{fmtDate(r.date)}</td>
-                <td>{r.category}</td>
-                <td>{r.description || '—'}</td>
-                <td>{r.scope === 'poultry' ? 'Poultry' : r.scope === 'pepper' ? 'Bell pepper' : 'Whole farm'}</td>
-                <td className="mono">GH₵ {num(r.amount, 2)}</td>
-                <td><button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button></td>
-              </tr>
+        {Object.keys(byCategory).length > 0 && (
+          <div className="grid grid-4" style={{ marginBottom: 16 }}>
+            {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([cat, amt]) => (
+              <StatCard key={cat} title={cat} value={`GH₵ ${num(amt, 2)}`} tone="rust" foot="spent to date" />
             ))}
-            {expenses.length === 0 && <tr><td colSpan={6} className="empty">No general expenses yet — add labour, transport, utilities and repairs for a true farm P&amp;L.</td></tr>}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        )}
 
-      <p className="stat-foot">
-        Feed, litter, sprays and setup costs are pulled automatically from the poultry and pepper
-        workspaces. Add here only what those don&apos;t already capture.
-      </p>
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr><th>Date</th><th>Category</th><th>Description</th><th>Assigned to</th><th>Amount</th><th></th></tr>
+            </thead>
+            <tbody>
+              {sortedRunning.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">{fmtDate(r.date)}</td>
+                  <td>{r.category}</td>
+                  <td>{r.description || '—'}</td>
+                  <td>{labelFor(r)}</td>
+                  <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                  <td><button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button></td>
+                </tr>
+              ))}
+              {sortedRunning.length === 0 && <tr><td colSpan={6} className="empty">No running expenses yet — add labour, transport, utilities and repairs for a true farm P&amp;L.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="stat-foot">
+          Feed, litter, sprays and flock setup costs are pulled automatically from the poultry and
+          pepper workspaces. Add here only what those don&apos;t already capture.
+        </p>
+      </>)}
+
+      {view === 'assets' && (<>
+        <div className="grid grid-4">
+          <StatCard title="Total Invested" value={`GH₵ ${num(totalInvested, 2)}`} tone="gold" foot={`${capital.length} structure(s)`} />
+          <StatCard title="Remaining Value" value={`GH₵ ${num(totalBookValue, 2)}`} tone="green" foot="life still left in them" />
+          <StatCard title="Charged to Date" value={`GH₵ ${num(totalInvested - totalBookValue, 2)}`} tone="rust" foot="written off into margins" />
+          <StatCard
+            title="Yearly Charge"
+            value={`GH₵ ${num(capital.reduce((s, e) => s + annualCharge(e), 0), 2)}`}
+            foot="what structures cost per year"
+          />
+        </div>
+
+        <div className="panel-head" style={{ margin: '22px 0 14px' }}>
+          <h3 style={{ fontSize: 18 }}>Structures &amp; equipment</h3>
+          <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add structure</button>
+        </div>
+
+        <AssetsTable capital={capital} labelFor={labelFor} onDelete={onDeleteExpense} />
+
+        <p className="stat-foot">
+          A net house or coop serves many seasons, so its cost is spread across its useful life rather
+          than charged entirely to the season it was built. That keeps one big build from making an
+          otherwise good season look like a loss.
+        </p>
+      </>)}
 
       {modal === 'expense' && (
-        <ExpenseForm onClose={() => setModal(null)} onSave={(e) => { onAddExpense(e); setModal(null); }} />
+        <ExpenseForm
+          fields={fields}
+          flocks={flocks}
+          onClose={() => setModal(null)}
+          onSave={(e) => { onAddExpense(e); setModal(null); }}
+        />
       )}
     </>
   );
 }
 
-function ExpenseForm({ onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), category: 'Labour', description: '', amount: '', scope: 'general', notes: '' });
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+function ExpenseForm({ fields, flocks, onClose, onSave }) {
+  const [f, setF] = useState({
+    date: todayISO(), kind: 'running', category: 'Labour', capexCategory: 'Insect net house',
+    description: '', amount: '', scope: 'general', target: 'shared',
+    usefulLifeYears: 4, notes: '',
+  });
+  const isCapital = f.kind === 'capital';
+
+  function set(k) {
+    return (e) => {
+      const v = e.target.value;
+      // Picking a capital category pulls in its typical working life.
+      if (k === 'capexCategory') {
+        setF({ ...f, capexCategory: v, usefulLifeYears: CAPEX_DEFAULT_LIFE[v] ?? 5 });
+        return;
+      }
+      // Changing enterprise resets the target, since the options differ.
+      if (k === 'scope') {
+        setF({ ...f, scope: v, target: 'shared' });
+        return;
+      }
+      setF({ ...f, [k]: v });
+    };
+  }
+
+  const targetOptions = f.scope === 'pepper'
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    : f.scope === 'poultry'
+      ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
+      : [['shared', 'Whole farm']];
+
+  const amount = Number(f.amount) || 0;
+  const life = Number(f.usefulLifeYears) || 1;
+  const perYear = isCapital && amount ? amount / life : null;
+
   function submit() {
     if (!f.date || f.amount === '') return;
     onSave({
-      id: newId(), date: f.date, category: f.category, description: f.description || null,
-      amount: Number(f.amount), scope: f.scope, notes: f.notes || null,
+      id: newId(), date: f.date,
+      capital: isCapital,
+      category: isCapital ? f.capexCategory : f.category,
+      description: f.description || null,
+      amount, scope: f.scope, target: f.target,
+      usefulLifeYears: isCapital ? life : null,
+      notes: f.notes || null,
     });
   }
+
   return (
-    <Modal title="Add farm expense" sub="Costs the poultry and pepper logs don't already capture." onClose={onClose}>
+    <Modal
+      title={isCapital ? 'Add structure or equipment' : 'Add farm expense'}
+      sub={isCapital
+        ? 'Something that lasts several seasons — a net house, coop, or borehole.'
+        : "Running costs the poultry and pepper logs don't already capture."}
+      onClose={onClose}
+    >
+      <div className="kind-toggle">
+        <button
+          className={!isCapital ? 'active' : ''}
+          onClick={() => setF({ ...f, kind: 'running' })}
+        >Running cost</button>
+        <button
+          className={isCapital ? 'active' : ''}
+          onClick={() => setF({ ...f, kind: 'capital' })}
+        >Structure / equipment</button>
+      </div>
+
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
-        <Field label="Category">
-          <select value={f.category} onChange={set('category')}>
-            {EXPENSE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
-          </select>
-        </Field>
-        <Field label="Description"><input value={f.description} onChange={set('description')} placeholder="e.g. casual labour, 3 days" /></Field>
-        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
-        <Field label="Applies to">
+
+        {isCapital ? (
+          <Field label="What is it?">
+            <select value={f.capexCategory} onChange={set('capexCategory')}>
+              {CAPEX_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Category">
+            <select value={f.category} onChange={set('category')}>
+              {EXPENSE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+        )}
+
+        <Field label="Enterprise">
           <select value={f.scope} onChange={set('scope')}>
             <option value="general">Whole farm</option>
             <option value="poultry">Poultry</option>
             <option value="pepper">Bell pepper</option>
           </select>
         </Field>
+
+        <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock / house?' : 'Applies to'}>
+          <select value={f.target} onChange={set('target')}>
+            {targetOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+
+        <Field label="Description" span2>
+          <input value={f.description} onChange={set('description')}
+            placeholder={isCapital ? 'e.g. 50-mesh net house, 25m x 20m' : 'e.g. casual labour, 3 days'} />
+        </Field>
+
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
+
+        {isCapital && (
+          <Field label="Useful life (years)">
+            <input type="number" step="1" min="1" value={f.usefulLifeYears} onChange={set('usefulLifeYears')} />
+          </Field>
+        )}
+
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+
+      {isCapital && perYear != null && (
+        <p className="stat-foot" style={{ marginTop: 4 }}>
+          Spread over {life} year(s), this charges about <strong>GH₵ {num(perYear, 2)} per year</strong> to
+          {f.scope === 'pepper' ? ' this field' : f.scope === 'poultry' ? ' this flock' : ' the farm'} instead of
+          the full GH₵ {num(amount, 2)} landing on one season.
+        </p>
+      )}
+
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save expense</button>
+        <button className="btn btn-gold" onClick={submit}>{isCapital ? 'Save structure' : 'Save expense'}</button>
       </div>
     </Modal>
+  );
+}
+
+/* ---------------- Assets & structures table ---------------- */
+
+function AssetsTable({ capital, labelFor, onDelete }) {
+  if (!capital.length) {
+    return (
+      <p className="empty" style={{ padding: '18px 0' }}>
+        No structures logged yet — add your net house, coops, drip system or borehole so their cost
+        is spread across the seasons they actually serve.
+      </p>
+    );
+  }
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead>
+          <tr>
+            <th>Built</th><th>Structure</th><th>Description</th><th>Assigned to</th>
+            <th>Cost</th><th>Life</th><th>Per year</th><th>Written off</th><th>Book value</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {capital.map((r) => (
+            <tr key={r.id}>
+              <td className="mono">{fmtDate(r.date)}</td>
+              <td>{r.category}</td>
+              <td>{r.description || '—'}</td>
+              <td>{labelFor(r)}</td>
+              <td className="mono">GH₵ {num(r.amount, 2)}</td>
+              <td className="mono">{r.usefulLifeYears}y</td>
+              <td className="mono">GH₵ {num(annualCharge(r), 2)}</td>
+              <td className="mono">GH₵ {num(chargedToDate(r), 2)}</td>
+              <td className="mono"><span className="tag green">GH₵ {num(bookValue(r), 2)}</span></td>
+              <td><button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -3244,5 +3641,68 @@ function InputForm({ onClose, onSave }) {
         <button className="btn btn-green" onClick={submit}>Save input</button>
       </div>
     </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ==================== INSTALL PROMPT (PWA) =================== */
+/* ============================================================= */
+
+/**
+ * Android/Chrome fire `beforeinstallprompt`, so we can show a real
+ * install button. iOS Safari has no such event — there we show the
+ * manual Share -> Add to Home Screen instruction instead.
+ */
+function InstallPrompt() {
+  const [deferred, setDeferred] = useState(null);
+  const [showIosHelp, setShowIosHelp] = useState(false);
+  const [dismissed, setDismissed] = useState(
+    () => localStorage.getItem('aifarms_install_dismissed') === '1'
+  );
+
+  const standalone = typeof window !== 'undefined' && (
+    window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone
+  );
+  const isIos = typeof navigator !== 'undefined' && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  useEffect(() => {
+    function onPrompt(e) {
+      e.preventDefault();
+      setDeferred(e);
+    }
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+  }, []);
+
+  function hide() {
+    localStorage.setItem('aifarms_install_dismissed', '1');
+    setDismissed(true);
+  }
+
+  async function install() {
+    if (!deferred) return;
+    deferred.prompt();
+    await deferred.userChoice;
+    setDeferred(null);
+    hide();
+  }
+
+  if (standalone || dismissed) return null;
+  if (!deferred && !isIos) return null;
+
+  return (
+    <div className="install-bar">
+      <span className="install-text">
+        {showIosHelp
+          ? 'In Safari: tap the Share button, then "Add to Home Screen".'
+          : 'Install AI Farms on your phone to open it like an app, even offline.'}
+      </span>
+      <span className="install-actions">
+        {deferred
+          ? <button className="btn btn-gold" onClick={install}>Install</button>
+          : <button className="btn btn-gold" onClick={() => setShowIosHelp(true)}>How?</button>}
+        <button className="link-btn" onClick={hide}>Not now</button>
+      </span>
+    </div>
   );
 }
