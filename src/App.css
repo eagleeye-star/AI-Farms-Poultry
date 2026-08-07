@@ -548,3 +548,72 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
 .link-btn:hover { color: #e2b446; }
 .link-btn.rust { color: var(--rust); }
 .link-btn.rust:hover { color: #d1794f; }
+
+/* ---------- Cloud sync bar ---------- */
+.sync-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-bottom: 20px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.sync-bar.error { border-color: rgba(193, 95, 65, 0.5); }
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+.sync-dot.ok { background: var(--green); }
+.sync-dot.error { background: var(--rust); }
+.sync-dot.syncing { background: var(--gold); animation: pulse 1.2s ease-in-out infinite; }
+.sync-dot.off { background: var(--text-faint); }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.sync-label { flex: 1; min-width: 160px; }
+.sync-actions { display: inline-flex; gap: 12px; flex-wrap: wrap; }
+.sync-actions .link-btn:disabled { opacity: 0.5; text-decoration: none; }
+
+/* ---------- Feed mix calculator ---------- */
+.inline-select {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.mini-input {
+  width: 80px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.mini-input:focus { outline: none; border-color: var(--gold-dim); }
+
+.mix-compare {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding: 4px 0 12px;
+}
+
+.mix-saving { flex: 1; min-width: 220px; padding-top: 18px; }
+.mix-saving .stat-value { font-size: 26px; }

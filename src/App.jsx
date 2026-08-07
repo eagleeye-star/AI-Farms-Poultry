@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { SEED } from './data/seed';
 import ROSS308 from './data/ross308_standard.json';
+import { pullRemote, pushRemote, getSyncSettings, saveSyncSettings, isSyncConfigured } from './sync';
 import './App.css';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
@@ -72,6 +73,7 @@ function defaultPepper() {
     scouting: [],
     sprays: [],
     harvests: [],
+    inputs: [],       // agrochemical / fertiliser stock
   };
 }
 
@@ -101,7 +103,11 @@ function freshData() {
     weightSamples: tagEntries(SEED.weightSamples, 'layers'),
     sales: [],
     reminders: [],
+    litter: [],       // litter laid / topped up / changed / harvested as manure
+    expenses: [],     // whole-farm general costs (labour, transport, utilities)
+    recipes: [],      // saved home-mix feed formulations
     pepper: defaultPepper(),
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -111,6 +117,7 @@ function migrate(saved) {
     // Old single-flock save: the existing flock becomes the layer flock.
     flocks = [makeLayerFlock(saved.flock), makeBroilerFlock()];
   }
+  const pepper = saved.pepper || defaultPepper();
   return {
     flocks,
     dailyLog: tagEntries(saved.dailyLog || SEED.dailyLog, 'layers'),
@@ -120,7 +127,11 @@ function migrate(saved) {
     weightSamples: tagEntries(saved.weightSamples || [], 'layers'),
     sales: saved.sales || [],
     reminders: saved.reminders || [],
-    pepper: saved.pepper || defaultPepper(),
+    litter: saved.litter || [],
+    expenses: saved.expenses || [],
+    recipes: saved.recipes || [],
+    pepper: { ...defaultPepper(), ...pepper, inputs: pepper.inputs || [] },
+    updatedAt: saved.updatedAt || new Date().toISOString(),
   };
 }
 
@@ -133,6 +144,55 @@ function loadData() {
 }
 
 const FEED_STANDARD = SEED.feedStandard;
+
+const LITTER_CHANGE_DAYS = 42;      // typical deep-litter interval before a full change
+const LITTER_MATERIALS = ['Sawdust', 'Wood shavings', 'Rice husk', 'Groundnut shell', 'Other'];
+const LITTER_ACTIONS = ['Laid fresh', 'Top-up', 'Turned / stirred', 'Full change', 'Removed to field'];
+const LITTER_CONDITIONS = ['Dry', 'Damp', 'Caked', 'Wet'];
+
+/* Standard vaccination programmes. Dates are calculated from the flock start
+   date. These are typical Ghanaian schedules — always confirm against your
+   hatchery's advice and your vet, since local disease pressure varies. */
+const VAX_TEMPLATES = {
+  hyline_layer: [
+    { day: 7, disease: 'Newcastle + IB', vaccine: 'NDV/IB (Ma5 + Clone30)', route: 'Eye drop' },
+    { day: 14, disease: 'Gumboro (IBD)', vaccine: 'IBD intermediate', route: 'Drinking water' },
+    { day: 21, disease: 'Gumboro (IBD)', vaccine: 'IBD booster', route: 'Drinking water' },
+    { day: 28, disease: 'Newcastle', vaccine: 'Lasota', route: 'Drinking water' },
+    { day: 42, disease: 'Fowl Pox', vaccine: 'Fowl pox', route: 'Wing web' },
+    { day: 56, disease: 'Newcastle', vaccine: 'Lasota booster', route: 'Drinking water' },
+    { day: 70, disease: 'Fowl Typhoid', vaccine: 'Fowl typhoid 9R', route: 'Injection' },
+    { day: 112, disease: 'Newcastle', vaccine: 'ND killed (pre-lay)', route: 'Injection' },
+  ],
+  ross308_broiler: [
+    { day: 7, disease: 'Newcastle + IB', vaccine: 'NDV/IB (Ma5 + Clone30)', route: 'Eye drop' },
+    { day: 14, disease: 'Gumboro (IBD)', vaccine: 'IBD intermediate', route: 'Drinking water' },
+    { day: 21, disease: 'Gumboro (IBD)', vaccine: 'IBD booster', route: 'Drinking water' },
+    { day: 28, disease: 'Newcastle', vaccine: 'Lasota booster', route: 'Drinking water' },
+  ],
+};
+
+/* Feed-mix ingredients. Nutrient values are typical book figures for Ghanaian
+   inputs — good enough to compare blends and catch a bad ratio, but the
+   concentrate bag's own label always wins. */
+const INGREDIENTS = [
+  { id: 'maize', name: 'Maize', protein: 8.5, calcium: 0.02, energy: 3350, defaultPrice: 5.5 },
+  { id: 'bran', name: 'Wheat bran', protein: 15.0, calcium: 0.14, energy: 1300, defaultPrice: 3.5 },
+  { id: 'layerconc', name: 'Layer concentrate', protein: 38.0, calcium: 9.0, energy: 2000, defaultPrice: 14.0 },
+  { id: 'broilerconc', name: 'Broiler concentrate', protein: 40.0, calcium: 3.0, energy: 2100, defaultPrice: 15.0 },
+  { id: 'soya', name: 'Soya meal', protein: 44.0, calcium: 0.3, energy: 2230, defaultPrice: 9.0 },
+  { id: 'fishmeal', name: 'Fish meal', protein: 60.0, calcium: 5.0, energy: 2800, defaultPrice: 18.0 },
+  { id: 'oil', name: 'Palm / vegetable oil', protein: 0, calcium: 0, energy: 8800, defaultPrice: 16.0 },
+  { id: 'oyster', name: 'Oyster shell / limestone', protein: 0, calcium: 38.0, energy: 0, defaultPrice: 2.0 },
+  { id: 'salt', name: 'Salt / premix', protein: 0, calcium: 0, energy: 0, defaultPrice: 6.0 },
+];
+
+const RATION_TARGETS = {
+  layer: { label: 'Layer (in lay)', protein: [16, 18], calcium: [3.4, 4.2], energy: [2600, 2800] },
+  grower: { label: 'Grower / pullet', protein: [14.5, 16.5], calcium: [0.9, 1.3], energy: [2500, 2750] },
+  broiler_starter: { label: 'Broiler starter', protein: [21, 23], calcium: [0.8, 1.2], energy: [2800, 3050] },
+  broiler_finisher: { label: 'Broiler finisher', protein: [18, 20], calcium: [0.8, 1.2], energy: [2900, 3200] },
+};
 
 /* ---------------- small building blocks ---------------- */
 
@@ -188,6 +248,7 @@ export default function App() {
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
+  const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -220,6 +281,10 @@ export default function App() {
   const sales = useMemo(
     () => (data.sales || []).filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
     [data.sales, activeFlock.id]
+  );
+  const litter = useMemo(
+    () => (data.litter || []).filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
+    [data.litter, activeFlock.id]
   );
 
   const latest = dailyLog[dailyLog.length - 1];
@@ -256,8 +321,28 @@ export default function App() {
 
   // Sales & simple profit for this flock.
   const totalRevenue = sales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  const flockCost = totalFeedCost + (Number(activeFlock.setupCost) || 0);
+  const litterCost = litter.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const flockCost = totalFeedCost + litterCost + (Number(activeFlock.setupCost) || 0);
   const flockMargin = totalRevenue - flockCost;
+
+  // Feed run-out projection: average daily use over the last 7 logged days.
+  const recentLog = dailyLog.slice(-7);
+  const avgDailyFeed = recentLog.length
+    ? recentLog.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0) / recentLog.length
+    : null;
+  const feedDaysLeft = (feedBalance != null && avgDailyFeed > 0)
+    ? Math.floor(feedBalance / avgDailyFeed)
+    : null;
+
+  // Litter: how long since the house was last laid or fully changed.
+  const lastChange = [...litter].reverse().find((r) => r.action === 'Laid fresh' || r.action === 'Full change');
+  const daysSinceLitterChange = lastChange ? daysBetween(lastChange.date, todayISO()) : null;
+  const litterCondition = litter.length ? litter[litter.length - 1].condition : null;
+  const litterDue = daysSinceLitterChange != null && daysSinceLitterChange >= LITTER_CHANGE_DAYS;
+  // Manure banked from cleared litter — the reason the poultry exists.
+  const manureHarvested = litter
+    .filter((r) => r.action === 'Removed to field')
+    .reduce((s, r) => s + (Number(r.quantity) || 0), 0);
 
   const mortalityByCause = useMemo(() => {
     const m = {};
@@ -327,6 +412,51 @@ export default function App() {
   function addSale(entry) {
     setData((d) => ({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
   }
+  function addLitter(entry) {
+    setData((d) => ({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
+  }
+  function addExpense(entry) {
+    setData((d) => ({ ...d, expenses: [...(d.expenses || []), entry] }));
+  }
+  function deleteExpense(id) {
+    setData((d) => ({ ...d, expenses: (d.expenses || []).filter((r) => r.id !== id) }));
+  }
+  function saveRecipe(entry) {
+    setData((d) => ({ ...d, recipes: [...(d.recipes || []), entry] }));
+  }
+  function deleteRecipe(id) {
+    setData((d) => ({ ...d, recipes: (d.recipes || []).filter((r) => r.id !== id) }));
+  }
+  function addInput(entry) {
+    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: [...(d.pepper.inputs || []), entry] } }));
+  }
+  function updateInput(id, patch) {
+    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).map((i) => (i.id === id ? { ...i, ...patch } : i)) } }));
+  }
+  function deleteInput(id) {
+    setData((d) => ({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).filter((i) => i.id !== id) } }));
+  }
+
+  /** Load a breed vaccination programme, skipping any shot already recorded. */
+  function applyVaxTemplate() {
+    const tpl = VAX_TEMPLATES[activeFlock.standardKey] || [];
+    const existing = new Set(data.vax.filter((v) => v.flockId === activeFlock.id).map((v) => `${v.disease}|${v.date}`));
+    const rows = tpl.map((t) => {
+      const date = addDaysISO(activeFlock.startDate, t.day);
+      return {
+        id: newId(), flockId: activeFlock.id, date, disease: t.disease, vaccine: t.vaccine,
+        route: t.route, nextDue: null, notes: `Day ${t.day} — from ${activeFlock.type} programme`,
+        planned: true,
+      };
+    }).filter((r) => !existing.has(`${r.disease}|${r.date}`));
+    if (!rows.length) {
+      alert('This programme is already loaded for this flock.');
+      return;
+    }
+    setData((d) => ({ ...d, vax: [...d.vax, ...rows] }));
+    alert(`Loaded ${rows.length} vaccination dates for ${activeFlock.flockName}. Check them against your vet's advice.`);
+  }
+
   function saveFlock(flock) {
     setData((d) => {
       const exists = d.flocks.some((f) => f.id === flock.id);
@@ -342,6 +472,32 @@ export default function App() {
   }
   function deleteReminder(id) {
     setData((d) => ({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
+  }
+
+  /* ---- cloud sync ---- */
+
+  async function syncNow(mode = 'auto') {
+    if (!isSyncConfigured()) { setModal('sync'); return; }
+    setSync({ status: 'syncing', message: 'Syncing…', lastSync: sync.lastSync });
+    try {
+      const remote = await pullRemote();
+      const localTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+      const remoteTime = remote ? new Date(remote.updatedAt).getTime() : 0;
+
+      if (mode === 'pull' || (mode === 'auto' && remote && remoteTime > localTime)) {
+        // Cloud copy is newer — take it.
+        const merged = migrate(remote.state);
+        setData(merged);
+        setActiveFlockId(merged.flocks[0].id);
+        setSync({ status: 'ok', message: 'Pulled latest from cloud', lastSync: new Date().toISOString() });
+        return;
+      }
+      const at = await pushRemote(data);
+      setData((d) => ({ ...d, updatedAt: at }));
+      setSync({ status: 'ok', message: 'Saved to cloud', lastSync: at });
+    } catch (err) {
+      setSync({ status: 'error', message: err.message || 'Sync failed', lastSync: sync.lastSync });
+    }
   }
 
   function backupData() {
@@ -428,7 +584,13 @@ export default function App() {
           className={`ws-btn${workspace === 'pepper' ? ' active pepper' : ''}`}
           onClick={() => { setWorkspace('pepper'); setModal(null); }}
         >Bell Pepper Fields</button>
+        <button
+          className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('farm'); setModal(null); }}
+        >Whole Farm</button>
       </div>
+
+      <SyncBar sync={sync} onSync={() => syncNow('auto')} onPull={() => syncNow('pull')} onSettings={() => setModal('sync')} />
 
       {workspace === 'poultry' && (<>
       <header className="header">
@@ -476,6 +638,8 @@ export default function App() {
           ['dashboard', 'Dashboard'],
           ['log', 'Daily Log'],
           ['feed', 'Feed & Inventory'],
+          ['mix', 'Feed Mix'],
+          ['litter', 'Litter & Manure'],
           ['growth', 'Growth'],
           ['sales', 'Sales & Profit'],
           ['health', 'Health'],
@@ -510,6 +674,12 @@ export default function App() {
           totalRevenue={totalRevenue}
           flockCost={flockCost}
           flockMargin={flockMargin}
+          feedDaysLeft={feedDaysLeft}
+          avgDailyFeed={avgDailyFeed}
+          daysSinceLitterChange={daysSinceLitterChange}
+          litterCondition={litterCondition}
+          litterDue={litterDue}
+          manureHarvested={manureHarvested}
           mortalityByCause={mortalityByCause}
           chartData={chartData}
           feedChartData={feedChartData}
@@ -524,7 +694,29 @@ export default function App() {
       )}
 
       {tab === 'feed' && (
-        <FeedTab feed={[...feed].reverse()} onAdd={() => setModal('feed')} />
+        <FeedTab feed={[...feed].reverse()} feedDaysLeft={feedDaysLeft} avgDailyFeed={avgDailyFeed} feedBalance={feedBalance} onAdd={() => setModal('feed')} />
+      )}
+
+      {tab === 'mix' && (
+        <FeedMixTab
+          recipes={data.recipes || []}
+          flock={activeFlock}
+          onSave={saveRecipe}
+          onDelete={deleteRecipe}
+        />
+      )}
+
+      {tab === 'litter' && (
+        <LitterTab
+          rows={[...litter].reverse()}
+          fields={data.pepper.fields}
+          daysSinceChange={daysSinceLitterChange}
+          condition={litterCondition}
+          due={litterDue}
+          manureHarvested={manureHarvested}
+          litterCost={litterCost}
+          onAdd={() => setModal('litter')}
+        />
       )}
 
       {tab === 'growth' && (
@@ -545,6 +737,7 @@ export default function App() {
           flockCost={flockCost}
           flockMargin={flockMargin}
           totalFeedCost={totalFeedCost}
+          litterCost={litterCost}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
         />
@@ -554,13 +747,33 @@ export default function App() {
         <RemindersTab
           reminders={data.reminders || []}
           scope="poultry"
-          autoItems={vaxStatus.filter((v) => v.daysLeft !== null).map((v) => ({
-            id: `vax-${v.disease || v.vaccine}`,
-            title: `${v.disease || v.vaccine} vaccination`,
-            dueDate: v.nextDue,
-            daysLeft: v.daysLeft,
-            source: activeFlock.flockName,
-          }))}
+          autoItems={[
+            ...vaxStatus.filter((v) => v.daysLeft !== null).map((v) => ({
+              id: `vax-${v.disease || v.vaccine}`,
+              title: `${v.disease || v.vaccine} vaccination`,
+              dueDate: v.nextDue,
+              daysLeft: v.daysLeft,
+              source: activeFlock.flockName,
+            })),
+            ...(feedDaysLeft != null && feedDaysLeft <= 7 ? [{
+              id: 'feed-runout',
+              title: `Reorder feed — about ${feedDaysLeft} day(s) left in store`,
+              dueDate: addDaysISO(todayISO(), Math.max(feedDaysLeft - 2, 0)),
+              source: activeFlock.flockName,
+            }] : []),
+            ...(litterDue ? [{
+              id: 'litter-due',
+              title: `Litter change due (${daysSinceLitterChange} days since last)`,
+              dueDate: todayISO(),
+              source: activeFlock.flockName,
+            }] : []),
+            ...(litterCondition === 'Wet' || litterCondition === 'Caked' ? [{
+              id: 'litter-condition',
+              title: `Litter logged as ${litterCondition.toLowerCase()} — turn or top up to avoid ammonia`,
+              dueDate: todayISO(),
+              source: activeFlock.flockName,
+            }] : []),
+          ]}
           onAdd={() => setModal('reminder')}
           onToggle={toggleReminder}
           onDelete={deleteReminder}
@@ -572,6 +785,8 @@ export default function App() {
           meds={meds}
           vax={[...vax].reverse()}
           vaxStatus={vaxStatus}
+          flock={activeFlock}
+          onLoadTemplate={applyVaxTemplate}
           onAddMed={() => setModal('med')}
           onAddVax={() => setModal('vax')}
         />
@@ -604,6 +819,13 @@ export default function App() {
       {modal === 'sale' && (
         <SaleForm flock={activeFlock} onClose={() => setModal(null)} onSave={(e) => { addSale(e); setModal(null); }} />
       )}
+      {modal === 'litter' && (
+        <LitterForm
+          fields={data.pepper.fields}
+          onClose={() => setModal(null)}
+          onSave={(e) => { addLitter(e); setModal(null); }}
+        />
+      )}
       {modal === 'reminder' && (
         <ReminderForm scope="poultry" onClose={() => setModal(null)} onSave={(e) => { addReminder(e); setModal(null); }} />
       )}
@@ -625,9 +847,27 @@ export default function App() {
           onAddScouting={addScouting}
           onAddSpray={addSpray}
           onAddHarvest={addHarvest}
+          onAddInput={addInput}
+          onUpdateInput={updateInput}
+          onDeleteInput={deleteInput}
           onAddReminder={addReminder}
           onToggleReminder={toggleReminder}
           onDeleteReminder={deleteReminder}
+        />
+      )}
+
+      {workspace === 'farm' && (
+        <FarmWorkspace
+          data={data}
+          onAddExpense={addExpense}
+          onDeleteExpense={deleteExpense}
+        />
+      )}
+
+      {modal === 'sync' && (
+        <SyncSettingsForm
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); syncNow('auto'); }}
         />
       )}
     </div>
@@ -641,10 +881,14 @@ function DashboardTab({
   totalFeedCost, feedCostPerBird, henDayPct, totalEggs, totalCracked,
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
+  feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
   mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
+  const feedTone = feedDaysLeft == null ? undefined : feedDaysLeft <= 3 ? 'rust' : feedDaysLeft <= 7 ? 'gold' : 'green';
+  const litterTone = litterCondition === 'Wet' || litterCondition === 'Caked' ? 'rust'
+    : litterDue ? 'gold' : litterCondition ? 'green' : undefined;
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -709,9 +953,31 @@ function DashboardTab({
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="sales logged for this flock" />
-        <StatCard title="Cost" value={`GH₵ ${num(flockCost, 2)}`} tone="rust" foot="feed + flock setup cost" />
+        <StatCard title="Cost" value={`GH₵ ${num(flockCost, 2)}`} tone="rust" foot="feed + litter + setup" />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
         <StatCard title="Break-even" value={totalRevenue >= flockCost ? 'Reached' : `GH₵ ${num(flockCost - totalRevenue, 2)}`} foot={totalRevenue >= flockCost ? 'sales cover costs' : 'more sales to break even'} />
+      </div>
+
+      <div className="grid grid-4" style={{ marginTop: 16 }}>
+        <StatCard
+          title="Feed Runs Out"
+          value={feedDaysLeft != null ? `${feedDaysLeft} days` : '—'}
+          tone={feedTone}
+          foot={avgDailyFeed ? `using ~${num(avgDailyFeed, 1)} kg/day` : 'log feed use to project'}
+        />
+        <StatCard
+          title="Litter Age"
+          value={daysSinceLitterChange != null ? `${daysSinceLitterChange} days` : '—'}
+          tone={litterTone}
+          foot={litterDue ? 'change due' : (litterCondition ? `last logged ${litterCondition.toLowerCase()}` : 'no litter logged')}
+        />
+        <StatCard
+          title="Manure Banked"
+          value={manureHarvested ? `${num(manureHarvested, 1)} bags` : '—'}
+          tone="green"
+          foot="cleared litter sent to fields"
+        />
+        <StatCard title="Feed / Bird" value={feedCostPerBird ? `GH₵ ${num(feedCostPerBird, 2)}` : '—'} foot="feed cost per bird" />
       </div>
 
       <div className="panel">
@@ -940,10 +1206,18 @@ function LogForm({ lastClosing, onClose, onSave }) {
 
 /* ---------------- Feed tab ---------------- */
 
-function FeedTab({ feed, onAdd }) {
+function FeedTab({ feed, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
   const totalCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   return (
     <>
+      {feedDaysLeft != null && feedDaysLeft <= 7 && (
+        <div className="stale-banner" style={{ marginBottom: 12 }}>
+          ⚠ <span>
+            Feed store down to <strong>{num(feedBalance, 1)} kg</strong> — about <strong>{feedDaysLeft} day(s)</strong> left
+            at ~{num(avgDailyFeed, 1)} kg/day. Reorder now so you don&apos;t run out.
+          </span>
+        </div>
+      )}
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Feed &amp; Inventory</h3>
         <button className="btn btn-gold" onClick={onAdd}>+ Add feed record</button>
@@ -1018,16 +1292,22 @@ function FeedForm({ lastBalance, onClose, onSave }) {
 
 /* ---------------- Health tab ---------------- */
 
-function HealthTab({ meds, vax, vaxStatus, onAddMed, onAddVax }) {
+function HealthTab({ meds, vax, vaxStatus, flock, onLoadTemplate, onAddMed, onAddVax }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Health</h3>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn" onClick={onLoadTemplate}>⤓ Load {flock?.type === 'broiler' ? 'Ross 308' : 'Hy-Line'} programme</button>
           <button className="btn" onClick={onAddVax}>+ Vaccination</button>
           <button className="btn btn-gold" onClick={onAddMed}>+ Medication</button>
         </div>
       </div>
+
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
+        Loading a programme fills in the standard schedule from this flock&apos;s start date. These are typical
+        Ghanaian schedules — confirm them with your vet or hatchery, since local disease pressure varies.
+      </p>
 
       <p className="section-title" style={{ marginTop: 0 }}>Vaccination schedule</p>
       <div className="table-wrap">
@@ -1251,7 +1531,7 @@ function addDaysISO(iso, days) {
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
-function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddReminder, onToggleReminder, onDeleteReminder }) {
+function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder }) {
   const [ptab, setPtab] = useState('dashboard');
   const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest'
@@ -1384,6 +1664,7 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
           ['cycle', 'Crop Cycle'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
+          ['inputs', 'Input Stock'],
           ['harvest', 'Harvest & Sales'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
@@ -1421,12 +1702,31 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
         <HarvestTab rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue} onAdd={() => setModal('harvest')} />
       )}
 
+      {ptab === 'inputs' && (
+        <InputsTab
+          inputs={pepper.inputs || []}
+          onAdd={() => setModal('input')}
+          onUpdate={onUpdateInput}
+          onDelete={onDeleteInput}
+        />
+      )}
+
       {ptab === 'reminders' && (
         <RemindersTab
           reminders={reminders}
           scope="pepper"
           accent="green"
-          autoItems={pepperAuto}
+          autoItems={[
+            ...pepperAuto,
+            ...(pepper.inputs || [])
+              .filter((i) => i.reorderAt != null && Number(i.quantity) <= Number(i.reorderAt))
+              .map((i) => ({
+                id: `input-${i.id}`,
+                title: `Restock ${i.name} — ${num(i.quantity, 1)} ${i.unit} left`,
+                dueDate: todayISO(),
+                source: 'Input stock',
+              })),
+          ]}
           onAdd={() => setModal('reminder')}
           onToggle={onToggleReminder}
           onDelete={onDeleteReminder}
@@ -1454,6 +1754,9 @@ function PepperWorkspace({ pepper, reminders, onUpdateField, onAddScouting, onAd
       )}
       {modal === 'reminder' && (
         <ReminderForm scope="pepper" onClose={() => setModal(null)} onSave={(e) => { onAddReminder(e); setModal(null); }} />
+      )}
+      {modal === 'input' && (
+        <InputForm onClose={() => setModal(null)} onSave={(e) => { onAddInput(e); setModal(null); }} />
       )}
     </>
   );
@@ -1973,7 +2276,7 @@ function FlockForm({ flock, onClose, onSave }) {
 
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, onAdd, onEditFlock }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, onAdd, onEditFlock }) {
   const setup = Number(flock.setupCost) || 0;
   return (
     <>
@@ -1985,12 +2288,12 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, onAd
       <div className="grid grid-4">
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s)`} />
         <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
-        <StatCard title="Setup Cost" value={`GH₵ ${num(setup, 2)}`} foot="chicks, brooding, etc." />
+        <StatCard title="Litter + Setup" value={`GH₵ ${num((litterCost || 0) + setup, 2)}`} foot={`litter ${num(litterCost || 0, 0)} + setup ${num(setup, 0)}`} />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
       </div>
 
       <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
-        Profit = revenue − (feed cost GH₵ {num(totalFeedCost, 2)} + setup cost GH₵ {num(setup, 2)}).
+        Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)} + setup GH₵ {num(setup, 2)}).
         {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> to include chick purchase, brooding, and other one-off costs.
       </p>
 
@@ -2174,6 +2477,771 @@ function ReminderForm({ scope, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>Save reminder</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ======================== CLOUD SYNC UI ====================== */
+/* ============================================================= */
+
+function SyncBar({ sync, onSync, onPull, onSettings }) {
+  const configured = isSyncConfigured();
+  const when = sync.lastSync ? new Date(sync.lastSync) : null;
+  const label = !configured
+    ? 'Cloud sync not set up'
+    : sync.status === 'syncing' ? 'Syncing…'
+    : sync.status === 'error' ? sync.message
+    : when ? `${sync.message || 'Synced'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'Not synced yet this session';
+
+  return (
+    <div className={`sync-bar${sync.status === 'error' ? ' error' : ''}`}>
+      <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
+      <span className="sync-label">{label}</span>
+      <span className="sync-actions">
+        {configured && <button className="link-btn" onClick={onSync} disabled={sync.status === 'syncing'}>Sync now</button>}
+        {configured && <button className="link-btn" onClick={onPull} disabled={sync.status === 'syncing'}>Pull from cloud</button>}
+        <button className="link-btn" onClick={onSettings}>{configured ? 'Settings' : 'Set up'}</button>
+      </span>
+    </div>
+  );
+}
+
+function SyncSettingsForm({ onClose, onSaved }) {
+  const current = getSyncSettings();
+  const [f, setF] = useState({ url: current.url, key: current.key, farmId: current.farmId, autoSync: current.autoSync });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    saveSyncSettings({ ...f, url: f.url.trim(), key: f.key.trim(), farmId: f.farmId.trim() || 'ai-farms-eikwe' });
+    onSaved();
+  }
+  return (
+    <Modal
+      title="Cloud sync setup"
+      sub="Connect your Supabase project so the same data follows you between phone and PC."
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Supabase project URL" span2>
+          <input value={f.url} onChange={set('url')} placeholder="https://xxxx.supabase.co" />
+        </Field>
+        <Field label="Anon public key" span2>
+          <input value={f.key} onChange={set('key')} placeholder="eyJhbGciOi..." />
+        </Field>
+        <Field label="Farm ID" span2>
+          <input value={f.farmId} onChange={set('farmId')} placeholder="ai-farms-eikwe" />
+        </Field>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 4 }}>
+        Use the <strong>anon public</strong> key, never the service role key. Run the SQL in
+        <code> supabase-setup.sql</code> first to create the table. Use the same Farm ID on every
+        device so they share one record.
+      </p>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save &amp; sync</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ==================== LITTER & MANURE ======================== */
+/* ============================================================= */
+
+function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd }) {
+  const conditionTone = condition === 'Wet' || condition === 'Caked' ? 'rust' : condition === 'Damp' ? 'gold' : 'green';
+  const toManure = rows.filter((r) => r.action === 'Removed to field');
+  const byField = {};
+  toManure.forEach((r) => {
+    const key = r.toField || 'Unassigned';
+    byField[key] = (byField[key] || 0) + (Number(r.quantity) || 0);
+  });
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Litter &amp; Manure</h3>
+        <button className="btn btn-gold" onClick={onAdd}>+ Log litter</button>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard
+          title="Litter Age"
+          value={daysSinceChange != null ? `${daysSinceChange} days` : '—'}
+          tone={due ? 'rust' : daysSinceChange != null ? 'green' : undefined}
+          foot={due ? `change overdue (${LITTER_CHANGE_DAYS}d guide)` : `guide: change by ${LITTER_CHANGE_DAYS} days`}
+        />
+        <StatCard
+          title="Condition"
+          value={condition || '—'}
+          tone={condition ? conditionTone : undefined}
+          foot={condition === 'Wet' || condition === 'Caked' ? 'ammonia / footpad risk' : 'last logged condition'}
+        />
+        <StatCard title="Manure to Fields" value={manureHarvested ? `${num(manureHarvested, 1)} bags` : '—'} tone="green" foot="cleared litter used as manure" />
+        <StatCard title="Litter Cost" value={`GH₵ ${num(litterCost, 2)}`} tone="rust" foot="counts toward flock cost" />
+      </div>
+
+      {(condition === 'Wet' || condition === 'Caked') && (
+        <div className="stale-banner" style={{ marginTop: 16 }}>
+          ⚠ <span>
+            Litter last logged as <strong>{condition.toLowerCase()}</strong>. Wet or caked litter drives ammonia,
+            footpad burn and coccidiosis — turn it, top up with dry material, and check for leaking drinkers.
+          </span>
+        </div>
+      )}
+
+      {Object.keys(byField).length > 0 && (
+        <>
+          <p className="section-title">Manure sent to fields</p>
+          <div className="grid grid-4">
+            {Object.entries(byField).map(([field, qty]) => (
+              <StatCard key={field} title={field} value={`${num(qty, 1)} bags`} tone="green" foot="manure applied" />
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="section-title">Litter records</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Action</th><th>Material</th><th>Qty (bags)</th><th>Condition</th><th>Cost</th><th>To field</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{fmtDate(r.date)}</td>
+                <td>{r.action === 'Removed to field'
+                  ? <span className="tag green">{r.action}</span>
+                  : r.action}
+                </td>
+                <td>{r.material || '—'}</td>
+                <td className="mono">{r.quantity != null ? num(r.quantity, 1) : '—'}</td>
+                <td>{r.condition ? <span className={`tag ${r.condition === 'Wet' || r.condition === 'Caked' ? 'rust' : r.condition === 'Damp' ? 'gold' : 'green'}`}>{r.condition}</span> : '—'}</td>
+                <td className="mono">{r.cost != null ? `GH₵ ${num(r.cost, 2)}` : '—'}</td>
+                <td>{r.toField || '—'}</td>
+                <td className="notes">{r.notes || ''}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={8} className="empty">No litter logged yet — record the material laid, top-ups, condition checks, and manure cleared to your fields.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Log a condition check whenever you walk the house. Dry litter keeps ammonia down and coccidiosis
+        pressure low; caked or wet litter is the early warning that something needs fixing.
+      </p>
+    </>
+  );
+}
+
+function LitterForm({ fields, onClose, onSave }) {
+  const [f, setF] = useState({
+    date: todayISO(), action: 'Top-up', material: 'Sawdust', quantity: '',
+    condition: 'Dry', cost: '', toField: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const isManure = f.action === 'Removed to field';
+  function submit() {
+    if (!f.date) return;
+    onSave({
+      id: newId(), date: f.date, action: f.action,
+      material: isManure ? (f.material || null) : f.material,
+      quantity: f.quantity === '' ? null : Number(f.quantity),
+      condition: isManure ? null : f.condition,
+      cost: f.cost === '' ? null : Number(f.cost),
+      toField: isManure ? (f.toField || null) : null,
+      notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal
+      title="Log litter"
+      sub={isManure ? 'Cleared litter going to the fields as manure.' : 'Litter laid, topped up, turned, or checked.'}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Action">
+          <select value={f.action} onChange={set('action')}>
+            {LITTER_ACTIONS.map((a) => <option key={a}>{a}</option>)}
+          </select>
+        </Field>
+        <Field label="Material">
+          <select value={f.material} onChange={set('material')}>
+            {LITTER_MATERIALS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Quantity (bags)"><input type="number" step="0.5" value={f.quantity} onChange={set('quantity')} /></Field>
+        {isManure ? (
+          <Field label="To field">
+            <select value={f.toField} onChange={set('toField')}>
+              <option value="">— choose field —</option>
+              {fields.map((fl) => <option key={fl.id} value={fl.name}>{fl.name}</option>)}
+              <option value="Stored / composting">Stored / composting</option>
+            </select>
+          </Field>
+        ) : (
+          <Field label="Condition">
+            <select value={f.condition} onChange={set('condition')}>
+              {LITTER_CONDITIONS.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+        )}
+        <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} placeholder={isManure ? 'cartage, optional' : 'sawdust purchase'} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      {isManure && (
+        <p className="stat-foot" style={{ marginTop: 4 }}>
+          Compost or age poultry manure before applying near young plants — fresh litter is high in
+          ammonia and can scorch roots.
+        </p>
+      )}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ================= FEED MIX / RATION CALCULATOR ============== */
+/* ============================================================= */
+
+function starterMix(flockType) {
+  // Sensible opening blend per 100 kg — the farmer tunes from here.
+  // Both land inside their target protein/calcium/energy bands.
+  if (flockType === 'broiler') {
+    return { maize: 63, bran: 1, broilerconc: 28, soya: 5, oil: 2, salt: 1 };
+  }
+  return { maize: 58, bran: 8, layerconc: 30, oyster: 3, salt: 1 };
+}
+
+function FeedMixTab({ recipes, flock, onSave, onDelete }) {
+  const [target, setTarget] = useState(flock.type === 'broiler' ? 'broiler_finisher' : 'layer');
+  const [batchKg, setBatchKg] = useState(100);
+  const [parts, setParts] = useState(() => starterMix(flock.type));
+  const [prices, setPrices] = useState(() => {
+    const p = {};
+    INGREDIENTS.forEach((i) => { p[i.id] = i.defaultPrice; });
+    return p;
+  });
+  const [bagPrice, setBagPrice] = useState(400);   // what a 50kg bag of compound feed costs
+  const [recipeName, setRecipeName] = useState('');
+
+  const used = INGREDIENTS.filter((i) => Number(parts[i.id]) > 0);
+  const totalParts = used.reduce((s, i) => s + Number(parts[i.id] || 0), 0);
+
+  // Weighted nutrient values across the blend.
+  const calc = useMemo(() => {
+    if (!totalParts) return null;
+    let protein = 0, calcium = 0, energy = 0, cost = 0;
+    used.forEach((i) => {
+      const share = Number(parts[i.id]) / totalParts;
+      protein += i.protein * share;
+      calcium += i.calcium * share;
+      energy += i.energy * share;
+      cost += (Number(prices[i.id]) || 0) * share;
+    });
+    return { protein, calcium, energy, costPerKg: cost };
+  }, [parts, prices, totalParts, used]);
+
+  const t = RATION_TARGETS[target];
+  const inRange = (v, [lo, hi]) => v >= lo && v <= hi;
+  const tone = (v, range) => (inRange(v, range) ? 'green' : 'rust');
+
+  const bagCostPerKg = Number(bagPrice) / 50;
+  const savingPerKg = calc ? bagCostPerKg - calc.costPerKg : null;
+  const batchCost = calc ? calc.costPerKg * Number(batchKg || 0) : null;
+  const batchSaving = savingPerKg != null ? savingPerKg * Number(batchKg || 0) : null;
+
+  const scale = totalParts ? Number(batchKg || 0) / totalParts : 0;
+
+  function setPart(id, v) { setParts({ ...parts, [id]: v }); }
+  function setPrice(id, v) { setPrices({ ...prices, [id]: v }); }
+
+  function saveThis() {
+    if (!recipeName.trim() || !calc) return;
+    onSave({
+      id: newId(), name: recipeName.trim(), target, batchKg: Number(batchKg),
+      parts: { ...parts }, prices: { ...prices },
+      protein: calc.protein, calcium: calc.calcium, energy: calc.energy,
+      costPerKg: calc.costPerKg, savedOn: todayISO(), flockId: flock.id,
+    });
+    setRecipeName('');
+  }
+
+  function loadRecipe(r) {
+    setTarget(r.target); setBatchKg(r.batchKg); setParts(r.parts); setPrices(r.prices);
+  }
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Feed Mix Calculator</h3>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <select value={target} onChange={(e) => setTarget(e.target.value)} className="inline-select">
+            {Object.entries(RATION_TARGETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          <button className="btn" onClick={() => setParts(starterMix(flock.type))}>Reset blend</button>
+        </div>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard
+          title="Protein"
+          value={calc ? `${num(calc.protein, 1)}%` : '—'}
+          tone={calc ? tone(calc.protein, t.protein) : undefined}
+          foot={`target ${t.protein[0]}–${t.protein[1]}%`}
+        />
+        <StatCard
+          title="Calcium"
+          value={calc ? `${num(calc.calcium, 2)}%` : '—'}
+          tone={calc ? tone(calc.calcium, t.calcium) : undefined}
+          foot={`target ${t.calcium[0]}–${t.calcium[1]}%`}
+        />
+        <StatCard
+          title="Energy (ME)"
+          value={calc ? `${num(calc.energy)} Kcal` : '—'}
+          tone={calc ? tone(calc.energy, t.energy) : undefined}
+          foot={`target ${t.energy[0]}–${t.energy[1]}`}
+        />
+        <StatCard
+          title="Your Cost / kg"
+          value={calc ? `GH₵ ${num(calc.costPerKg, 2)}` : '—'}
+          tone={savingPerKg > 0 ? 'green' : 'rust'}
+          foot={savingPerKg != null ? `bagged feed: GH₵ ${num(bagCostPerKg, 2)}/kg` : ''}
+        />
+      </div>
+
+      <div className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-head"><h3>What you save</h3></div>
+        <div className="mix-compare">
+          <div className="field" style={{ maxWidth: 220 }}>
+            <label>Bagged feed price (GH₵ / 50kg bag)</label>
+            <input type="number" value={bagPrice} onChange={(e) => setBagPrice(e.target.value)} />
+          </div>
+          <div className="field" style={{ maxWidth: 180 }}>
+            <label>Batch size (kg)</label>
+            <input type="number" value={batchKg} onChange={(e) => setBatchKg(e.target.value)} />
+          </div>
+          <div className="mix-saving">
+            {savingPerKg != null && (
+              savingPerKg > 0 ? (
+                <>
+                  <div className="stat-value green">GH₵ {num(batchSaving, 2)}</div>
+                  <p className="stat-foot">
+                    saved on a {num(batchKg)} kg batch (GH₵ {num(savingPerKg, 2)}/kg cheaper).
+                    Batch costs you GH₵ {num(batchCost, 2)}.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="stat-value rust">GH₵ {num(Math.abs(batchSaving), 2)} more</div>
+                  <p className="stat-foot">
+                    Mixing is costing more than bagged feed right now — usually means maize prices are high.
+                  </p>
+                </>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
+      <p className="section-title">Blend &amp; ingredient prices</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Ingredient</th><th>Parts (per 100)</th><th>Price GH₵/kg</th><th>Weigh out</th><th>Protein %</th><th>Calcium %</th><th>Cost in batch</th></tr>
+          </thead>
+          <tbody>
+            {INGREDIENTS.map((i) => {
+              const p = Number(parts[i.id]) || 0;
+              const kg = p * scale;
+              return (
+                <tr key={i.id}>
+                  <td>{i.name}</td>
+                  <td>
+                    <input
+                      className="mini-input" type="number" step="0.5" value={parts[i.id] ?? ''}
+                      onChange={(e) => setPart(i.id, e.target.value)} placeholder="0"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="mini-input" type="number" step="0.1" value={prices[i.id] ?? ''}
+                      onChange={(e) => setPrice(i.id, e.target.value)}
+                    />
+                  </td>
+                  <td className="mono">{p > 0 ? `${num(kg, 1)} kg` : '—'}</td>
+                  <td className="mono">{num(i.protein, 1)}</td>
+                  <td className="mono">{num(i.calcium, 2)}</td>
+                  <td className="mono">{p > 0 ? `GH₵ ${num(kg * (Number(prices[i.id]) || 0), 2)}` : '—'}</td>
+                </tr>
+              );
+            })}
+            <tr>
+              <td><strong>Total</strong></td>
+              <td className="mono"><strong>{num(totalParts, 1)}</strong></td>
+              <td></td>
+              <td className="mono"><strong>{num(Number(batchKg) || 0, 1)} kg</strong></td>
+              <td colSpan={2}></td>
+              <td className="mono"><strong>{batchCost != null ? `GH₵ ${num(batchCost, 2)}` : '—'}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-head"><h3>Save this recipe</h3></div>
+        <div className="mix-compare">
+          <div className="field" style={{ maxWidth: 300 }}>
+            <label>Recipe name</label>
+            <input value={recipeName} onChange={(e) => setRecipeName(e.target.value)} placeholder="e.g. Layer mix — Aug maize price" />
+          </div>
+          <button className="btn btn-gold" onClick={saveThis} style={{ alignSelf: 'flex-end' }}>Save recipe</button>
+        </div>
+        {recipes.length > 0 && (
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+            <table className="data">
+              <thead>
+                <tr><th>Recipe</th><th>Target</th><th>Protein</th><th>Calcium</th><th>Cost/kg</th><th>Saved</th><th></th></tr>
+              </thead>
+              <tbody>
+                {recipes.map((r) => (
+                  <tr key={r.id}>
+                    <td>{r.name}</td>
+                    <td>{RATION_TARGETS[r.target]?.label || r.target}</td>
+                    <td className="mono">{num(r.protein, 1)}%</td>
+                    <td className="mono">{num(r.calcium, 2)}%</td>
+                    <td className="mono">GH₵ {num(r.costPerKg, 2)}</td>
+                    <td className="mono">{fmtDate(r.savedOn)}</td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn" onClick={() => loadRecipe(r)}>Load</button>
+                        <button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="stale-banner" style={{ marginTop: 18 }}>
+        ⚠ <span>
+          Nutrient figures here are typical book values used to compare blends and catch a bad ratio —
+          they are not a lab analysis. <strong>Always follow the inclusion rate printed on your concentrate bag</strong>,
+          since brands differ. And check your maize: mouldy maize carries aflatoxin, which quietly cuts
+          laying, weakens shells, and can kill birds — no calculator can see that.
+        </span>
+      </div>
+    </>
+  );
+}
+
+/* ============================================================= */
+/* =================== WHOLE FARM WORKSPACE ==================== */
+/* ============================================================= */
+
+const EXPENSE_CATEGORIES = ['Labour', 'Transport', 'Utilities', 'Repairs & maintenance', 'Equipment', 'Rent', 'Other'];
+
+function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
+  const [modal, setModal] = useState(null);
+
+  // ---- Poultry side ----
+  const poultryRevenue = (data.sales || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const feedCost = (data.feed || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const litterCost = (data.litter || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const flockSetup = (data.flocks || []).reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
+  const medCost = (data.meds || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const poultryCost = feedCost + litterCost + flockSetup + medCost;
+  const poultryMargin = poultryRevenue - poultryCost;
+
+  // ---- Pepper side ----
+  const p = data.pepper || {};
+  const pepperRevenue = (p.harvests || []).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const sprayCost = (p.sprays || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const fieldSetup = (p.fields || []).reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
+  const pepperCost = sprayCost + fieldSetup;
+  const pepperMargin = pepperRevenue - pepperCost;
+
+  // ---- General ----
+  const expenses = [...(data.expenses || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const generalCost = expenses.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  const totalRevenue = poultryRevenue + pepperRevenue;
+  const totalCost = poultryCost + pepperCost + generalCost;
+  const netProfit = totalRevenue - totalCost;
+
+  // Manure moved from poultry to fields — the internal value the farm captures.
+  const manureBags = (data.litter || [])
+    .filter((r) => r.action === 'Removed to field')
+    .reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+
+  const enterpriseChart = [
+    { name: 'Poultry', revenue: Math.round(poultryRevenue), cost: Math.round(poultryCost) },
+    { name: 'Bell pepper', revenue: Math.round(pepperRevenue), cost: Math.round(pepperCost) },
+    { name: 'General', revenue: 0, cost: Math.round(generalCost) },
+  ];
+
+  const byCategory = {};
+  expenses.forEach((e) => { byCategory[e.category] = (byCategory[e.category] || 0) + (Number(e.amount) || 0); });
+
+  return (
+    <>
+      <header className="header">
+        <div>
+          <p className="brand-eyebrow">AI Farms · Whole Farm</p>
+          <h1 className="brand-title">Farm Profit &amp; Loss</h1>
+          <p className="brand-sub">Eikwe, Western Region · poultry + bell pepper combined</p>
+        </div>
+        <div className="day-stamp">
+          <DayRing pct={totalRevenue ? Math.max(0, Math.min(1, netProfit / Math.max(totalRevenue, 1))) : 0} color={netProfit >= 0 ? '#7A9A66' : '#C15F41'} />
+          <div>
+            <div className={`num ${netProfit >= 0 ? 'pepper' : ''}`}>GH₵ {num(netProfit, 2)}</div>
+            <div className="label">net {netProfit >= 0 ? 'profit' : 'loss'} to date</div>
+          </div>
+        </div>
+      </header>
+
+      <div className="grid grid-4">
+        <StatCard title="Total Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="poultry + pepper sales" />
+        <StatCard title="Total Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot="inputs + setup + general" />
+        <StatCard title="Net Profit" value={`GH₵ ${num(netProfit, 2)}`} tone={netProfit >= 0 ? 'green' : 'rust'} foot={netProfit >= 0 ? 'farm is in profit' : 'farm below break-even'} />
+        <StatCard title="Manure Recycled" value={manureBags ? `${num(manureBags, 1)} bags` : '—'} tone="green" foot="poultry litter to fields" />
+      </div>
+
+      <div className="grid grid-2" style={{ marginTop: 18 }}>
+        <div className="panel">
+          <div className="panel-head"><h3>Revenue vs cost by enterprise</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={enterpriseChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Bar dataKey="revenue" name="Revenue (GH₵)" fill="#7A9A66" barSize={18} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="cost" name="Cost (GH₵)" fill="#C15F41" barSize={18} radius={[3, 3, 0, 0]} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head"><h3>Enterprise breakdown</h3></div>
+          <div style={{ padding: '4px 0 10px' }}>
+            <div className="kv"><span className="k">Poultry revenue</span><span className="v">GH₵ {num(poultryRevenue, 2)}</span></div>
+            <div className="kv"><span className="k">Poultry cost</span><span className="v">GH₵ {num(poultryCost, 2)}</span></div>
+            <div className="kv">
+              <span className="k">Poultry margin</span>
+              <span className="v" style={{ color: poultryMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(poultryMargin, 2)}</span>
+            </div>
+            <div className="kv"><span className="k">Pepper revenue</span><span className="v">GH₵ {num(pepperRevenue, 2)}</span></div>
+            <div className="kv"><span className="k">Pepper cost</span><span className="v">GH₵ {num(pepperCost, 2)}</span></div>
+            <div className="kv">
+              <span className="k">Pepper margin</span>
+              <span className="v" style={{ color: pepperMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(pepperMargin, 2)}</span>
+            </div>
+            <div className="kv"><span className="k">General expenses</span><span className="v">GH₵ {num(generalCost, 2)}</span></div>
+            <div className="kv">
+              <span className="k">Net profit</span>
+              <span className="v" style={{ color: netProfit >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(netProfit, 2)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel-head" style={{ margin: '22px 0 14px' }}>
+        <h3 style={{ fontSize: 18 }}>General farm expenses</h3>
+        <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add expense</button>
+      </div>
+
+      {Object.keys(byCategory).length > 0 && (
+        <div className="grid grid-4" style={{ marginBottom: 16 }}>
+          {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([cat, amt]) => (
+            <StatCard key={cat} title={cat} value={`GH₵ ${num(amt, 2)}`} tone="rust" foot="spent to date" />
+          ))}
+        </div>
+      )}
+
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Category</th><th>Description</th><th>Applies to</th><th>Amount</th><th></th></tr>
+          </thead>
+          <tbody>
+            {expenses.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{fmtDate(r.date)}</td>
+                <td>{r.category}</td>
+                <td>{r.description || '—'}</td>
+                <td>{r.scope === 'poultry' ? 'Poultry' : r.scope === 'pepper' ? 'Bell pepper' : 'Whole farm'}</td>
+                <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                <td><button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button></td>
+              </tr>
+            ))}
+            {expenses.length === 0 && <tr><td colSpan={6} className="empty">No general expenses yet — add labour, transport, utilities and repairs for a true farm P&amp;L.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="stat-foot">
+        Feed, litter, sprays and setup costs are pulled automatically from the poultry and pepper
+        workspaces. Add here only what those don&apos;t already capture.
+      </p>
+
+      {modal === 'expense' && (
+        <ExpenseForm onClose={() => setModal(null)} onSave={(e) => { onAddExpense(e); setModal(null); }} />
+      )}
+    </>
+  );
+}
+
+function ExpenseForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), category: 'Labour', description: '', amount: '', scope: 'general', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date || f.amount === '') return;
+    onSave({
+      id: newId(), date: f.date, category: f.category, description: f.description || null,
+      amount: Number(f.amount), scope: f.scope, notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add farm expense" sub="Costs the poultry and pepper logs don't already capture." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Category">
+          <select value={f.category} onChange={set('category')}>
+            {EXPENSE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Description"><input value={f.description} onChange={set('description')} placeholder="e.g. casual labour, 3 days" /></Field>
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
+        <Field label="Applies to">
+          <select value={f.scope} onChange={set('scope')}>
+            <option value="general">Whole farm</option>
+            <option value="poultry">Poultry</option>
+            <option value="pepper">Bell pepper</option>
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save expense</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ============= AGROCHEMICAL / INPUT STOCK (PEPPER) =========== */
+/* ============================================================= */
+
+const INPUT_UNITS = ['ml', 'L', 'g', 'kg', 'sachets', 'bags'];
+const INPUT_TYPES = ['Insecticide', 'Fungicide', 'Fertiliser', 'Foliar feed', 'Herbicide', 'Other'];
+
+function InputsTab({ inputs, onAdd, onUpdate, onDelete }) {
+  const low = inputs.filter((i) => i.reorderAt != null && Number(i.quantity) <= Number(i.reorderAt));
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Agrochemical &amp; Input Stock</h3>
+        <button className="btn btn-green" onClick={onAdd}>+ Add input</button>
+      </div>
+
+      {low.map((i) => (
+        <div className="stale-banner" key={i.id} style={{ marginBottom: 10 }}>
+          ⚠ <span><strong>{i.name}</strong> is low — {num(i.quantity, 1)} {i.unit} left (reorder at {num(i.reorderAt, 1)}). Restock before you need it mid-outbreak.</span>
+        </div>
+      ))}
+
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Input</th><th>Type</th><th>Active ingredient</th><th>In stock</th><th>Reorder at</th><th>Unit cost</th><th>Adjust</th><th></th></tr>
+          </thead>
+          <tbody>
+            {inputs.map((i) => {
+              const isLow = i.reorderAt != null && Number(i.quantity) <= Number(i.reorderAt);
+              return (
+                <tr key={i.id}>
+                  <td>{i.name}</td>
+                  <td>{i.type}</td>
+                  <td>{i.activeIngredient || '—'}</td>
+                  <td className="mono">
+                    <span className={isLow ? 'tag rust' : 'tag green'}>{num(i.quantity, 1)} {i.unit}</span>
+                  </td>
+                  <td className="mono">{i.reorderAt != null ? `${num(i.reorderAt, 1)} ${i.unit}` : '—'}</td>
+                  <td className="mono">{i.unitCost != null ? `GH₵ ${num(i.unitCost, 2)}` : '—'}</td>
+                  <td>
+                    <span style={{ display: 'flex', gap: 6 }}>
+                      <button className="link-btn" onClick={() => onUpdate(i.id, { quantity: Math.max(0, Number(i.quantity) - 1) })}>−1</button>
+                      <button className="link-btn" onClick={() => onUpdate(i.id, { quantity: Number(i.quantity) + 1 })}>+1</button>
+                    </span>
+                  </td>
+                  <td><button className="link-btn rust" onClick={() => onDelete(i.id)}>Delete</button></td>
+                </tr>
+              );
+            })}
+            {inputs.length === 0 && <tr><td colSpan={8} className="empty">No inputs tracked yet — add your sprays and fertilisers with a reorder level so you never run dry mid-season.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Set a reorder level a little above what one full spray round uses, so a warning gives you time
+        to buy before the next application is due.
+      </p>
+    </>
+  );
+}
+
+function InputForm({ onClose, onSave }) {
+  const [f, setF] = useState({ name: '', type: 'Insecticide', activeIngredient: '', quantity: '', unit: 'L', reorderAt: '', unitCost: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.name || f.quantity === '') return;
+    onSave({
+      id: newId(), name: f.name, type: f.type, activeIngredient: f.activeIngredient || null,
+      quantity: Number(f.quantity), unit: f.unit,
+      reorderAt: f.reorderAt === '' ? null : Number(f.reorderAt),
+      unitCost: f.unitCost === '' ? null : Number(f.unitCost),
+      notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add input to stock" sub="Sprays, fertilisers and foliar feeds you keep on hand." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Imida Super" /></Field>
+        <Field label="Type">
+          <select value={f.type} onChange={set('type')}>
+            {INPUT_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Active ingredient"><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="e.g. Imidacloprid" /></Field>
+        <Field label="Quantity in stock"><input type="number" step="0.1" value={f.quantity} onChange={set('quantity')} /></Field>
+        <Field label="Unit">
+          <select value={f.unit} onChange={set('unit')}>
+            {INPUT_UNITS.map((u) => <option key={u}>{u}</option>)}
+          </select>
+        </Field>
+        <Field label="Warn me at"><input type="number" step="0.1" value={f.reorderAt} onChange={set('reorderAt')} placeholder="reorder level" /></Field>
+        <Field label="Unit cost (GH₵)"><input type="number" step="0.01" value={f.unitCost} onChange={set('unitCost')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save input</button>
       </div>
     </Modal>
   );
