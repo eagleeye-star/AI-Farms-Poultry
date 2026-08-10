@@ -82,7 +82,13 @@ function defaultPepper() {
 }
 
 function tagEntries(arr, flockId) {
-  return (arr || []).map((e) => (e.flockId ? e : { ...e, flockId }));
+  // Every record needs BOTH a flock link and a stable id — older entries
+  // (and a few record types before this fix) may be missing either, so
+  // this repairs both without disturbing anything else about the record.
+  return (arr || []).map((e) => {
+    const withFlock = e.flockId ? e : { ...e, flockId };
+    return withFlock.id ? withFlock : { ...withFlock, id: newId() };
+  });
 }
 
 function makeLayerFlock(meta) {
@@ -250,6 +256,7 @@ export default function App() {
   const [workspace, setWorkspace] = useState('poultry');
   const [tab, setTab] = useState('dashboard');
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
+  const [editingLog, setEditingLog] = useState(null); // the Daily Log entry being edited, if any
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
@@ -306,7 +313,31 @@ export default function App() {
   const daysSinceLastEntry = latest ? daysBetween(latest.date, todayISO()) : null;
   const isStale = daysSinceLastEntry !== null && daysSinceLastEntry > 3;
 
-  const feedBalance = feed.length ? feed[feed.length - 1].balance : null;
+  /* Feed balance as a real running ledger, not a number frozen on each
+     record at entry time. It merges every purchase/adjustment with every
+     day's "feed given" from the Daily Log, in date order, and carries a
+     cumulative total — so entering a purchase always moves stock up, and
+     logging the day's usage always moves it down, however the entries were
+     typed in. */
+  const feedLedger = useMemo(() => {
+    const events = [
+      ...feed.map((r) => ({
+        date: r.date,
+        delta: (Number(r.purchased) || 0) - (Number(r.used) || 0) + (Number(r.adjustment) || 0),
+        kind: 'purchase', ref: r,
+      })),
+      ...dailyLog.filter((r) => r.feedGiven != null && r.feedGiven !== '').map((r) => ({
+        date: r.date,
+        delta: -(Number(r.feedGiven) || 0),
+        kind: 'usage', ref: r,
+      })),
+    ].sort((a, b) => new Date(a.date) - new Date(b.date) || (a.kind === 'purchase' ? -1 : 1));
+
+    let running = 0;
+    return events.map((e) => { running += e.delta; return { ...e, balance: running }; });
+  }, [feed, dailyLog]);
+
+  const feedBalance = feedLedger.length ? feedLedger[feedLedger.length - 1].balance : (feed.length || dailyLog.length ? 0 : null);
   const totalFeedCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const feedCostPerBird = currentBirds ? totalFeedCost / currentBirds : null;
 
@@ -397,17 +428,14 @@ export default function App() {
     [vaxSchedule]
   );
 
-  // Kept for the weekly report and the "next booster due" view.
+  // Latest confirmed shot per disease — used in the weekly report and dashboard.
   const vaxStatus = useMemo(() => {
     const map = {};
     vaxSchedule.filter((v) => v.status === 'done').forEach((v) => {
       const key = v.disease || v.vaccine;
       if (!map[key] || new Date(v.date) > new Date(map[key].date)) map[key] = v;
     });
-    return Object.values(map).map((v) => ({
-      ...v,
-      daysLeft: v.nextDue ? daysBetween(todayISO(), v.nextDue) : null,
-    }));
+    return Object.values(map);
   }, [vaxSchedule]);
 
   const chartData = dailyLog.map((r) => ({
@@ -420,9 +448,12 @@ export default function App() {
     henDay: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
   }));
 
-  const feedChartData = feed
-    .filter((f) => f.balance !== null && f.balance !== undefined)
-    .map((f) => ({ date: fmtDate(f.date).slice(0, 6), balance: f.balance, used: f.used, purchased: f.purchased }));
+  const feedChartData = feedLedger.map((e) => ({
+    date: fmtDate(e.date).slice(0, 6),
+    balance: e.balance,
+    purchased: e.kind === 'purchase' ? e.ref.purchased : null,
+    used: e.kind === 'usage' ? e.ref.feedGiven : e.ref.used,
+  }));
 
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
@@ -433,6 +464,12 @@ export default function App() {
 
   function addDailyLog(entry) {
     setData((d) => touch({ ...d, dailyLog: [...d.dailyLog, { ...entry, flockId: activeFlock.id }] }));
+  }
+  function updateDailyLog(id, patch) {
+    setData((d) => touch({ ...d, dailyLog: d.dailyLog.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function deleteDailyLog(id) {
+    setData((d) => touch({ ...d, dailyLog: d.dailyLog.filter((r) => r.id !== id) }));
   }
   function addFeed(entry) {
     setData((d) => touch({ ...d, feed: [...d.feed, { ...entry, flockId: activeFlock.id }] }));
@@ -489,12 +526,18 @@ export default function App() {
   /** Load a breed vaccination programme, skipping any shot already recorded. */
   function applyVaxTemplate() {
     const tpl = VAX_TEMPLATES[activeFlock.standardKey] || [];
-    const existing = new Set(data.vax.filter((v) => v.flockId === activeFlock.id).map((v) => `${v.disease}|${v.date}`));
+    // Dedupe on dueDate, not date — confirming a shot as "done" rewrites
+    // date to the confirmation day, so date is not stable, but dueDate is
+    // never touched after the entry is created.
+    const existing = new Set(
+      data.vax.filter((v) => v.flockId === activeFlock.id)
+        .map((v) => `${v.disease}|${v.dueDate || v.date}`)
+    );
     const rows = tpl.map((t) => {
       const date = addDaysISO(activeFlock.startDate, t.day);
       return {
         id: newId(), flockId: activeFlock.id, date, dueDate: date,
-        disease: t.disease, vaccine: t.vaccine, method: t.route, nextDue: null,
+        disease: t.disease, vaccine: t.vaccine, method: t.route,
         notes: `Day ${t.day} — from ${activeFlock.type} programme`,
         status: 'planned',
       };
@@ -626,7 +669,7 @@ export default function App() {
       `Weeks to point-of-lay (standard): ${weeksToPOL > 0 ? weeksToPOL : 'reached'}`,
       '',
       'Vaccination status:',
-      ...vaxStatus.map((v) => `  - ${v.disease || v.vaccine}: last ${fmtDate(v.date)}, next due ${fmtDate(v.nextDue)}`),
+      ...vaxStatus.map((v) => `  - ${v.disease || v.vaccine}: last given ${fmtDate(v.date)}`),
       '',
       `Entries logged this week: ${recent.length}`,
       ...recent.map((r) => `  ${fmtDate(r.date)} — closing ${num(r.closing)}, deaths ${num(r.mortality)}, feed ${r.feedGiven ?? '—'}kg, eggs ${r.eggs ?? '—'}${r.notes ? ' — ' + r.notes : ''}`),
@@ -794,11 +837,23 @@ export default function App() {
       )}
 
       {tab === 'log' && (
-        <LogTab dailyLog={[...dailyLog].reverse()} onAdd={() => setModal('log')} />
+        <LogTab
+          dailyLog={[...dailyLog].reverse()}
+          onAdd={() => { setEditingLog(null); setModal('log'); }}
+          onEdit={(entry) => { setEditingLog(entry); setModal('log'); }}
+          onDelete={deleteDailyLog}
+        />
       )}
 
       {tab === 'feed' && (
-        <FeedTab feed={[...feed].reverse()} feedDaysLeft={feedDaysLeft} avgDailyFeed={avgDailyFeed} feedBalance={feedBalance} onAdd={() => setModal('feed')} />
+        <FeedTab
+          feed={[...feed].reverse()}
+          ledger={[...feedLedger].reverse()}
+          feedDaysLeft={feedDaysLeft}
+          avgDailyFeed={avgDailyFeed}
+          feedBalance={feedBalance}
+          onAdd={() => setModal('feed')}
+        />
       )}
 
       {tab === 'mix' && (
@@ -862,13 +917,6 @@ export default function App() {
               daysLeft: v.daysLeft,
               source: activeFlock.flockName,
             })),
-            ...vaxStatus.filter((v) => v.daysLeft !== null).map((v) => ({
-              id: `vaxnext-${v.disease || v.vaccine}`,
-              title: `${v.disease || v.vaccine} booster due`,
-              dueDate: v.nextDue,
-              daysLeft: v.daysLeft,
-              source: activeFlock.flockName,
-            })),
             ...(feedDaysLeft != null && feedDaysLeft <= 7 ? [{
               id: 'feed-runout',
               title: `Reorder feed — about ${feedDaysLeft} day(s) left in store`,
@@ -911,10 +959,16 @@ export default function App() {
 
       {modal === 'log' && (
         <LogForm
+          entry={editingLog}
           lastClosing={latest ? latest.closing : activeFlock.initialBirds}
           flockType={activeFlock.type}
-          onClose={() => setModal(null)}
-          onSave={(e) => { addDailyLog(e); setModal(null); }}
+          onClose={() => { setModal(null); setEditingLog(null); }}
+          onSave={(e) => {
+            if (editingLog) updateDailyLog(editingLog.id, e);
+            else addDailyLog(e);
+            setModal(null);
+            setEditingLog(null);
+          }}
         />
       )}
       {modal === 'feed' && (
@@ -1074,7 +1128,7 @@ function DashboardTab({
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard
           title="Feed Runs Out"
-          value={feedDaysLeft != null ? `${feedDaysLeft} days` : '—'}
+          value={feedDaysLeft != null ? (feedDaysLeft <= 0 ? 'Out of stock' : `${feedDaysLeft} days`) : '—'}
           tone={feedTone}
           foot={avgDailyFeed ? `using ~${num(avgDailyFeed, 1)} kg/day` : 'log feed use to project'}
         />
@@ -1190,7 +1244,7 @@ function DashboardTab({
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Disease</th><th>Status</th><th>Date</th><th>Method</th><th>Next due</th></tr>
+            <tr><th>Disease</th><th>Status</th><th>Date</th><th>Method</th></tr>
           </thead>
           <tbody>
             {(vaxPending || []).map((v) => (
@@ -1199,26 +1253,18 @@ function DashboardTab({
                 <td><span className="tag gold">To confirm</span></td>
                 <td className="mono">{fmtDate(v.dueDate)}</td>
                 <td>{v.method || '—'}</td>
-                <td className="mono">—</td>
               </tr>
             ))}
-            {vaxStatus.map((v, i) => (
-              <tr key={`d-${i}`}>
+            {vaxStatus.map((v) => (
+              <tr key={`d-${v.id}`}>
                 <td>{v.disease || v.vaccine}</td>
                 <td><span className="tag green">Done</span></td>
                 <td className="mono">{fmtDate(v.date)}</td>
                 <td>{v.method || '—'}</td>
-                <td className="mono">
-                  {v.nextDue
-                    ? (v.daysLeft < 0
-                      ? <span className="tag rust">{fmtDate(v.nextDue)}</span>
-                      : fmtDate(v.nextDue))
-                    : '—'}
-                </td>
               </tr>
             ))}
             {vaxStatus.length === 0 && (!vaxPending || vaxPending.length === 0) && (
-              <tr><td colSpan={5} className="empty">No vaccination records yet — load a programme from the Health tab.</td></tr>
+              <tr><td colSpan={4} className="empty">No vaccination records yet — load a programme from the Health tab.</td></tr>
             )}
           </tbody>
         </table>
@@ -1229,7 +1275,7 @@ function DashboardTab({
 
 /* ---------------- Daily Log tab ---------------- */
 
-function LogTab({ dailyLog, onAdd }) {
+function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1241,12 +1287,12 @@ function LogTab({ dailyLog, onAdd }) {
           <thead>
             <tr>
               <th>Date</th><th>Age (d)</th><th>Opening</th><th>Mortality</th><th>Cause</th><th>Culls</th>
-              <th>Closing</th><th>Feed (kg)</th><th>Water (L)</th><th>Light (h)</th><th>Eggs</th><th>Cracked</th><th>Meds/Vax</th><th>Notes</th>
+              <th>Closing</th><th>Feed (kg)</th><th>Water (L)</th><th>Light (h)</th><th>Eggs</th><th>Cracked</th><th>Meds/Vax</th><th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {dailyLog.map((r, i) => (
-              <tr key={i}>
+            {dailyLog.map((r) => (
+              <tr key={r.id || r.date}>
                 <td className="mono">{fmtDate(r.date)}</td>
                 <td className="mono">{r.birdAge ?? '—'}</td>
                 <td className="mono">{num(r.opening)}</td>
@@ -1261,9 +1307,17 @@ function LogTab({ dailyLog, onAdd }) {
                 <td className="mono">{num(r.eggsCracked)}</td>
                 <td>{r.medication || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                    {r.id && onDelete && (
+                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this entry?')) onDelete(r.id); }}>Delete</button>
+                    )}
+                  </span>
+                </td>
               </tr>
             ))}
-            {dailyLog.length === 0 && <tr><td colSpan={14} className="empty">No entries yet — log the first day.</td></tr>}
+            {dailyLog.length === 0 && <tr><td colSpan={15} className="empty">No entries yet — log the first day.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1271,10 +1325,22 @@ function LogTab({ dailyLog, onAdd }) {
   );
 }
 
-function LogForm({ lastClosing, onClose, onSave }) {
+function LogForm({ entry, lastClosing, onClose, onSave }) {
+  const isEdit = Boolean(entry);
   const [f, setF] = useState({
-    date: todayISO(), birdAge: '', opening: lastClosing ?? '', mortality: 0, mortalityCause: '', culls: 0,
-    feedGiven: '', waterGiven: '', lightHours: '', eggs: '', eggsCracked: '', medication: '', notes: '',
+    date: entry?.date || todayISO(),
+    birdAge: entry?.birdAge ?? '',
+    opening: entry?.opening ?? (lastClosing ?? ''),
+    mortality: entry?.mortality ?? 0,
+    mortalityCause: entry?.mortalityCause || '',
+    culls: entry?.culls ?? 0,
+    feedGiven: entry?.feedGiven ?? '',
+    waterGiven: entry?.waterGiven ?? '',
+    lightHours: entry?.lightHours ?? '',
+    eggs: entry?.eggs ?? '',
+    eggsCracked: entry?.eggsCracked ?? '',
+    medication: entry?.medication || '',
+    notes: entry?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
@@ -1282,6 +1348,7 @@ function LogForm({ lastClosing, onClose, onSave }) {
   function submit() {
     if (!f.date || f.opening === '') return;
     onSave({
+      id: entry?.id || newId(),
       date: f.date,
       birdAge: f.birdAge === '' ? null : Number(f.birdAge),
       opening: Number(f.opening),
@@ -1300,7 +1367,11 @@ function LogForm({ lastClosing, onClose, onSave }) {
   }
 
   return (
-    <Modal title="Log today's entry" sub="Opening count defaults to yesterday's closing." onClose={onClose}>
+    <Modal
+      title={isEdit ? `Edit entry — ${fmtDate(f.date)}` : "Log today's entry"}
+      sub={isEdit ? 'Editing an existing day does not change any other day\'s opening count.' : "Opening count defaults to yesterday's closing."}
+      onClose={onClose}
+    >
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
@@ -1329,7 +1400,7 @@ function LogForm({ lastClosing, onClose, onSave }) {
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save entry</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save entry'}</button>
       </div>
     </Modal>
   );
@@ -1337,8 +1408,9 @@ function LogForm({ lastClosing, onClose, onSave }) {
 
 /* ---------------- Feed tab ---------------- */
 
-function FeedTab({ feed, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
+function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
   const totalCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const totalPurchased = feed.reduce((s, r) => s + (Number(r.purchased) || 0), 0);
   return (
     <>
       {feedDaysLeft != null && feedDaysLeft <= 7 && (
@@ -1351,30 +1423,76 @@ function FeedTab({ feed, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
       )}
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Feed &amp; Inventory</h3>
-        <button className="btn btn-gold" onClick={onAdd}>+ Add feed record</button>
+        <button className="btn btn-gold" onClick={onAdd}>+ Add purchase / adjustment</button>
       </div>
-      {totalCost > 0 && (
-        <p className="stat-foot" style={{ marginBottom: 10 }}>Total feed spend logged: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(totalCost, 2)}</strong></p>
-      )}
+
+      <div className="grid grid-4">
+        <StatCard
+          title="In Store"
+          value={feedBalance != null ? `${num(feedBalance, 1)} kg` : '—'}
+          tone={feedBalance != null && feedBalance < 0 ? 'rust' : 'green'}
+          foot={feedBalance != null && feedBalance < 0 ? 'more used than purchased — check entries' : 'live running balance'}
+        />
+        <StatCard title="Purchased" value={`${num(totalPurchased, 1)} kg`} tone="gold" foot="all-time" />
+        <StatCard title="Spent" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot="feed purchases" />
+        <StatCard title="Used" value={feed.length || ledger.length ? `${num(ledger.reduce((s, e) => s + (e.kind === 'usage' ? -e.delta : 0), 0), 1)} kg` : '—'} foot="from Daily Log entries" />
+      </div>
+
+      <p className="stat-foot" style={{ margin: '14px 0' }}>
+        The balance below updates automatically from two things: a <strong>purchase</strong> you log
+        here, and the <strong>feed given</strong> you log each day in Daily Log. You don&apos;t need to
+        enter usage twice — just keep Daily Log up to date and the store balance follows it.
+      </p>
+
+      <p className="section-title" style={{ marginTop: 0 }}>Purchases &amp; adjustments</p>
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Cost (GH₵)</th><th>Used (kg)</th><th>Balance (kg)</th><th>Supplier</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Adjustment</th><th>Cost (GH₵)</th><th>Supplier</th><th>Notes</th></tr>
           </thead>
           <tbody>
-            {feed.map((r, i) => (
-              <tr key={i}>
+            {feed.map((r) => (
+              <tr key={r.id || r.date}>
                 <td className="mono">{fmtDate(r.date)}</td>
                 <td>{r.feedType || '—'}</td>
                 <td className="mono">{r.purchased != null ? num(r.purchased, 1) : '—'}</td>
+                <td className="mono">
+                  {r.adjustment ? (
+                    <span className={`tag ${r.adjustment < 0 ? 'rust' : 'green'}`}>
+                      {r.adjustment > 0 ? '+' : ''}{num(r.adjustment, 1)}
+                    </span>
+                  ) : '—'}
+                </td>
                 <td className="mono">{r.cost != null ? num(r.cost, 2) : '—'}</td>
-                <td className="mono">{r.used != null ? num(r.used, 2) : '—'}</td>
-                <td className="mono">{r.balance != null ? num(r.balance, 1) : '—'}</td>
                 <td>{r.supplier || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
               </tr>
             ))}
-            {feed.length === 0 && <tr><td colSpan={8} className="empty">No feed records yet.</td></tr>}
+            {feed.length === 0 && <tr><td colSpan={7} className="empty">No purchases logged yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="section-title">Running balance (purchases &amp; daily usage combined)</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Event</th><th>Change (kg)</th><th>Balance after (kg)</th></tr>
+          </thead>
+          <tbody>
+            {ledger.map((e, i) => (
+              <tr key={i}>
+                <td className="mono">{fmtDate(e.date)}</td>
+                <td>
+                  {e.kind === 'purchase'
+                    ? <span className="tag green">Purchase{e.ref.feedType ? ` — ${e.ref.feedType}` : ''}</span>
+                    : <span className="tag gold">Daily usage</span>}
+                </td>
+                <td className="mono">{e.delta > 0 ? '+' : ''}{num(e.delta, 1)}</td>
+                <td className="mono"><strong>{num(e.balance, 1)}</strong></td>
+              </tr>
+            ))}
+            {ledger.length === 0 && <tr><td colSpan={4} className="empty">Balance will build up here once you log a purchase or a day's feed given.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1383,34 +1501,40 @@ function FeedTab({ feed, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
 }
 
 function FeedForm({ lastBalance, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), feedType: '', purchased: '', cost: '', used: '', supplier: '', notes: '' });
+  const [f, setF] = useState({ date: todayISO(), feedType: '', purchased: '', cost: '', adjustment: '', supplier: '', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const balance = (Number(lastBalance) || 0) + (Number(f.purchased) || 0) - (Number(f.used) || 0);
+  const projected = (Number(lastBalance) || 0) + (Number(f.purchased) || 0) + (Number(f.adjustment) || 0);
 
   function submit() {
     if (!f.date) return;
     onSave({
+      id: newId(),
       date: f.date,
       feedType: f.feedType || null,
       purchased: f.purchased === '' ? null : Number(f.purchased),
       cost: f.cost === '' ? null : Number(f.cost),
-      used: f.used === '' ? null : Number(f.used),
-      balance,
+      adjustment: f.adjustment === '' ? null : Number(f.adjustment),
       supplier: f.supplier || null,
       notes: f.notes || null,
     });
   }
 
   return (
-    <Modal title="Add feed record" sub={`Running balance starts from ${lastBalance != null ? num(lastBalance, 1) : 0} kg.`} onClose={onClose}>
+    <Modal
+      title="Add purchase / adjustment"
+      sub={`Current store balance: ${lastBalance != null ? num(lastBalance, 1) : 0} kg. Daily usage is pulled in automatically from Daily Log — no need to enter it here.`}
+      onClose={onClose}
+    >
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Feed type"><input value={f.feedType} onChange={set('feedType')} placeholder="e.g. Grower Mash" /></Field>
         <Field label="Purchased (kg)"><input type="number" step="0.1" value={f.purchased} onChange={set('purchased')} /></Field>
         <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} placeholder="if purchased today" /></Field>
-        <Field label="Used (kg)"><input type="number" step="0.01" value={f.used} onChange={set('used')} /></Field>
+        <Field label="Adjustment (kg)">
+          <input type="number" step="0.1" value={f.adjustment} onChange={set('adjustment')} placeholder="e.g. -3 spillage, +5 recount" />
+        </Field>
         <Field label="Supplier"><input value={f.supplier} onChange={set('supplier')} /></Field>
-        <Field label="Balance (auto)"><input value={num(balance, 1)} disabled /></Field>
+        <Field label="Balance after (auto)"><input value={num(projected, 1)} disabled /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -1420,6 +1544,8 @@ function FeedForm({ lastBalance, onClose, onSave }) {
     </Modal>
   );
 }
+
+/* ---------------- Health tab ---------------- */
 
 /* ---------------- Health tab ---------------- */
 
@@ -1476,7 +1602,7 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
       <p className="section-title">Vaccination schedule</p>
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Status</th><th>Date</th><th>Vaccine</th><th>Disease</th><th>Method</th><th>Next due</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th>Status</th><th>Date</th><th>Vaccine</th><th>Disease</th><th>Method</th><th>Notes</th><th></th></tr></thead>
           <tbody>
             {vax.map((v) => (
               <tr key={v.id || `${v.disease}-${v.date}`}>
@@ -1489,7 +1615,6 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
                 <td>{v.vaccine}</td>
                 <td>{v.disease}</td>
                 <td>{v.method || '—'}</td>
-                <td className="mono">{v.nextDue ? fmtDate(v.nextDue) : '—'}</td>
                 <td className="notes">{v.notes || ''}</td>
                 <td>
                   <span style={{ display: 'flex', gap: 8 }}>
@@ -1503,7 +1628,7 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
                 </td>
               </tr>
             ))}
-            {vax.length === 0 && <tr><td colSpan={8} className="empty">No vaccinations logged yet.</td></tr>}
+            {vax.length === 0 && <tr><td colSpan={7} className="empty">No vaccinations logged yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1513,8 +1638,8 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
         <table className="data">
           <thead><tr><th>Date</th><th>Drug</th><th>Purpose</th><th>Dosage</th><th>Duration</th><th>By</th><th>Notes</th></tr></thead>
           <tbody>
-            {meds.map((m, i) => (
-              <tr key={i}>
+            {meds.map((m) => (
+              <tr key={m.id || m.date}>
                 <td className="mono">{fmtDate(m.date)}</td>
                 <td>{m.drug}</td>
                 <td>{m.purpose || '—'}</td>
@@ -1538,6 +1663,7 @@ function MedForm({ onClose, onSave }) {
   function submit() {
     if (!f.date || !f.drug) return;
     onSave({
+      id: newId(),
       date: f.date, drug: f.drug, purpose: f.purpose || null, dosage: f.dosage || null,
       duration: f.duration === '' ? null : Number(f.duration), start: f.date, end: f.date,
       by: f.by || null, notes: f.notes || null,
@@ -1563,14 +1689,15 @@ function MedForm({ onClose, onSave }) {
 }
 
 function VaxForm({ onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', birdAge: '', method: 'Water', nextDue: '', notes: '' });
+  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', birdAge: '', method: 'Water', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
     if (!f.date || !f.vaccine) return;
     onSave({
+      id: newId(),
       date: f.date, vaccine: f.vaccine, disease: f.disease || f.vaccine,
       birdAge: f.birdAge === '' ? null : Number(f.birdAge), method: f.method || null,
-      nextDue: f.nextDue || null, notes: f.notes || null,
+      notes: f.notes || null,
     });
   }
   return (
@@ -1585,7 +1712,6 @@ function VaxForm({ onClose, onSave }) {
             <option>Water</option><option>Injection</option><option>Eye drop</option><option>Spray</option>
           </select>
         </Field>
-        <Field label="Next due date"><input type="date" value={f.nextDue} onChange={set('nextDue')} /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -1628,8 +1754,8 @@ function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
         <table className="data">
           <thead><tr><th>Date</th><th>Sample size</th><th>Avg weight (g)</th><th>Notes</th></tr></thead>
           <tbody>
-            {weightSamples.map((s, i) => (
-              <tr key={i}>
+            {weightSamples.map((s) => (
+              <tr key={s.id || s.date}>
                 <td className="mono">{fmtDate(s.date)}</td>
                 <td className="mono">{num(s.sampleSize)}</td>
                 <td className="mono">{num(s.avgWeightG)}</td>
@@ -1667,6 +1793,7 @@ function WeightForm({ onClose, onSave }) {
   function submit() {
     if (!f.date || f.avgWeightG === '') return;
     onSave({
+      id: newId(),
       date: f.date,
       sampleSize: f.sampleSize === '' ? null : Number(f.sampleSize),
       avgWeightG: Number(f.avgWeightG),
@@ -1863,7 +1990,7 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
           scope={scope} fieldsScoped={fieldsScoped} totalPlants={totalPlants} totalKg={totalKg}
           revenue={revenue} totalCost={totalCost} inputCost={inputCost} setupCost={setupCost}
           structureCost={structureCost} structureInvested={structureInvested} otherRunning={otherRunning}
-          expenses={expenses} scope={scope} fields={fields}
+          expenses={expenses} fields={fields}
           margin={margin} avgPrice={avgPrice} latestScout={latestScout} pressureTone={pressureTone}
           scopePhi={scopePhi} soonestClear={soonestClear} scopeResistance={scopeResistance}
           harvestChart={harvestChart} pressureChart={pressureChart} harvestScoped={harvestScoped}

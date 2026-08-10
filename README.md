@@ -14,8 +14,12 @@ standard, sales, litter and vaccinations.
 - **Dashboard** — birds, mortality, survival, hen-day % (layers) or **FCR**
   against a Ross 308 target (broilers), revenue / cost / margin, **feed
   run-out projection**, litter age and condition, manure banked.
-- **Feed & Inventory** — feed records with a low-stock banner projecting how
-  many days of feed remain from recent usage.
+- **Feed & Inventory** — log purchases here; the running balance updates
+  automatically from those purchases *and* from the "feed given" you log
+  each day in Daily Log, merged into one chronological ledger. You never
+  enter usage twice, and the balance is always correct even if entries are
+  logged out of order (e.g. a purchase logged today, then yesterday's usage
+  added afterwards). A low-stock banner projects days of feed remaining.
 - **Feed Mix** — home-mix ration calculator (see below).
 - **Litter & Manure** — litter laid, topped up, turned, changed, and
   **removed to field** as manure, with condition tracking.
