@@ -93,6 +93,15 @@ directly comparable** — the pepper field snapshot shows structures and charged
 cost per field, so once the second net house is up you can see whether the
 netting actually paid for itself.
 
+### Fixing a feed purchase entered wrong
+
+If you saved a purchase without the quantity (or with a wrong cost), open
+**Feed & Inventory**, find the record in the **Purchases & adjustments**
+table, and tap **Edit**. Correct the amount and save — the running balance
+and your feed-cost-per-bird recalculate from the correction immediately,
+rather than stacking the fix on top of the mistake. **Delete** is there too,
+if a record shouldn't exist at all.
+
 ### Litter you clear now, assign to a field later
 
 When you clean the coop, log it under **Litter & Manure → + Log litter**,

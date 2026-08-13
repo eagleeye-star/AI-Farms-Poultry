@@ -258,6 +258,7 @@ export default function App() {
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
   const [editingLog, setEditingLog] = useState(null); // the Daily Log entry being edited, if any
   const [editingLitter, setEditingLitter] = useState(null); // the litter record being edited, if any
+  const [editingFeed, setEditingFeed] = useState(null); // the feed purchase record being edited, if any
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
@@ -474,6 +475,12 @@ export default function App() {
   }
   function addFeed(entry) {
     setData((d) => touch({ ...d, feed: [...d.feed, { ...entry, flockId: activeFlock.id }] }));
+  }
+  function updateFeed(id, patch) {
+    setData((d) => touch({ ...d, feed: d.feed.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function deleteFeed(id) {
+    setData((d) => touch({ ...d, feed: d.feed.filter((r) => r.id !== id) }));
   }
   function addMed(entry) {
     setData((d) => touch({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
@@ -859,7 +866,9 @@ export default function App() {
           feedDaysLeft={feedDaysLeft}
           avgDailyFeed={avgDailyFeed}
           feedBalance={feedBalance}
-          onAdd={() => setModal('feed')}
+          onAdd={() => { setEditingFeed(null); setModal('feed'); }}
+          onEdit={(entry) => { setEditingFeed(entry); setModal('feed'); }}
+          onDelete={deleteFeed}
         />
       )}
 
@@ -982,9 +991,15 @@ export default function App() {
       )}
       {modal === 'feed' && (
         <FeedForm
+          entry={editingFeed}
           lastBalance={feedBalance}
-          onClose={() => setModal(null)}
-          onSave={(e) => { addFeed(e); setModal(null); }}
+          onClose={() => { setModal(null); setEditingFeed(null); }}
+          onSave={(e) => {
+            if (editingFeed) updateFeed(editingFeed.id, e);
+            else addFeed(e);
+            setModal(null);
+            setEditingFeed(null);
+          }}
         />
       )}
       {modal === 'med' && (
@@ -1423,7 +1438,7 @@ function LogForm({ entry, lastClosing, onClose, onSave }) {
 
 /* ---------------- Feed tab ---------------- */
 
-function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd }) {
+function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd, onEdit, onDelete }) {
   const totalCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const totalPurchased = feed.reduce((s, r) => s + (Number(r.purchased) || 0), 0);
   return (
@@ -1463,7 +1478,7 @@ function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd 
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Adjustment</th><th>Cost (GH₵)</th><th>Supplier</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Feed type</th><th>Purchased (kg)</th><th>Adjustment</th><th>Cost (GH₵)</th><th>Supplier</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {feed.map((r) => (
@@ -1481,9 +1496,17 @@ function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd 
                 <td className="mono">{r.cost != null ? num(r.cost, 2) : '—'}</td>
                 <td>{r.supplier || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                    {onDelete && r.id && (
+                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this feed record?')) onDelete(r.id); }}>Delete</button>
+                    )}
+                  </span>
+                </td>
               </tr>
             ))}
-            {feed.length === 0 && <tr><td colSpan={7} className="empty">No purchases logged yet.</td></tr>}
+            {feed.length === 0 && <tr><td colSpan={8} className="empty">No purchases logged yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1515,15 +1538,30 @@ function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd 
   );
 }
 
-function FeedForm({ lastBalance, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), feedType: '', purchased: '', cost: '', adjustment: '', supplier: '', notes: '' });
+function FeedForm({ entry, lastBalance, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    date: entry?.date || todayISO(),
+    feedType: entry?.feedType || '',
+    purchased: entry?.purchased ?? '',
+    cost: entry?.cost ?? '',
+    adjustment: entry?.adjustment ?? '',
+    supplier: entry?.supplier || '',
+    notes: entry?.notes || '',
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const projected = (Number(lastBalance) || 0) + (Number(f.purchased) || 0) + (Number(f.adjustment) || 0);
+
+  // When editing, the current store balance already includes this record's
+  // OLD numbers — back those out first so the preview reflects the correction,
+  // not the correction stacked on top of the mistake.
+  const oldContribution = isEdit ? (Number(entry.purchased) || 0) + (Number(entry.adjustment) || 0) : 0;
+  const baseline = (Number(lastBalance) || 0) - oldContribution;
+  const projected = baseline + (Number(f.purchased) || 0) + (Number(f.adjustment) || 0);
 
   function submit() {
     if (!f.date) return;
     onSave({
-      id: newId(),
+      id: entry?.id || newId(),
       date: f.date,
       feedType: f.feedType || null,
       purchased: f.purchased === '' ? null : Number(f.purchased),
@@ -1536,8 +1574,10 @@ function FeedForm({ lastBalance, onClose, onSave }) {
 
   return (
     <Modal
-      title="Add purchase / adjustment"
-      sub={`Current store balance: ${lastBalance != null ? num(lastBalance, 1) : 0} kg. Daily usage is pulled in automatically from Daily Log — no need to enter it here.`}
+      title={isEdit ? `Edit purchase — ${fmtDate(f.date)}` : 'Add purchase / adjustment'}
+      sub={isEdit
+        ? 'Fix the amount or cost — the store balance recalculates from the correction, not on top of the mistake.'
+        : `Current store balance: ${lastBalance != null ? num(lastBalance, 1) : 0} kg. Daily usage is pulled in automatically from Daily Log — no need to enter it here.`}
       onClose={onClose}
     >
       <div className="form-grid">
@@ -1554,7 +1594,7 @@ function FeedForm({ lastBalance, onClose, onSave }) {
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save record</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save record'}</button>
       </div>
     </Modal>
   );
