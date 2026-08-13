@@ -93,6 +93,20 @@ directly comparable** — the pepper field snapshot shows structures and charged
 cost per field, so once the second net house is up you can see whether the
 netting actually paid for itself.
 
+### Litter you clear now, assign to a field later
+
+When you clean the coop, log it under **Litter & Manure → + Log litter**,
+action **"Removed to field."** If you don't know which field it's going to
+yet — it's still composting, or you haven't decided — choose
+**"Stored / composting"** as the destination instead of a field.
+
+That batch then shows up under an **"awaiting assignment"** banner at the top
+of the tab. Whenever you actually apply it, find that record in the table and
+tap **Edit**, then change "To field" to the real field. The manure total for
+that field updates immediately — nothing needs to be logged twice.
+
+---
+
 > Don't enter the same money twice. If you log a net house here, leave that
 > field's **Setup cost** in Crop Cycle blank — otherwise it's counted in both
 > places and your margin will look worse than it is.

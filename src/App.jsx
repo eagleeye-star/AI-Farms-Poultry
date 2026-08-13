@@ -257,6 +257,7 @@ export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
   const [editingLog, setEditingLog] = useState(null); // the Daily Log entry being edited, if any
+  const [editingLitter, setEditingLitter] = useState(null); // the litter record being edited, if any
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
@@ -500,6 +501,12 @@ export default function App() {
   }
   function addLitter(entry) {
     setData((d) => touch({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
+  }
+  function updateLitter(id, patch) {
+    setData((d) => touch({ ...d, litter: (d.litter || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function deleteLitter(id) {
+    setData((d) => touch({ ...d, litter: (d.litter || []).filter((r) => r.id !== id) }));
   }
   function addExpense(entry) {
     setData((d) => touch({ ...d, expenses: [...(d.expenses || []), entry] }));
@@ -874,7 +881,9 @@ export default function App() {
           due={litterDue}
           manureHarvested={manureHarvested}
           litterCost={litterCost}
-          onAdd={() => setModal('litter')}
+          onAdd={() => { setEditingLitter(null); setModal('litter'); }}
+          onEdit={(entry) => { setEditingLitter(entry); setModal('litter'); }}
+          onDelete={deleteLitter}
         />
       )}
 
@@ -992,9 +1001,15 @@ export default function App() {
       )}
       {modal === 'litter' && (
         <LitterForm
+          entry={editingLitter}
           fields={data.pepper.fields}
-          onClose={() => setModal(null)}
-          onSave={(e) => { addLitter(e); setModal(null); }}
+          onClose={() => { setModal(null); setEditingLitter(null); }}
+          onSave={(e) => {
+            if (editingLitter) updateLitter(editingLitter.id, e);
+            else addLitter(e);
+            setModal(null);
+            setEditingLitter(null);
+          }}
         />
       )}
       {modal === 'reminder' && (
@@ -2968,7 +2983,7 @@ function AuthScreen({ onSignedIn, onSetupCloud }) {
 /* ==================== LITTER & MANURE ======================== */
 /* ============================================================= */
 
-function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd }) {
+function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd, onEdit, onDelete }) {
   const conditionTone = condition === 'Wet' || condition === 'Caked' ? 'rust' : condition === 'Damp' ? 'gold' : 'green';
   const toManure = rows.filter((r) => r.action === 'Removed to field');
   const byField = {};
@@ -2976,6 +2991,10 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
     const key = r.toField || 'Unassigned';
     byField[key] = (byField[key] || 0) + (Number(r.quantity) || 0);
   });
+  // Batches marked "Stored / composting" haven't gone to a field yet —
+  // surface them so it's obvious there's manure waiting to be assigned.
+  const awaitingField = toManure.filter((r) => r.toField === 'Stored / composting' || !r.toField);
+  const awaitingBags = awaitingField.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
 
   return (
     <>
@@ -3010,6 +3029,16 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
         </div>
       )}
 
+      {awaitingBags > 0 && (
+        <div className="stale-banner" style={{ marginTop: 16, borderColor: 'rgba(122, 154, 102, 0.4)' }}>
+          🌱 <span>
+            <strong>{num(awaitingBags, 1)} bag(s)</strong> of cleared litter are logged as
+            "Stored / composting" and not yet assigned to a field. Once you decide where it goes,
+            open that record below and hit <strong>Edit</strong> to set the field.
+          </span>
+        </div>
+      )}
+
       {Object.keys(byField).length > 0 && (
         <>
           <p className="section-title">Manure sent to fields</p>
@@ -3025,7 +3054,7 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Action</th><th>Material</th><th>Qty (bags)</th><th>Condition</th><th>Cost</th><th>To field</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Action</th><th>Material</th><th>Qty (bags)</th><th>Condition</th><th>Cost</th><th>To field</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => (
@@ -3039,11 +3068,23 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
                 <td className="mono">{r.quantity != null ? num(r.quantity, 1) : '—'}</td>
                 <td>{r.condition ? <span className={`tag ${r.condition === 'Wet' || r.condition === 'Caked' ? 'rust' : r.condition === 'Damp' ? 'gold' : 'green'}`}>{r.condition}</span> : '—'}</td>
                 <td className="mono">{r.cost != null ? `GH₵ ${num(r.cost, 2)}` : '—'}</td>
-                <td>{r.toField || '—'}</td>
+                <td>
+                  {r.action === 'Removed to field' && (r.toField === 'Stored / composting' || !r.toField)
+                    ? <span className="tag gold">Awaiting field</span>
+                    : (r.toField || '—')}
+                </td>
                 <td className="notes">{r.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                    {onDelete && (
+                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this litter record?')) onDelete(r.id); }}>Delete</button>
+                    )}
+                  </span>
+                </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={8} className="empty">No litter logged yet — record the material laid, top-ups, condition checks, and manure cleared to your fields.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={9} className="empty">No litter logged yet — record the material laid, top-ups, condition checks, and manure cleared to your fields.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3055,17 +3096,24 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
   );
 }
 
-function LitterForm({ fields, onClose, onSave }) {
+function LitterForm({ entry, fields, onClose, onSave }) {
+  const isEdit = Boolean(entry);
   const [f, setF] = useState({
-    date: todayISO(), action: 'Top-up', material: 'Sawdust', quantity: '',
-    condition: 'Dry', cost: '', toField: '', notes: '',
+    date: entry?.date || todayISO(),
+    action: entry?.action || 'Top-up',
+    material: entry?.material || 'Sawdust',
+    quantity: entry?.quantity ?? '',
+    condition: entry?.condition || 'Dry',
+    cost: entry?.cost ?? '',
+    toField: entry?.toField || '',
+    notes: entry?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const isManure = f.action === 'Removed to field';
   function submit() {
     if (!f.date) return;
     onSave({
-      id: newId(), date: f.date, action: f.action,
+      id: entry?.id || newId(), date: f.date, action: f.action,
       material: isManure ? (f.material || null) : f.material,
       quantity: f.quantity === '' ? null : Number(f.quantity),
       condition: isManure ? null : f.condition,
@@ -3076,8 +3124,10 @@ function LitterForm({ fields, onClose, onSave }) {
   }
   return (
     <Modal
-      title="Log litter"
-      sub={isManure ? 'Cleared litter going to the fields as manure.' : 'Litter laid, topped up, turned, or checked.'}
+      title={isEdit ? 'Edit litter record' : 'Log litter'}
+      sub={isEdit && isManure
+        ? 'Assign this batch to a field now that you know where it\'s going, or update anything else.'
+        : (isManure ? 'Cleared litter going to the fields as manure.' : 'Litter laid, topped up, turned, or checked.')}
       onClose={onClose}
     >
       <div className="form-grid">
@@ -3119,7 +3169,7 @@ function LitterForm({ fields, onClose, onSave }) {
       )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save'}</button>
       </div>
     </Modal>
   );
