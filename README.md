@@ -70,6 +70,36 @@ in automatically — add only what those don't already capture.
 
 ---
 
+## Farm Team & Payroll
+
+Under **Whole Farm → Farm Team**, track your farm help and what you pay them.
+
+- **Staff** — name, role, phone, pay type (Daily/Weekly/Monthly), usual rate,
+  start date. Mark someone Inactive when they leave; you can only **Delete**
+  a staff record outright if they have no payment history yet, so payment
+  records never go missing by accident.
+- **Payments** — each one is Wage, Advance, Repaid in cash, or Worked off,
+  and can be assigned to poultry, bell pepper, or general — down to a
+  **specific field or flock**. Picking a staff member auto-suggests their
+  usual rate for a Wage payment.
+- **Advances** — give someone money ahead of work, and the app tracks what
+  they still owe. When they've worked it off, log it as **Worked off** (no
+  new cash left the farm, so no new cost — it just clears the balance). If
+  they hand cash back instead, log **Repaid in cash** (refunds the cost).
+- **Due-payment warnings** — based on pay type and the last wage actually
+  logged, the tab flags anyone whose next payment is due or overdue.
+
+Because payments live in the same cost ledger as everything else, they flow
+straight into the Whole Farm P&L, and into the specific field or flock's own
+cost — the same way Structures & Assets and general expenses already do.
+
+> The general **Labour** category under Whole Farm expenses still exists for
+> one-off casual hires you don't want to add as a named staff member. For
+> anyone regular, log through Farm Team instead — logging the same payment
+> in both places would count it twice.
+
+---
+
 ## Structures & assets (net houses, coops)
 
 Big builds — an insect net house, a poultry coop, a drip system, a borehole —
@@ -105,14 +135,22 @@ if a record shouldn't exist at all.
 ### Litter you clear now, assign to a field later
 
 When you clean the coop, log it under **Litter & Manure → + Log litter**,
-action **"Removed to field."** If you don't know which field it's going to
-yet — it's still composting, or you haven't decided — choose
-**"Stored / composting"** as the destination instead of a field.
+action **"Removed to field."** Give it a **Batch label** — e.g. "Broiler coop
+clean-out" — so you can tell it apart from any other batch later. If you
+don't know which field it's going to yet — it's still composting, or you
+haven't decided — choose **"Stored / composting"** as the destination
+instead of a field.
 
-That batch then shows up under an **"awaiting assignment"** banner at the top
-of the tab. Whenever you actually apply it, find that record in the table and
-tap **Edit**, then change "To field" to the real field. The manure total for
-that field updates immediately — nothing needs to be logged twice.
+That batch shows up under an **awaiting assignment** banner at the top of
+the tab, listed by name (or by quantity and date if you skipped the label).
+Whenever you actually apply it, find that batch — by its label, in the new
+**Batch** column — and tap **Edit**, then change "To field" to the real
+field. The manure total for that field updates immediately.
+
+There's no automatic batch tracking beyond this — the app doesn't know which
+physical pile is which, only what you tell it. The label is what makes
+several stored batches distinguishable later, so it's worth filling in
+whenever you're not assigning a field the same day.
 
 ---
 

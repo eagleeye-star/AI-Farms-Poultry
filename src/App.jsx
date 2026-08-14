@@ -114,7 +114,8 @@ function freshData() {
     sales: [],
     reminders: [],
     litter: [],       // litter laid / topped up / changed / harvested as manure
-    expenses: [],     // whole-farm general costs (labour, transport, utilities)
+    expenses: [],     // whole-farm general costs (labour, transport, utilities) + staff payments
+    staff: [],        // farm help roster
     recipes: [],      // saved home-mix feed formulations
     pepper: defaultPepper(),
     updatedAt: new Date().toISOString(),
@@ -139,6 +140,7 @@ function migrate(saved) {
     reminders: saved.reminders || [],
     litter: saved.litter || [],
     expenses: saved.expenses || [],
+    staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
     pepper: { ...defaultPepper(), ...pepper, inputs: pepper.inputs || [] },
     updatedAt: saved.updatedAt || new Date().toISOString(),
@@ -518,8 +520,23 @@ export default function App() {
   function addExpense(entry) {
     setData((d) => touch({ ...d, expenses: [...(d.expenses || []), entry] }));
   }
+  function updateExpense(id, patch) {
+    setData((d) => touch({ ...d, expenses: (d.expenses || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
   function deleteExpense(id) {
     setData((d) => touch({ ...d, expenses: (d.expenses || []).filter((r) => r.id !== id) }));
+  }
+  function saveStaff(person) {
+    setData((d) => {
+      const exists = (d.staff || []).some((s) => s.id === person.id);
+      const staff = exists
+        ? d.staff.map((s) => (s.id === person.id ? person : s))
+        : [...(d.staff || []), person];
+      return touch({ ...d, staff });
+    });
+  }
+  function deleteStaff(id) {
+    setData((d) => touch({ ...d, staff: (d.staff || []).filter((s) => s.id !== id) }));
   }
   function saveRecipe(entry) {
     setData((d) => touch({ ...d, recipes: [...(d.recipes || []), entry] }));
@@ -884,7 +901,6 @@ export default function App() {
       {tab === 'litter' && (
         <LitterTab
           rows={[...litter].reverse()}
-          fields={data.pepper.fields}
           daysSinceChange={daysSinceLitterChange}
           condition={litterCondition}
           due={litterDue}
@@ -1062,7 +1078,10 @@ export default function App() {
         <FarmWorkspace
           data={data}
           onAddExpense={addExpense}
+          onUpdateExpense={updateExpense}
           onDeleteExpense={deleteExpense}
+          onSaveStaff={saveStaff}
+          onDeleteStaff={deleteStaff}
         />
       )}
 
@@ -2045,7 +2064,7 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
           scope={scope} fieldsScoped={fieldsScoped} totalPlants={totalPlants} totalKg={totalKg}
           revenue={revenue} totalCost={totalCost} inputCost={inputCost} setupCost={setupCost}
           structureCost={structureCost} structureInvested={structureInvested} otherRunning={otherRunning}
-          expenses={expenses} fields={fields}
+          expenses={expenses}
           margin={margin} avgPrice={avgPrice} latestScout={latestScout} pressureTone={pressureTone}
           scopePhi={scopePhi} soonestClear={soonestClear} scopeResistance={scopeResistance}
           harvestChart={harvestChart} pressureChart={pressureChart} harvestScoped={harvestScoped}
@@ -2136,7 +2155,7 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
 
 function PepperDashboard({
   fieldsScoped, totalPlants, totalKg, revenue, totalCost, inputCost, setupCost,
-  structureCost, structureInvested, otherRunning, expenses, scope, fields,
+  structureCost, structureInvested, otherRunning, expenses, scope,
   margin, avgPrice, latestScout, pressureTone, scopePhi, soonestClear, scopeResistance,
   harvestChart, pressureChart, harvestScoped, datOf,
 }) {
@@ -3023,7 +3042,7 @@ function AuthScreen({ onSignedIn, onSetupCloud }) {
 /* ==================== LITTER & MANURE ======================== */
 /* ============================================================= */
 
-function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd, onEdit, onDelete }) {
+function LitterTab({ rows, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd, onEdit, onDelete }) {
   const conditionTone = condition === 'Wet' || condition === 'Caked' ? 'rust' : condition === 'Damp' ? 'gold' : 'green';
   const toManure = rows.filter((r) => r.action === 'Removed to field');
   const byField = {};
@@ -3072,9 +3091,14 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
       {awaitingBags > 0 && (
         <div className="stale-banner" style={{ marginTop: 16, borderColor: 'rgba(122, 154, 102, 0.4)' }}>
           🌱 <span>
-            <strong>{num(awaitingBags, 1)} bag(s)</strong> of cleared litter are logged as
-            "Stored / composting" and not yet assigned to a field. Once you decide where it goes,
-            open that record below and hit <strong>Edit</strong> to set the field.
+            <strong>{num(awaitingBags, 1)} bag(s)</strong> across {awaitingField.length} batch{awaitingField.length === 1 ? '' : 'es'} of
+            cleared litter {awaitingField.length === 1 ? 'is' : 'are'} not yet assigned to a field:
+            {' '}{awaitingField.map((r, i) => (
+              <span key={r.id}>
+                {i > 0 ? ', ' : ' '}
+                <strong>{r.batchLabel || `${num(r.quantity, 1)} bags, ${fmtDate(r.date)}`}</strong>
+              </span>
+            ))}. Find one below and hit <strong>Edit</strong> to set its field.
           </span>
         </div>
       )}
@@ -3094,7 +3118,7 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Action</th><th>Material</th><th>Qty (bags)</th><th>Condition</th><th>Cost</th><th>To field</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Action</th><th>Batch</th><th>Material</th><th>Qty (bags)</th><th>Condition</th><th>Cost</th><th>To field</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => (
@@ -3104,6 +3128,7 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
                   ? <span className="tag green">{r.action}</span>
                   : r.action}
                 </td>
+                <td>{r.batchLabel || '—'}</td>
                 <td>{r.material || '—'}</td>
                 <td className="mono">{r.quantity != null ? num(r.quantity, 1) : '—'}</td>
                 <td>{r.condition ? <span className={`tag ${r.condition === 'Wet' || r.condition === 'Caked' ? 'rust' : r.condition === 'Damp' ? 'gold' : 'green'}`}>{r.condition}</span> : '—'}</td>
@@ -3124,7 +3149,7 @@ function LitterTab({ rows, fields, daysSinceChange, condition, due, manureHarves
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={9} className="empty">No litter logged yet — record the material laid, top-ups, condition checks, and manure cleared to your fields.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={10} className="empty">No litter logged yet — record the material laid, top-ups, condition checks, and manure cleared to your fields.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3146,6 +3171,7 @@ function LitterForm({ entry, fields, onClose, onSave }) {
     condition: entry?.condition || 'Dry',
     cost: entry?.cost ?? '',
     toField: entry?.toField || '',
+    batchLabel: entry?.batchLabel || '',
     notes: entry?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -3159,6 +3185,7 @@ function LitterForm({ entry, fields, onClose, onSave }) {
       condition: isManure ? null : f.condition,
       cost: f.cost === '' ? null : Number(f.cost),
       toField: isManure ? (f.toField || null) : null,
+      batchLabel: isManure ? (f.batchLabel || null) : null,
       notes: f.notes || null,
     });
   }
@@ -3184,13 +3211,21 @@ function LitterForm({ entry, fields, onClose, onSave }) {
         </Field>
         <Field label="Quantity (bags)"><input type="number" step="0.5" value={f.quantity} onChange={set('quantity')} /></Field>
         {isManure ? (
-          <Field label="To field">
-            <select value={f.toField} onChange={set('toField')}>
-              <option value="">— choose field —</option>
-              {fields.map((fl) => <option key={fl.id} value={fl.name}>{fl.name}</option>)}
-              <option value="Stored / composting">Stored / composting</option>
-            </select>
-          </Field>
+          <>
+            <Field label="Batch label">
+              <input
+                value={f.batchLabel} onChange={set('batchLabel')}
+                placeholder="e.g. Broiler coop, 1 Aug clean-out"
+              />
+            </Field>
+            <Field label="To field">
+              <select value={f.toField} onChange={set('toField')}>
+                <option value="">— choose field —</option>
+                {fields.map((fl) => <option key={fl.id} value={fl.name}>{fl.name}</option>)}
+                <option value="Stored / composting">Stored / composting</option>
+              </select>
+            </Field>
+          </>
         ) : (
           <Field label="Condition">
             <select value={f.condition} onChange={set('condition')}>
@@ -3459,6 +3494,58 @@ function FeedMixTab({ recipes, flock, onSave, onDelete }) {
 
 const EXPENSE_CATEGORIES = ['Labour', 'Transport', 'Utilities', 'Repairs & maintenance', 'Equipment', 'Rent', 'Other'];
 
+/* Farm help / payroll. Payments live in the SAME `expenses` array as other
+   costs (tagged with staffId + paymentKind), so they automatically flow
+   through the existing cost rollups — per field, per flock, and whole-farm
+   P&L — without any separate wiring. */
+const PAY_TYPES = ['Daily', 'Weekly', 'Monthly'];
+const PAY_INTERVAL_DAYS = { Daily: 1, Weekly: 7, Monthly: 30 };
+const PAYMENT_METHODS = ['Cash', 'Mobile Money', 'Bank'];
+const PAYMENT_KINDS = ['Wage', 'Advance', 'Repaid in cash', 'Worked off'];
+
+/** How a payment affects farm cost. Advances are real cash out when given;
+    working an advance off isn't new cash, so it doesn't touch cost again. */
+function paymentCostImpact(kind, amount) {
+  const amt = Number(amount) || 0;
+  if (kind === 'Wage' || kind === 'Advance') return amt;
+  if (kind === 'Repaid in cash') return -amt;
+  return 0; // 'Worked off'
+}
+
+/** How a payment affects the advance balance a staff member owes the farm. */
+function paymentBalanceImpact(kind, amount) {
+  const amt = Number(amount) || 0;
+  if (kind === 'Advance') return amt;
+  if (kind === 'Repaid in cash' || kind === 'Worked off') return -amt;
+  return 0; // 'Wage'
+}
+
+function staffBalanceOwed(expenses, staffId) {
+  return (expenses || [])
+    .filter((e) => e.staffId === staffId)
+    .reduce((s, e) => s + (Number(e.balanceAmount) || 0), 0);
+}
+
+/** The raw amount the farmer typed in, recovered from wherever it's stored —
+    'Worked off' has zero cost impact, so its value only lives in
+    balanceAmount; everything else stores it (signed) in amount. */
+function paymentRawAmount(p) {
+  const source = p.paymentKind === 'Worked off' ? p.balanceAmount : p.amount;
+  return Math.abs(Number(source) || 0);
+}
+
+/** When this staff member's next payment is expected, based on their pay
+    type and the last wage actually logged (or their start date if none yet). */
+function nextPaymentDue(staff, expenses) {
+  const wages = (expenses || [])
+    .filter((e) => e.staffId === staff.id && e.paymentKind === 'Wage')
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  const base = wages.length ? wages[0].date : staff.startDate;
+  if (!base) return null;
+  const interval = PAY_INTERVAL_DAYS[staff.payType] || 7;
+  return addDaysISO(base, interval);
+}
+
 /* Capital items — structures and kit that last several seasons. Tracked
    separately from running costs so a GH₵25,000 net house doesn't make the
    season it was built in look like a disaster. */
@@ -3500,13 +3587,17 @@ function annualCharge(item) {
 }
 
 
-function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
+function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff }) {
   const [modal, setModal] = useState(null);
-  const [view, setView] = useState('pl');   // 'pl' | 'assets'
+  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff'
+  const [editingPayment, setEditingPayment] = useState(null);
+  const [editingStaff, setEditingStaff] = useState(null);
 
   const allExpenses = data.expenses || [];
   const capital = allExpenses.filter((e) => e.capital);
   const running = allExpenses.filter((e) => !e.capital);
+  const staff = data.staff || [];
+  const payments = allExpenses.filter((e) => e.staffId);
 
   const fields = (data.pepper && data.pepper.fields) || [];
   const flocks = data.flocks || [];
@@ -3589,6 +3680,7 @@ function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
       <div className="field-seg" style={{ marginBottom: 20 }}>
         <button className={view === 'pl' ? 'active' : ''} onClick={() => setView('pl')}>Profit &amp; loss</button>
         <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}>Structures &amp; assets</button>
+        <button className={view === 'staff' ? 'active' : ''} onClick={() => setView('staff')}>Farm Team</button>
       </div>
 
       {view === 'pl' && (<>
@@ -3667,7 +3759,12 @@ function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
                   <td>{r.description || '—'}</td>
                   <td>{labelFor(r)}</td>
                   <td className="mono">GH₵ {num(r.amount, 2)}</td>
-                  <td><button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button></td>
+                  <td>
+                    <span style={{ display: 'flex', gap: 8 }}>
+                      {!r.staffId && <button className="link-btn" onClick={() => setModal(`expense:${r.id}`)}>Edit</button>}
+                      <button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button>
+                    </span>
+                  </td>
                 </tr>
               ))}
               {sortedRunning.length === 0 && <tr><td colSpan={6} className="empty">No running expenses yet — add labour, transport, utilities and repairs for a true farm P&amp;L.</td></tr>}
@@ -3707,23 +3804,75 @@ function FarmWorkspace({ data, onAddExpense, onDeleteExpense }) {
         </p>
       </>)}
 
-      {modal === 'expense' && (
+      {view === 'staff' && (
+        <StaffPayrollTab
+          staff={staff}
+          payments={payments}
+          labelFor={labelFor}
+          onAddStaff={() => { setEditingStaff(null); setModal('staff'); }}
+          onEditStaff={(s) => { setEditingStaff(s); setModal('staff'); }}
+          onDeleteStaff={onDeleteStaff}
+          onAddPayment={() => { setEditingPayment(null); setModal('payment'); }}
+          onEditPayment={(p) => { setEditingPayment(p); setModal('payment'); }}
+          onDeletePayment={onDeleteExpense}
+        />
+      )}
+
+      {(modal === 'expense' || (typeof modal === 'string' && modal.startsWith('expense:'))) && (
         <ExpenseForm
+          entry={modal.startsWith('expense:') ? running.concat(capital).find((r) => r.id === modal.split(':')[1]) : null}
           fields={fields}
           flocks={flocks}
           onClose={() => setModal(null)}
-          onSave={(e) => { onAddExpense(e); setModal(null); }}
+          onSave={(e) => {
+            if (modal.startsWith('expense:')) onUpdateExpense(e.id, e);
+            else onAddExpense(e);
+            setModal(null);
+          }}
+        />
+      )}
+
+      {modal === 'staff' && (
+        <StaffForm
+          entry={editingStaff}
+          onClose={() => { setModal(null); setEditingStaff(null); }}
+          onSave={(s) => { onSaveStaff(s); setModal(null); setEditingStaff(null); }}
+        />
+      )}
+
+      {modal === 'payment' && (
+        <PaymentForm
+          entry={editingPayment}
+          staff={staff}
+          fields={fields}
+          flocks={flocks}
+          payments={payments}
+          onClose={() => { setModal(null); setEditingPayment(null); }}
+          onSave={(e) => {
+            if (editingPayment) onUpdateExpense(e.id, e);
+            else onAddExpense(e);
+            setModal(null);
+            setEditingPayment(null);
+          }}
         />
       )}
     </>
   );
 }
 
-function ExpenseForm({ fields, flocks, onClose, onSave }) {
+function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
+  const isEdit = Boolean(entry);
   const [f, setF] = useState({
-    date: todayISO(), kind: 'running', category: 'Labour', capexCategory: 'Insect net house',
-    description: '', amount: '', scope: 'general', target: 'shared',
-    usefulLifeYears: 4, notes: '',
+    date: entry?.date || todayISO(),
+    kind: entry?.capital ? 'capital' : 'running',
+    category: (!entry?.capital && entry?.category) || 'Labour',
+    capexCategory: (entry?.capital && entry?.category) || 'Insect net house',
+    description: entry?.description || '',
+    amount: entry?.amount ?? '',
+    scope: entry?.scope || 'general',
+    target: entry?.target || 'shared',
+    usefulLifeYears: entry?.usefulLifeYears ?? 4,
+    notes: entry?.notes || '',
   });
   const isCapital = f.kind === 'capital';
 
@@ -3757,7 +3906,7 @@ function ExpenseForm({ fields, flocks, onClose, onSave }) {
   function submit() {
     if (!f.date || f.amount === '') return;
     onSave({
-      id: newId(), date: f.date,
+      id: entry?.id || newId(), date: f.date,
       capital: isCapital,
       category: isCapital ? f.capexCategory : f.category,
       description: f.description || null,
@@ -3769,7 +3918,7 @@ function ExpenseForm({ fields, flocks, onClose, onSave }) {
 
   return (
     <Modal
-      title={isCapital ? 'Add structure or equipment' : 'Add farm expense'}
+      title={isEdit ? 'Edit entry' : (isCapital ? 'Add structure or equipment' : 'Add farm expense')}
       sub={isCapital
         ? 'Something that lasts several seasons — a net house, coop, or borehole.'
         : "Running costs the poultry and pepper logs don't already capture."}
@@ -3843,7 +3992,7 @@ function ExpenseForm({ fields, flocks, onClose, onSave }) {
 
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>{isCapital ? 'Save structure' : 'Save expense'}</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : (isCapital ? 'Save structure' : 'Save expense')}</button>
       </div>
     </Modal>
   );
@@ -3887,6 +4036,314 @@ function AssetsTable({ capital, labelFor, onDelete }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/* ============================================================= */
+/* =================== FARM TEAM & PAYROLL ====================== */
+/* ============================================================= */
+
+function StaffPayrollTab({ staff, payments, labelFor, onAddStaff, onEditStaff, onDeleteStaff, onAddPayment, onEditPayment, onDeletePayment }) {
+  const active = staff.filter((s) => s.status !== 'inactive');
+  const inactive = staff.filter((s) => s.status === 'inactive');
+
+  // Who's due or overdue for their next expected payment.
+  const dueSoon = active
+    .map((s) => {
+      const due = nextPaymentDue(s, payments);
+      const daysLeft = due ? daysBetween(todayISO(), due) : null;
+      return { staff: s, due, daysLeft };
+    })
+    .filter((x) => x.daysLeft !== null && x.daysLeft <= 2)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+
+  const withBalance = active
+    .map((s) => ({ staff: s, balance: staffBalanceOwed(payments, s.id) }))
+    .filter((x) => x.balance > 0);
+
+  const totalPaidToDate = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const sortedPayments = [...payments].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const nameFor = (id) => (staff.find((s) => s.id === id) || {}).name || 'Former staff';
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Farm Team</h3>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn" onClick={onAddStaff}>+ Add staff</button>
+          <button className="btn btn-gold" onClick={onAddPayment} disabled={!active.length}>+ Log payment</button>
+        </div>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard title="Active Staff" value={num(active.length)} tone="gold" foot={`${staff.length} total on record`} />
+        <StatCard title="Paid to Date" value={`GH₵ ${num(totalPaidToDate, 2)}`} tone="rust" foot="all wages & advances" />
+        <StatCard
+          title="Payments Due"
+          value={dueSoon.length ? String(dueSoon.length) : 'None'}
+          tone={dueSoon.some((x) => x.daysLeft < 0) ? 'rust' : dueSoon.length ? 'gold' : 'green'}
+          foot={dueSoon.length ? 'within 2 days or overdue' : 'nothing due soon'}
+        />
+        <StatCard
+          title="Advances Outstanding"
+          value={withBalance.length ? `GH₵ ${num(withBalance.reduce((s, x) => s + x.balance, 0), 2)}` : '—'}
+          tone={withBalance.length ? 'gold' : 'green'}
+          foot={withBalance.length ? `owed by ${withBalance.length} staff` : 'all settled'}
+        />
+      </div>
+
+      {dueSoon.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          {dueSoon.map(({ staff: s, due, daysLeft }) => (
+            <div className="stale-banner" key={s.id} style={{ marginBottom: 8 }}>
+              ⚠ <span>
+                <strong>{s.name}</strong> ({s.payType.toLowerCase()}) —{' '}
+                {daysLeft < 0 ? `payment overdue by ${Math.abs(daysLeft)}d` : daysLeft === 0 ? 'payment due today' : `payment due in ${daysLeft}d`}
+                {' '}(expected {fmtDate(due)}).
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="section-title">Staff</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Name</th><th>Role</th><th>Pay</th><th>Phone</th><th>Started</th><th>Balance owed</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {[...active, ...inactive].map((s) => {
+              const balance = staffBalanceOwed(payments, s.id);
+              return (
+                <tr key={s.id}>
+                  <td>{s.name}</td>
+                  <td>{s.role || '—'}</td>
+                  <td className="mono">{s.payType} · GH₵ {num(s.rate, 2)}</td>
+                  <td>{s.phone || '—'}</td>
+                  <td className="mono">{s.startDate ? fmtDate(s.startDate) : '—'}</td>
+                  <td className="mono">{balance > 0 ? <span className="tag gold">GH₵ {num(balance, 2)}</span> : '—'}</td>
+                  <td>{s.status === 'inactive' ? <span className="tag">Inactive</span> : <span className="tag green">Active</span>}</td>
+                  <td>
+                    <span style={{ display: 'flex', gap: 8 }}>
+                      <button className="link-btn" onClick={() => onEditStaff(s)}>Edit</button>
+                      {payments.some((p) => p.staffId === s.id) ? (
+                        <span className="stat-foot" style={{ margin: 0 }} title="Has payment history — mark Inactive instead">has history</span>
+                      ) : (
+                        <button className="link-btn rust" onClick={() => { if (confirm(`Remove ${s.name} from the team?`)) onDeleteStaff(s.id); }}>Delete</button>
+                      )}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {staff.length === 0 && <tr><td colSpan={8} className="empty">No farm help on record yet — add your first team member to start tracking payments.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="section-title">Payments</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Staff</th><th>Type</th><th>Amount</th><th>Method</th><th>Assigned to</th><th>Notes</th><th></th></tr>
+          </thead>
+          <tbody>
+            {sortedPayments.map((p) => (
+              <tr key={p.id}>
+                <td className="mono">{fmtDate(p.date)}</td>
+                <td>{nameFor(p.staffId)}</td>
+                <td>
+                  <span className={`tag ${p.paymentKind === 'Advance' ? 'gold' : p.paymentKind === 'Wage' ? 'green' : ''}`}>
+                    {p.paymentKind}
+                  </span>
+                </td>
+                <td className="mono">
+                  {p.paymentKind === 'Repaid in cash' ? '−' : ''}GH₵ {num(paymentRawAmount(p), 2)}
+                </td>
+                <td>{p.method || '—'}</td>
+                <td>{labelFor(p)}</td>
+                <td className="notes">{p.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEditPayment(p)}>Edit</button>
+                    <button className="link-btn rust" onClick={() => { if (confirm('Delete this payment record?')) onDeletePayment(p.id); }}>Delete</button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {payments.length === 0 && <tr><td colSpan={8} className="empty">No payments logged yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Advances count as cost the day they're paid out — real cash left the farm. "Worked off" clears
+        the balance without adding new cost, since no fresh cash moved. "Repaid in cash" refunds the
+        cost when the money actually comes back.
+      </p>
+    </>
+  );
+}
+
+function StaffForm({ entry, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    name: entry?.name || '', role: entry?.role || '', phone: entry?.phone || '',
+    payType: entry?.payType || 'Weekly', rate: entry?.rate ?? '',
+    startDate: entry?.startDate || todayISO(), status: entry?.status || 'active', notes: entry?.notes || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.name) return;
+    onSave({
+      id: entry?.id || newId(), name: f.name, role: f.role || null, phone: f.phone || null,
+      payType: f.payType, rate: f.rate === '' ? null : Number(f.rate),
+      startDate: f.startDate || null, status: f.status, notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title={isEdit ? `Edit ${entry.name}` : 'Add staff'} sub="Farm help — a family member, casual worker, or hired hand." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Comfort" /></Field>
+        <Field label="Role"><input value={f.role} onChange={set('role')} placeholder="e.g. General farm hand" /></Field>
+        <Field label="Phone"><input value={f.phone} onChange={set('phone')} /></Field>
+        <Field label="Pay type">
+          <select value={f.payType} onChange={set('payType')}>
+            {PAY_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Rate (GH₵)"><input type="number" step="0.01" value={f.rate} onChange={set('rate')} placeholder="usual amount per period" /></Field>
+        <Field label="Start date"><input type="date" value={f.startDate} onChange={set('startDate')} /></Field>
+        {isEdit && (
+          <Field label="Status">
+            <select value={f.status} onChange={set('status')}>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </Field>
+        )}
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Add staff'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const activeStaff = staff.filter((s) => s.status !== 'inactive' || (entry && entry.staffId === s.id));
+  const [f, setF] = useState({
+    staffId: entry?.staffId || (activeStaff[0] && activeStaff[0].id) || '',
+    date: entry?.date || todayISO(),
+    kind: entry?.paymentKind || 'Wage',
+    amount: entry ? (paymentRawAmount(entry) || '') : '',
+    method: entry?.method || 'Cash',
+    scope: entry?.scope || 'general',
+    target: entry?.target || 'shared',
+    notes: entry?.notes || '',
+  });
+
+  function set(k) {
+    return (e) => {
+      const v = e.target.value;
+      if (k === 'scope') { setF({ ...f, scope: v, target: 'shared' }); return; }
+      if (k === 'staffId') {
+        // Suggest the person's usual rate when switching to them, for Wage payments.
+        const person = staff.find((s) => s.id === v);
+        const suggest = f.kind === 'Wage' && person && person.rate != null && f.amount === '';
+        setF({ ...f, staffId: v, amount: suggest ? String(person.rate) : f.amount });
+        return;
+      }
+      setF({ ...f, [k]: v });
+    };
+  }
+
+  const selectedStaff = staff.find((s) => s.id === f.staffId);
+  const currentBalance = selectedStaff ? staffBalanceOwed(payments.filter((p) => p.id !== entry?.id), selectedStaff.id) : 0;
+
+  const targetOptions = f.scope === 'pepper'
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    : f.scope === 'poultry'
+      ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
+      : [['shared', 'Whole farm']];
+
+  function submit() {
+    if (!f.staffId || !f.date || f.amount === '') return;
+    const person = staff.find((s) => s.id === f.staffId);
+    const amount = Number(f.amount) || 0;
+    onSave({
+      id: entry?.id || newId(),
+      date: f.date,
+      capital: false,
+      category: 'Labour',
+      staffId: f.staffId,
+      paymentKind: f.kind,
+      description: `${f.kind} — ${person ? person.name : ''}`,
+      amount: paymentCostImpact(f.kind, amount),
+      balanceAmount: paymentBalanceImpact(f.kind, amount),
+      method: f.method,
+      scope: f.scope,
+      target: f.target,
+      notes: f.notes || null,
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? 'Edit payment' : 'Log payment'}
+      sub={
+        f.kind === 'Advance' ? "Cash given ahead of work — counts as cost now, and adds to their balance owed."
+        : f.kind === 'Worked off' ? 'Clears balance owed through work done — no new cash cost.'
+        : f.kind === 'Repaid in cash' ? 'They paid cash back — reduces cost and their balance owed.'
+        : 'Normal payment for work completed.'
+      }
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Staff member" span2>
+          <select value={f.staffId} onChange={set('staffId')}>
+            {activeStaff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Type">
+          <select value={f.kind} onChange={set('kind')}>
+            {PAYMENT_KINDS.map((k) => <option key={k}>{k}</option>)}
+          </select>
+        </Field>
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
+        <Field label="Method">
+          <select value={f.method} onChange={set('method')}>
+            {PAYMENT_METHODS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Enterprise">
+          <select value={f.scope} onChange={set('scope')}>
+            <option value="general">Whole farm</option>
+            <option value="poultry">Poultry</option>
+            <option value="pepper">Bell pepper</option>
+          </select>
+        </Field>
+        <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock?' : 'Applies to'}>
+          <select value={f.target} onChange={set('target')}>
+            {targetOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      {selectedStaff && currentBalance > 0 && (
+        <p className="stat-foot" style={{ marginTop: 4 }}>
+          {selectedStaff.name} currently owes the farm <strong>GH₵ {num(currentBalance, 2)}</strong> from a past advance.
+        </p>
+      )}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save payment'}</button>
+      </div>
+    </Modal>
   );
 }
 
