@@ -68,16 +68,32 @@ function polWeek(standard) {
   return layer ? layer.week : 21;
 }
 
+function fieldSoilDefaults() {
+  // From the soil monitoring workbook — sensible bell-pepper defaults,
+  // editable per field since soil and crop needs vary by plot.
+  return {
+    manureAppliedDate: null, currentBatchLabel: 'Batch 1',
+    targetECMin: 1000, targetECMax: 2500,
+    targetPHMin: 6.0, targetPHMax: 6.8,
+    targetNMin: 150, targetNMax: 200,
+    targetPMin: 40, targetPMax: 80,
+    targetKMin: 150, targetKMax: 250,
+  };
+}
+
 function defaultPepper() {
   return {
     fields: [
-      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '' },
-      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '' },
+      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', ...fieldSoilDefaults() },
+      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', ...fieldSoilDefaults() },
     ],
     scouting: [],
     sprays: [],
     harvests: [],
-    inputs: [],       // agrochemical / fertiliser stock
+    inputs: [],          // agrochemical / fertiliser stock
+    manureReadings: [],  // raw manure pile samples before mixing into soil
+    soilReadings: [],    // per-field soil tests after manure mix, over time
+    batches: [],         // closed planting cycles per field (history)
   };
 }
 
@@ -142,7 +158,16 @@ function migrate(saved) {
     expenses: saved.expenses || [],
     staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
-    pepper: { ...defaultPepper(), ...pepper, inputs: pepper.inputs || [] },
+    pepper: {
+      ...defaultPepper(),
+      ...pepper,
+      fields: (pepper.fields && pepper.fields.length ? pepper.fields : defaultPepper().fields)
+        .map((f) => ({ ...fieldSoilDefaults(), ...f })),
+      inputs: pepper.inputs || [],
+      manureReadings: pepper.manureReadings || [],
+      soilReadings: pepper.soilReadings || [],
+      batches: pepper.batches || [],
+    },
     updatedAt: saved.updatedAt || new Date().toISOString(),
   };
 }
@@ -717,6 +742,42 @@ export default function App() {
   function updateField(id, patch) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
   }
+  function addManureReading(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: [...(d.pepper.manureReadings || []), entry] } }));
+  }
+  function deleteManureReading(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: (d.pepper.manureReadings || []).filter((r) => r.id !== id) } }));
+  }
+  function addSoilReading(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, soilReadings: [...(d.pepper.soilReadings || []), entry] } }));
+  }
+  function deleteSoilReading(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, soilReadings: (d.pepper.soilReadings || []).filter((r) => r.id !== id) } }));
+  }
+  /** Closes out the field's current planting as a historical batch, then
+      starts the new one as the field's live crop-cycle state. */
+  function startNewBatch(fieldId, newBatch) {
+    setData((d) => {
+      const field = d.pepper.fields.find((f) => f.id === fieldId);
+      const closedBatches = [...(d.pepper.batches || [])];
+      if (field && field.transplantDate) {
+        closedBatches.push({
+          id: newId(), fieldId,
+          batchLabel: field.currentBatchLabel || 'Batch 1',
+          variety: field.variety, transplantDate: field.transplantDate,
+          plantCount: field.plantCount, spacing: field.spacing,
+          expectedHarvestDAT: field.expectedHarvestDAT, setupCost: field.setupCost,
+          manureAppliedDate: field.manureAppliedDate, notes: field.notes,
+          status: 'closed', closedDate: newBatch.transplantDate,
+        });
+      }
+      const fields = d.pepper.fields.map((f) => (f.id === fieldId ? { ...f, ...newBatch } : f));
+      return touch({ ...d, pepper: { ...d.pepper, fields, batches: closedBatches } });
+    });
+  }
+  function deleteBatch(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, batches: (d.pepper.batches || []).filter((b) => b.id !== id) } }));
+  }
   function addScouting(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
   }
@@ -1071,6 +1132,12 @@ export default function App() {
           onAddReminder={addReminder}
           onToggleReminder={toggleReminder}
           onDeleteReminder={deleteReminder}
+          onAddManureReading={addManureReading}
+          onDeleteManureReading={deleteManureReading}
+          onAddSoilReading={addSoilReading}
+          onDeleteSoilReading={deleteSoilReading}
+          onStartNewBatch={startNewBatch}
+          onDeleteBatch={deleteBatch}
         />
       )}
 
@@ -1910,10 +1977,92 @@ function addDaysISO(iso, days) {
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
-function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest, onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder }) {
+/* ---------------- Soil monitoring helpers ---------------- */
+
+const SOIL_FIELDS = ['moisture', 'ec', 'ph', 'n', 'p', 'k'];
+const MANURE_LOCATIONS = ['Wet section', 'Drier section', 'Centre of pile', 'Edge of pile', 'Other'];
+
+/** N+P+K, matching the workbook's "Fertility (mg/kg)" column. */
+function fertility(r) {
+  return (Number(r.n) || 0) + (Number(r.p) || 0) + (Number(r.k) || 0);
+}
+
+/** Plain average of moisture/EC/pH/N/P/K across a set of readings. */
+function averageReading(rows) {
+  if (!rows.length) return null;
+  const avg = {};
+  SOIL_FIELDS.forEach((k) => {
+    const vals = rows.map((r) => Number(r[k])).filter((v) => !isNaN(v));
+    avg[k] = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+  });
+  return avg;
+}
+
+/** Only the most recent test round for a field — same idea as the workbook's
+    "test every spot on the same day, then average" approach. */
+function latestFieldRound(soilReadings, fieldId) {
+  const rows = soilReadings.filter((r) => r.fieldId === fieldId);
+  if (!rows.length) return { date: null, rows: [], avg: null };
+  const latestDate = rows.reduce((max, r) => (r.date > max ? r.date : max), rows[0].date);
+  const round = rows.filter((r) => r.date === latestDate);
+  return { date: latestDate, rows: round, avg: averageReading(round) };
+}
+
+/** Where a value sits against a min/max target: 'below' | 'ok' | 'above'. */
+function bandStatus(value, min, max) {
+  if (value == null || min == null || max == null) return null;
+  if (value < min) return 'below';
+  if (value > max) return 'above';
+  return 'ok';
+}
+
+/**
+ * Transplant readiness verdict, following the workbook's own decision guide:
+ * EC and pH are the actual gate ("Target transplant: after EC drops below
+ * 2,500 and pH reaches 6.0–6.8"); N/P/K are shown for information since the
+ * sheet never gates the transplant decision on them.
+ */
+function readinessVerdict(avg, field) {
+  if (!avg) return { overall: 'No data', ec: null, ph: null, n: null, p: null, k: null };
+  const ec = bandStatus(avg.ec, field.targetECMin, field.targetECMax);
+  const ph = bandStatus(avg.ph, field.targetPHMin, field.targetPHMax);
+  const n = bandStatus(avg.n, field.targetNMin, field.targetNMax);
+  const p = bandStatus(avg.p, field.targetPMin, field.targetPMax);
+  const k = bandStatus(avg.k, field.targetKMin, field.targetKMax);
+
+  let overall = 'Safe';
+  if (avg.ec != null && avg.ec > 3500) overall = 'Not safe';
+  else if (avg.ph != null && (avg.ph > 7.4 || avg.ph < 5.5)) overall = 'Not safe';
+  else if (ec === 'above' || ec === 'below' || ph === 'above' || ph === 'below') overall = 'Caution';
+
+  return { overall, ec, ph, n, p, k };
+}
+
+/** The closest soil test (any field) to a given date, within a tolerance —
+    used to pair a batch's transplant with the reading that informed it. */
+function nearestSoilRound(soilReadings, fieldId, date, toleranceDays = 10) {
+  const byDate = {};
+  soilReadings.filter((r) => r.fieldId === fieldId).forEach((r) => {
+    (byDate[r.date] = byDate[r.date] || []).push(r);
+  });
+  let best = null, bestDiff = Infinity;
+  Object.entries(byDate).forEach(([d, rows]) => {
+    const diff = Math.abs(daysBetween(d, date));
+    if (diff < bestDiff) { bestDiff = diff; best = { date: d, rows, avg: averageReading(rows) }; }
+  });
+  return best && bestDiff <= toleranceDays ? best : null;
+}
+
+function PepperWorkspace({
+  pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
+  onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
+  onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
+  onStartNewBatch, onDeleteBatch,
+}) {
   const [ptab, setPtab] = useState('dashboard');
+  const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
   const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
-  const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest'
+  const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
 
   const fields = pepper.fields;
   const inScope = (fieldId) => scope === 'all' || fieldId === scope;
@@ -1983,6 +2132,23 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
   // Auto reminders for the pepper side: active harvest holds + scouting overdue.
   const lastScoutByField = {};
   scouting.forEach((s) => { lastScoutByField[s.fieldId] = s.date; });
+  const soilReadings = pepper.soilReadings || [];
+  const manureReadings = pepper.manureReadings || [];
+  const soilRetestReminders = fields.map((f) => {
+    if (!f.manureAppliedDate) return null;
+    const round = latestFieldRound(soilReadings, f.id);
+    const verdict = readinessVerdict(round.avg, f);
+    if (verdict.overall === 'Safe') return null; // no need to keep nudging once it's ready
+    const lastTest = round.date || f.manureAppliedDate;
+    const days = daysBetween(lastTest, todayISO());
+    if (days < 7) return null;
+    return {
+      id: `soil-${f.id}`,
+      title: `Retest soil — ${f.name} (${days}d since last check, not yet ready)`,
+      dueDate: todayISO(),
+      source: f.name,
+    };
+  }).filter(Boolean);
   const pepperAuto = [
     ...phiWindows.map((w) => ({ id: `phi-${w.field.id}`, title: `${w.field.name}: harvest hold (${w.product || 'spray'})`, dueDate: w.safe, source: w.field.name })),
     ...fields.map((f) => {
@@ -1991,6 +2157,7 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
       if (last && days <= 4) return null;
       return { id: `scout-${f.id}`, title: `Scout ${f.name}${last ? ` (last ${days}d ago)` : ' (not scouted yet)'}`, dueDate: todayISO(), source: f.name };
     }).filter(Boolean),
+    ...soilRetestReminders,
   ];
 
   const harvestChart = harvestScoped.map((h) => ({
@@ -2049,6 +2216,7 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
         {[
           ['dashboard', 'Dashboard'],
           ['cycle', 'Crop Cycle'],
+          ['soil', 'Soil & Batches'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
           ['inputs', 'Input Stock'],
@@ -2073,7 +2241,25 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
       )}
 
       {ptab === 'cycle' && (
-        <CropCycleTab fields={fieldsScoped} datOf={datOf} onEdit={(id) => setModal(`field:${id}`)} />
+        <CropCycleTab
+          fields={fieldsScoped} datOf={datOf}
+          onEdit={(id) => setModal(`field:${id}`)}
+          onNewBatch={(id) => setModal(`batch:${id}`)}
+        />
+      )}
+
+      {ptab === 'soil' && (
+        <SoilBatchesTab
+          view={soilView} setView={setSoilView}
+          scope={scope} fields={fields} fieldsScoped={fieldsScoped}
+          manureReadings={manureReadings} soilReadings={soilReadings}
+          batches={pepper.batches || []} harvests={harvests} scouting={scouting} sprays={sprays}
+          onAddManure={() => setModal('manure')}
+          onDeleteManure={onDeleteManureReading}
+          onAddSoil={() => setModal('soil')}
+          onDeleteSoil={onDeleteSoilReading}
+          onDeleteBatch={onDeleteBatch}
+        />
       )}
 
       {ptab === 'scout' && (
@@ -2146,6 +2332,20 @@ function PepperWorkspace({ pepper, reminders, expenses, onUpdateField, onAddScou
       )}
       {modal === 'input' && (
         <InputForm onClose={() => setModal(null)} onSave={(e) => { onAddInput(e); setModal(null); }} />
+      )}
+      {modal === 'manure' && (
+        <ManureReadingForm onClose={() => setModal(null)} onSave={(e) => { onAddManureReading(e); setModal(null); }} />
+      )}
+      {modal === 'soil' && (
+        <SoilReadingForm fields={fields} defaultField={scope === 'all' ? fields[0].id : scope}
+          onClose={() => setModal(null)} onSave={(e) => { onAddSoilReading(e); setModal(null); }} />
+      )}
+      {modal && modal.startsWith('batch:') && (
+        <NewBatchForm
+          field={fields.find((f) => f.id === modal.split(':')[1])}
+          onClose={() => setModal(null)}
+          onSave={(patch) => { onStartNewBatch(modal.split(':')[1], patch); setModal(null); }}
+        />
       )}
     </>
   );
@@ -2292,7 +2492,7 @@ function PepperDashboard({
 
 /* ---------------- Crop cycle ---------------- */
 
-function CropCycleTab({ fields, datOf, onEdit }) {
+function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -2307,8 +2507,11 @@ function CropCycleTab({ fields, datOf, onEdit }) {
           return (
             <div className="panel" key={f.id} style={{ marginBottom: 0 }}>
               <div className="panel-head">
-                <h3>{f.name}</h3>
-                <button className="btn" onClick={() => onEdit(f.id)}>Edit</button>
+                <h3>{f.name}{f.currentBatchLabel ? <span className="tag gold" style={{ marginLeft: 8 }}>{f.currentBatchLabel}</span> : null}</h3>
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn" onClick={() => onEdit(f.id)}>Edit</button>
+                  <button className="btn btn-green" onClick={() => onNewBatch(f.id)}>+ New Batch</button>
+                </span>
               </div>
               <div style={{ padding: '4px 0 10px' }}>
                 <div className="kv"><span className="k">Variety</span><span className="v">{f.variety || '—'}</span></div>
@@ -2318,6 +2521,7 @@ function CropCycleTab({ fields, datOf, onEdit }) {
                 <div className="kv"><span className="k">Spacing</span><span className="v">{f.spacing || '—'}</span></div>
                 <div className="kv"><span className="k">Expected 1st harvest</span><span className="v">{firstHarvest ? `${fmtDate(firstHarvest)}${toHarvest != null ? (toHarvest > 0 ? ` (${toHarvest}d)` : ' (due)') : ''}` : '—'}</span></div>
                 <div className="kv"><span className="k">Setup cost</span><span className="v">{f.setupCost != null ? `GH₵ ${num(f.setupCost, 2)}` : '—'}</span></div>
+                <div className="kv"><span className="k">Manure applied</span><span className="v">{f.manureAppliedDate ? fmtDate(f.manureAppliedDate) : '—'}</span></div>
                 {f.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{f.notes}</span></div>}
               </div>
             </div>
@@ -2326,18 +2530,27 @@ function CropCycleTab({ fields, datOf, onEdit }) {
       </div>
       <p className="stat-foot" style={{ marginTop: 14 }}>
         Bell peppers usually reach first harvest around 60–90 days after transplant; the default is set to 70. Adjust per field once you see how your crop runs.
+        Starting a <strong>New Batch</strong> archives the current planting to Soil &amp; Batches → Batch Performance and begins the next one.
       </p>
     </>
   );
 }
 
 function FieldForm({ field, onClose, onSave }) {
+  const [section, setSection] = useState('crop'); // 'crop' | 'soil'
   const [f, setF] = useState({
     variety: field.variety || '', transplantDate: field.transplantDate || '',
     plantCount: field.plantCount ?? '', spacing: field.spacing || '',
     expectedHarvestDAT: field.expectedHarvestDAT ?? 70, setupCost: field.setupCost ?? '', notes: field.notes || '',
+    manureAppliedDate: field.manureAppliedDate || '',
+    targetECMin: field.targetECMin ?? '', targetECMax: field.targetECMax ?? '',
+    targetPHMin: field.targetPHMin ?? '', targetPHMax: field.targetPHMax ?? '',
+    targetNMin: field.targetNMin ?? '', targetNMax: field.targetNMax ?? '',
+    targetPMin: field.targetPMin ?? '', targetPMax: field.targetPMax ?? '',
+    targetKMin: field.targetKMin ?? '', targetKMax: field.targetKMax ?? '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const num2 = (v) => (v === '' ? null : Number(v));
   function submit() {
     onSave({
       variety: f.variety || '', transplantDate: f.transplantDate || '',
@@ -2346,19 +2559,53 @@ function FieldForm({ field, onClose, onSave }) {
       expectedHarvestDAT: f.expectedHarvestDAT === '' ? null : Number(f.expectedHarvestDAT),
       setupCost: f.setupCost === '' ? null : Number(f.setupCost),
       notes: f.notes || '',
+      manureAppliedDate: f.manureAppliedDate || null,
+      targetECMin: num2(f.targetECMin), targetECMax: num2(f.targetECMax),
+      targetPHMin: num2(f.targetPHMin), targetPHMax: num2(f.targetPHMax),
+      targetNMin: num2(f.targetNMin), targetNMax: num2(f.targetNMax),
+      targetPMin: num2(f.targetPMin), targetPMax: num2(f.targetPMax),
+      targetKMin: num2(f.targetKMin), targetKMax: num2(f.targetKMax),
     });
   }
   return (
-    <Modal title={`Edit ${field.name}`} sub="Crop cycle details for this field." onClose={onClose}>
-      <div className="form-grid">
-        <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
-        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
-        <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
-        <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
-        <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
-        <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="seedlings, land prep, drip, labour" /></Field>
-        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+    <Modal title={`Edit ${field.name}`} sub="Crop cycle details and soil targets for this field." onClose={onClose}>
+      <div className="kind-toggle">
+        <button className={section === 'crop' ? 'active' : ''} onClick={() => setSection('crop')}>Crop cycle</button>
+        <button className={section === 'soil' ? 'active' : ''} onClick={() => setSection('soil')}>Soil targets</button>
       </div>
+
+      {section === 'crop' ? (
+        <div className="form-grid">
+          <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
+          <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+          <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
+          <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
+          <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
+          <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="seedlings, land prep, drip, labour" /></Field>
+          <Field label="Manure applied date"><input type="date" value={f.manureAppliedDate} onChange={set('manureAppliedDate')} /></Field>
+          <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+        </div>
+      ) : (
+        <>
+          <p className="stat-foot" style={{ marginTop: 0 }}>
+            What Soil &amp; Batches checks readings against for this field. Defaults come from typical
+            bell pepper ranges — adjust to whatever your agronomy calls for.
+          </p>
+          <div className="form-grid">
+            <Field label="EC min (µs/cm)"><input type="number" value={f.targetECMin} onChange={set('targetECMin')} /></Field>
+            <Field label="EC max (µs/cm)"><input type="number" value={f.targetECMax} onChange={set('targetECMax')} /></Field>
+            <Field label="pH min"><input type="number" step="0.1" value={f.targetPHMin} onChange={set('targetPHMin')} /></Field>
+            <Field label="pH max"><input type="number" step="0.1" value={f.targetPHMax} onChange={set('targetPHMax')} /></Field>
+            <Field label="Nitrogen min (mg/kg)"><input type="number" value={f.targetNMin} onChange={set('targetNMin')} /></Field>
+            <Field label="Nitrogen max (mg/kg)"><input type="number" value={f.targetNMax} onChange={set('targetNMax')} /></Field>
+            <Field label="Phosphorus min (mg/kg)"><input type="number" value={f.targetPMin} onChange={set('targetPMin')} /></Field>
+            <Field label="Phosphorus max (mg/kg)"><input type="number" value={f.targetPMax} onChange={set('targetPMax')} /></Field>
+            <Field label="Potassium min (mg/kg)"><input type="number" value={f.targetKMin} onChange={set('targetKMin')} /></Field>
+            <Field label="Potassium max (mg/kg)"><input type="number" value={f.targetKMax} onChange={set('targetKMax')} /></Field>
+          </div>
+        </>
+      )}
+
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-green" onClick={submit}>Save field</button>
@@ -4342,6 +4589,374 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save payment'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ==================== SOIL & BATCHES (PEPPER) ================= */
+/* ============================================================= */
+
+function verdictTag(overall) {
+  if (overall === 'Safe') return <span className="tag green">Safe to transplant</span>;
+  if (overall === 'Caution') return <span className="tag gold">Caution</span>;
+  if (overall === 'Not safe') return <span className="tag rust">Not safe yet</span>;
+  return <span className="tag">No data</span>;
+}
+
+function bandTag(status) {
+  if (status === 'ok') return <span className="tag green">OK</span>;
+  if (status === 'below') return <span className="tag gold">Low</span>;
+  if (status === 'above') return <span className="tag rust">High</span>;
+  return <span className="tag">—</span>;
+}
+
+function SoilBatchesTab({
+  view, setView, scope, fields, fieldsScoped, manureReadings, soilReadings, batches,
+  harvests, scouting, sprays, onAddManure, onDeleteManure, onAddSoil, onDeleteSoil, onDeleteBatch,
+}) {
+  const manureAvg = averageReading(manureReadings);
+  const sortedManure = [...manureReadings].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const sortedSoil = [...soilReadings]
+    .filter((r) => scope === 'all' || r.fieldId === scope)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  const readinessCards = fieldsScoped.map((f) => {
+    const round = latestFieldRound(soilReadings, f.id);
+    const verdict = readinessVerdict(round.avg, f);
+    const daysSinceMix = f.manureAppliedDate ? daysBetween(f.manureAppliedDate, todayISO()) : null;
+    return { field: f, round, verdict, daysSinceMix };
+  });
+
+  return (
+    <>
+      <div className="field-seg" style={{ marginBottom: 20 }}>
+        <button className={view === 'soil' ? 'active' : ''} onClick={() => setView('soil')}>Soil Monitoring</button>
+        <button className={view === 'batches' ? 'active' : ''} onClick={() => setView('batches')}>Batch Performance</button>
+      </div>
+
+      {view === 'soil' && (<>
+        <p className="section-title" style={{ marginTop: 0 }}>Transplant readiness</p>
+        <div className="grid grid-2">
+          {readinessCards.map(({ field, round, verdict, daysSinceMix }) => (
+            <div className="panel" key={field.id}>
+              <div className="panel-head">
+                <h3>{field.name}</h3>
+                {verdictTag(verdict.overall)}
+              </div>
+              <p className="stat-foot" style={{ marginTop: 0 }}>
+                {field.manureAppliedDate
+                  ? `Manure applied ${fmtDate(field.manureAppliedDate)} (${daysSinceMix}d ago)`
+                  : 'No manure-applied date set — add one in Crop Cycle → Edit.'}
+                {round.date && ` · last tested ${fmtDate(round.date)}`}
+              </p>
+              {round.avg ? (
+                <div style={{ padding: '4px 0 6px' }}>
+                  <div className="kv"><span className="k">EC</span><span className="v">{num(round.avg.ec)} µs/cm ({field.targetECMin}–{field.targetECMax}) {bandTag(verdict.ec)}</span></div>
+                  <div className="kv"><span className="k">pH</span><span className="v">{num(round.avg.ph, 1)} ({field.targetPHMin}–{field.targetPHMax}) {bandTag(verdict.ph)}</span></div>
+                  <div className="kv"><span className="k">Nitrogen</span><span className="v">{num(round.avg.n)} mg/kg ({field.targetNMin}–{field.targetNMax}) {bandTag(verdict.n)}</span></div>
+                  <div className="kv"><span className="k">Phosphorus</span><span className="v">{num(round.avg.p)} mg/kg ({field.targetPMin}–{field.targetPMax}) {bandTag(verdict.p)}</span></div>
+                  <div className="kv"><span className="k">Potassium</span><span className="v">{num(round.avg.k)} mg/kg ({field.targetKMin}–{field.targetKMax}) {bandTag(verdict.k)}</span></div>
+                </div>
+              ) : (
+                <p className="empty" style={{ padding: '10px 0' }}>No soil tests logged for this field yet.</p>
+              )}
+            </div>
+          ))}
+        </div>
+        <p className="stat-foot">
+          The Safe/Caution/Not safe verdict follows EC and pH — the actual gate for transplanting.
+          Nitrogen, Phosphorus and Potassium are shown for information against this field's own targets
+          (set in Crop Cycle → Edit → Soil targets).
+        </p>
+
+        <div className="panel-head" style={{ margin: '22px 0 14px' }}>
+          <h3 style={{ fontSize: 18 }}>Manure pile readings</h3>
+          <button className="btn btn-green" onClick={onAddManure}>+ Add sample</button>
+        </div>
+        {manureAvg && (
+          <div className="grid grid-4" style={{ marginBottom: 14 }}>
+            <StatCard title="Avg EC" value={`${num(manureAvg.ec)} µs/cm`} foot="raw manure, before mixing" />
+            <StatCard title="Avg pH" value={num(manureAvg.ph, 1)} foot={`${manureReadings.length} sample(s)`} />
+            <StatCard title="Avg N-P-K" value={`${num(manureAvg.n)}-${num(manureAvg.p)}-${num(manureAvg.k)}`} foot="mg/kg" />
+            <StatCard title="Fertility" value={num(fertility(manureAvg))} foot="N+P+K, mg/kg" />
+          </div>
+        )}
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr><th>Date</th><th>Location</th><th>Moisture %</th><th>EC</th><th>pH</th><th>N</th><th>P</th><th>K</th><th>Fertility</th><th></th></tr>
+            </thead>
+            <tbody>
+              {sortedManure.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">{fmtDate(r.date)}</td>
+                  <td>{r.location || '—'}</td>
+                  <td className="mono">{r.moisture != null ? num(r.moisture, 1) : '—'}</td>
+                  <td className="mono">{r.ec != null ? num(r.ec) : '—'}</td>
+                  <td className="mono">{r.ph != null ? num(r.ph, 1) : '—'}</td>
+                  <td className="mono">{r.n != null ? num(r.n) : '—'}</td>
+                  <td className="mono">{r.p != null ? num(r.p) : '—'}</td>
+                  <td className="mono">{r.k != null ? num(r.k) : '—'}</td>
+                  <td className="mono">{fertility(r)}</td>
+                  <td><button className="link-btn rust" onClick={() => { if (confirm('Delete this sample?')) onDeleteManure(r.id); }}>Delete</button></td>
+                </tr>
+              ))}
+              {sortedManure.length === 0 && <tr><td colSpan={10} className="empty">No manure samples logged yet — test a few spots in the pile before mixing.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="panel-head" style={{ margin: '22px 0 14px' }}>
+          <h3 style={{ fontSize: 18 }}>Field soil readings</h3>
+          <button className="btn btn-green" onClick={onAddSoil}>+ Add soil test</button>
+        </div>
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr><th>Date</th><th>Field</th><th>Days since mix</th><th>Location</th><th>Moisture %</th><th>EC</th><th>pH</th><th>N</th><th>P</th><th>K</th><th></th></tr>
+            </thead>
+            <tbody>
+              {sortedSoil.map((r) => {
+                const field = fields.find((f) => f.id === r.fieldId);
+                const days = field && field.manureAppliedDate ? daysBetween(field.manureAppliedDate, r.date) : null;
+                return (
+                  <tr key={r.id}>
+                    <td className="mono">{fmtDate(r.date)}</td>
+                    <td>{field ? field.name : r.fieldId}</td>
+                    <td className="mono">{days != null ? `Day ${days}` : '—'}</td>
+                    <td>{r.location || '—'}</td>
+                    <td className="mono">{r.moisture != null ? num(r.moisture, 1) : '—'}</td>
+                    <td className="mono">{r.ec != null ? num(r.ec) : '—'}</td>
+                    <td className="mono">{r.ph != null ? num(r.ph, 1) : '—'}</td>
+                    <td className="mono">{r.n != null ? num(r.n) : '—'}</td>
+                    <td className="mono">{r.p != null ? num(r.p) : '—'}</td>
+                    <td className="mono">{r.k != null ? num(r.k) : '—'}</td>
+                    <td><button className="link-btn rust" onClick={() => { if (confirm('Delete this test?')) onDeleteSoil(r.id); }}>Delete</button></td>
+                  </tr>
+                );
+              })}
+              {sortedSoil.length === 0 && <tr><td colSpan={11} className="empty">No soil tests logged yet — test several spots on the same day, then average, same as the manure log.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </>)}
+
+      {view === 'batches' && (
+        <BatchPerformanceView
+          fields={fieldsScoped} batches={batches} soilReadings={soilReadings}
+          harvests={harvests} scouting={scouting} sprays={sprays}
+          onDeleteBatch={onDeleteBatch}
+        />
+      )}
+    </>
+  );
+}
+
+function BatchPerformanceView({ fields, batches, soilReadings, harvests, scouting, sprays, onDeleteBatch }) {
+  // Every batch to show per field: its closed history, plus the current
+  // live planting synthesized from the field's own state.
+  const entries = [];
+  fields.forEach((field) => {
+    const closed = batches
+      .filter((b) => b.fieldId === field.id)
+      .sort((a, b) => new Date(a.transplantDate) - new Date(b.transplantDate));
+    closed.forEach((b) => entries.push({ ...b, field, isCurrent: false }));
+    if (field.transplantDate) {
+      entries.push({
+        id: `current-${field.id}`, fieldId: field.id, field,
+        batchLabel: field.currentBatchLabel || 'Current planting',
+        variety: field.variety, transplantDate: field.transplantDate,
+        plantCount: field.plantCount, expectedHarvestDAT: field.expectedHarvestDAT,
+        setupCost: field.setupCost, closedDate: null, isCurrent: true,
+      });
+    }
+  });
+  entries.sort((a, b) => new Date(b.transplantDate) - new Date(a.transplantDate));
+
+  return (
+    <>
+      <p className="section-title" style={{ marginTop: 0 }}>Batch performance</p>
+      {entries.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          No plantings recorded yet — set a transplant date in Crop Cycle to start your first batch.
+        </p>
+      ) : entries.map((b) => {
+        const windowEnd = b.closedDate || todayISO();
+        const inWindow = (r) => r.fieldId === b.fieldId && r.date >= b.transplantDate && r.date <= windowEnd;
+        const batchHarvests = harvests.filter(inWindow);
+        const batchScouting = scouting.filter(inWindow);
+        const batchSprays = sprays.filter(inWindow);
+        const kg = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
+        const revenue = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+        const sprayCost = batchSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        const cost = (Number(b.setupCost) || 0) + sprayCost;
+        const margin = revenue - cost;
+        const highPressureDays = batchScouting.filter((s) => s.severity === 'High').length;
+        const soilAtTransplant = nearestSoilRound(soilReadings, b.fieldId, b.transplantDate, 14);
+        const daysGrown = b.closedDate ? daysBetween(b.transplantDate, b.closedDate) : daysBetween(b.transplantDate, todayISO());
+
+        return (
+          <div className="panel" key={b.id}>
+            <div className="panel-head">
+              <h3>{b.field.name} — {b.batchLabel}{b.isCurrent && <span className="tag gold" style={{ marginLeft: 8 }}>Ongoing</span>}</h3>
+              {!b.isCurrent && <button className="link-btn rust" onClick={() => { if (confirm('Delete this batch record? Harvest/scouting history is not affected.')) onDeleteBatch(b.id); }}>Delete</button>}
+            </div>
+            <p className="stat-foot" style={{ marginTop: 0 }}>
+              {b.variety || 'no variety set'} · transplanted {fmtDate(b.transplantDate)} ·{' '}
+              {b.closedDate ? `closed ${fmtDate(b.closedDate)}` : 'still growing'} · {daysGrown} days
+            </p>
+
+            <div className="grid grid-4">
+              <StatCard title="Yield" value={kg ? `${num(kg, 1)} kg` : '—'} tone="gold" foot={`${batchHarvests.length} pick(s)`} />
+              <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" />
+              <StatCard title="Cost" value={`GH₵ ${num(cost, 2)}`} tone="rust" foot="setup + sprays in this window" />
+              <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} />
+            </div>
+
+            <div style={{ padding: '10px 0 4px' }}>
+              <div className="kv">
+                <span className="k">Soil at transplant</span>
+                <span className="v">
+                  {soilAtTransplant
+                    ? `EC ${num(soilAtTransplant.avg.ec)} · pH ${num(soilAtTransplant.avg.ph, 1)} · N ${num(soilAtTransplant.avg.n)} (tested ${fmtDate(soilAtTransplant.date)})`
+                    : 'no soil test within 14 days of transplant'}
+                </span>
+              </div>
+              <div className="kv"><span className="k">Pest pressure</span><span className="v">{batchScouting.length ? `${batchScouting.length} check(s), ${highPressureDays} high` : 'not scouted'}</span></div>
+            </div>
+          </div>
+        );
+      })}
+      <p className="stat-foot">
+        Cost here is this batch's own setup cost plus sprays logged in its date window — it doesn&apos;t
+        include the field's shared structures or general expenses, which stay at the field level in
+        the Dashboard and Whole Farm views.
+      </p>
+    </>
+  );
+}
+
+function ManureReadingForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), location: MANURE_LOCATIONS[0], moisture: '', ec: '', ph: '', n: '', p: '', k: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date) return;
+    onSave({
+      id: newId(), date: f.date, location: f.location,
+      moisture: f.moisture === '' ? null : Number(f.moisture),
+      ec: f.ec === '' ? null : Number(f.ec), ph: f.ph === '' ? null : Number(f.ph),
+      n: f.n === '' ? null : Number(f.n), p: f.p === '' ? null : Number(f.p), k: f.k === '' ? null : Number(f.k),
+      notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add manure sample" sub="Test a few spots in the pile before mixing into soil." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Location in pile">
+          <select value={f.location} onChange={set('location')}>
+            {MANURE_LOCATIONS.map((l) => <option key={l}>{l}</option>)}
+          </select>
+        </Field>
+        <Field label="Moisture (%)"><input type="number" step="0.1" value={f.moisture} onChange={set('moisture')} /></Field>
+        <Field label="EC (µs/cm)"><input type="number" value={f.ec} onChange={set('ec')} /></Field>
+        <Field label="pH"><input type="number" step="0.1" value={f.ph} onChange={set('ph')} /></Field>
+        <Field label="Nitrogen (mg/kg)"><input type="number" value={f.n} onChange={set('n')} /></Field>
+        <Field label="Phosphorus (mg/kg)"><input type="number" value={f.p} onChange={set('p')} /></Field>
+        <Field label="Potassium (mg/kg)"><input type="number" value={f.k} onChange={set('k')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save sample</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SoilReadingForm({ fields, defaultField, onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, location: '', moisture: '', ec: '', ph: '', n: '', p: '', k: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date || !f.fieldId) return;
+    onSave({
+      id: newId(), date: f.date, fieldId: f.fieldId, location: f.location || null,
+      moisture: f.moisture === '' ? null : Number(f.moisture),
+      ec: f.ec === '' ? null : Number(f.ec), ph: f.ph === '' ? null : Number(f.ph),
+      n: f.n === '' ? null : Number(f.n), p: f.p === '' ? null : Number(f.p), k: f.k === '' ? null : Number(f.k),
+      notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add soil test" sub="Test several spots in the field on the same day — the app averages them for you." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Field">
+          <select value={f.fieldId} onChange={set('fieldId')}>
+            {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Location in field"><input value={f.location} onChange={set('location')} placeholder="e.g. North corner" /></Field>
+        <Field label="Moisture (%)"><input type="number" step="0.1" value={f.moisture} onChange={set('moisture')} /></Field>
+        <Field label="EC (µs/cm)"><input type="number" value={f.ec} onChange={set('ec')} /></Field>
+        <Field label="pH"><input type="number" step="0.1" value={f.ph} onChange={set('ph')} /></Field>
+        <Field label="Nitrogen (mg/kg)"><input type="number" value={f.n} onChange={set('n')} /></Field>
+        <Field label="Phosphorus (mg/kg)"><input type="number" value={f.p} onChange={set('p')} /></Field>
+        <Field label="Potassium (mg/kg)"><input type="number" value={f.k} onChange={set('k')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save test</button>
+      </div>
+    </Modal>
+  );
+}
+
+function NewBatchForm({ field, onClose, onSave }) {
+  const [f, setF] = useState({
+    batchLabel: '', variety: '', transplantDate: todayISO(), plantCount: '', spacing: field?.spacing || '',
+    expectedHarvestDAT: field?.expectedHarvestDAT ?? 70, setupCost: '', manureAppliedDate: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const hadPrior = Boolean(field?.transplantDate);
+  function submit() {
+    if (!f.transplantDate) return;
+    onSave({
+      currentBatchLabel: f.batchLabel || 'New batch',
+      variety: f.variety || '', transplantDate: f.transplantDate,
+      plantCount: f.plantCount === '' ? null : Number(f.plantCount),
+      spacing: f.spacing || '',
+      expectedHarvestDAT: f.expectedHarvestDAT === '' ? null : Number(f.expectedHarvestDAT),
+      setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+      manureAppliedDate: f.manureAppliedDate || null,
+      notes: f.notes || '',
+    });
+  }
+  return (
+    <Modal
+      title={`Start new batch — ${field ? field.name : ''}`}
+      sub={hadPrior
+        ? "This archives the current planting to Batch Performance and starts fresh with these details."
+        : 'This becomes the first recorded batch for this field.'}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Batch label" span2><input value={f.batchLabel} onChange={set('batchLabel')} placeholder="e.g. Batch 2 — dry season" /></Field>
+        <Field label="Variety"><input value={f.variety} onChange={set('variety')} /></Field>
+        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
+        <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} /></Field>
+        <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
+        <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="seedlings for this batch" /></Field>
+        <Field label="Manure applied date"><input type="date" value={f.manureAppliedDate} onChange={set('manureAppliedDate')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Start batch</button>
       </div>
     </Modal>
   );

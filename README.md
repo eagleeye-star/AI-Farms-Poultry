@@ -70,6 +70,43 @@ in automatically — add only what those don't already capture.
 
 ---
 
+## Soil Monitoring & Batch Performance
+
+Under **Bell Pepper Fields → Soil & Batches**, the same manure-then-mixed-soil
+testing workflow from the AI Farms soil monitoring sheet, now digitised.
+
+### Soil Monitoring
+- **Manure pile readings** — sample a few spots before mixing (moisture, EC,
+  pH, N, P, K); the app averages them and shows a Fertility (N+P+K) total.
+- **Field soil readings** — test several spots in a field on the same day
+  after mixing; the app averages the most recent round per field and shows
+  Days Since Mix (from the field's Manure Applied date, set in Crop Cycle).
+- **Transplant readiness** — a Safe / Caution / Not safe verdict per field,
+  following the gate that actually matters: EC and pH. Nitrogen, Phosphorus
+  and Potassium are shown for information against **targets you set per
+  field** (Crop Cycle → Edit → Soil targets — defaults are typical bell
+  pepper ranges, but every farm's soil is different).
+- **Retest reminders** — if a field has a manure-applied date and hasn't
+  reached Safe yet, a reminder nudges you roughly every 7 days to retest.
+
+### Planting Batches
+Each time you transplant, the field's current planting becomes one entry in
+its history — a **batch**. Hit **+ New Batch** in Crop Cycle when you replant;
+the app archives what was there and starts the new one.
+
+**Batch Performance** (Soil & Batches → Batch Performance) shows, for every
+batch a field has ever had: the soil reading closest to its transplant date,
+and that batch's actual yield, revenue, cost, and margin — computed from
+harvests, sprays, and scouting logged within that batch's own date window.
+Nothing needs tagging by hand; the app works out which records belong to
+which batch from their dates.
+
+> Batch cost is that batch's own setup cost plus sprays in its window — it
+> doesn't include the field's shared structures or general expenses, which
+> stay at the field level in the Dashboard and Whole Farm P&L.
+
+---
+
 ## Farm Team & Payroll
 
 Under **Whole Farm → Farm Team**, track your farm help and what you pay them.
