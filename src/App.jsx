@@ -138,6 +138,28 @@ function freshData() {
   };
 }
 
+/**
+ * Rough count of "real" records across the farm, used to sanity-check sync
+ * direction. A device whose local storage was wiped or reinstalled still
+ * gets a fresh, later `updatedAt` the moment the app loads — so timestamp
+ * comparison ALONE can't tell a genuine edit from a wipe. If local looks
+ * dramatically emptier than the cloud, that's the wipe, not real editing,
+ * and sync should recover from the cloud rather than overwrite it.
+ */
+function dataRichness(d) {
+  if (!d) return 0;
+  const p = d.pepper || {};
+  return (
+    (d.dailyLog || []).length + (d.feed || []).length + (d.meds || []).length +
+    (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
+    (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
+    (d.reminders || []).length + (d.recipes || []).length +
+    (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
+    (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
+    (p.inputs || []).length
+  );
+}
+
 function migrate(saved) {
   let flocks = saved.flocks;
   if (!flocks || !flocks.length) {
@@ -360,7 +382,12 @@ export default function App() {
         delta: -(Number(r.feedGiven) || 0),
         kind: 'usage', ref: r,
       })),
-    ].sort((a, b) => new Date(a.date) - new Date(b.date) || (a.kind === 'purchase' ? -1 : 1));
+    ].sort((a, b) => {
+      const dateDiff = new Date(a.date) - new Date(b.date);
+      if (dateDiff !== 0) return dateDiff;
+      if (a.kind === b.kind) return 0; // same date, same kind — order doesn't affect the running total
+      return a.kind === 'purchase' ? -1 : 1; // a same-day purchase should still land before that day's usage
+    });
 
     let running = 0;
     return events.map((e) => { running += e.delta; return { ...e, balance: running }; });
@@ -625,31 +652,82 @@ export default function App() {
 
   /* ---- cloud sync ---- */
 
+  const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
+  const firstSyncRef = useRef(true);      // sync sooner right after the app opens, for faster recovery
+  const syncNowRef = useRef(null);        // always holds the latest syncNow closure, for stable event listeners
+  const syncInFlightRef = useRef(false);  // blocks overlapping syncs — auto-sync now fires from several independent triggers
+
   async function syncNow(mode = 'auto') {
     if (!user) return;
+    if (syncInFlightRef.current) return; // a sync is already running — let it finish rather than overlap
+    syncInFlightRef.current = true;
     setSync({ status: 'syncing', message: 'Syncing…', lastSync: sync.lastSync });
     try {
       const remote = await pullRemote();
       const localTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
       const remoteTime = remote ? new Date(remote.updatedAt).getTime() : 0;
+      const localCount = dataRichness(data);
+      const remoteCount = remote ? dataRichness(remote.state) : 0;
 
-      if (mode === 'pull' || (mode === 'auto' && remote && remoteTime > localTime)) {
-        // Cloud copy is newer — take it.
+      // Safety net: local storage getting wiped or reinstalled still produces
+      // a fresh "now" timestamp, which would otherwise look newer than the
+      // cloud and push an empty farm over a real one. If local is far
+      // emptier than a meaningfully-sized cloud copy, always recover from
+      // the cloud instead — never push, whatever the timestamps say.
+      const looksLikeLocalWipe = mode !== 'pull' && remoteCount >= 5 && localCount < remoteCount * 0.2;
+
+      if (mode === 'pull' || looksLikeLocalWipe || (mode === 'auto' && remote && remoteTime > localTime)) {
         const merged = migrate(remote.state);
         setData(merged);
         setActiveFlockId(merged.flocks[0].id);
-        setSync({ status: 'ok', message: 'Pulled latest from cloud', lastSync: new Date().toISOString() });
+        lastSyncedAtRef.current = merged.updatedAt;
+        setSync({
+          status: 'ok',
+          message: looksLikeLocalWipe
+            ? 'This device had far less data than your cloud copy — restored automatically'
+            : 'Pulled latest from cloud',
+          lastSync: new Date().toISOString(),
+        });
         return;
       }
       const at = await pushRemote(data);
+      lastSyncedAtRef.current = at;
       setData((d) => ({ ...d, updatedAt: at }));
       setSync({ status: 'ok', message: 'Saved to cloud', lastSync: at });
     } catch (err) {
       const msg = err.message || 'Sync failed';
       setSync({ status: 'error', message: msg, lastSync: sync.lastSync });
       if (msg.includes('sign in')) setUser(null);
+    } finally {
+      syncInFlightRef.current = false;
     }
   }
+
+  syncNowRef.current = syncNow;
+
+  // Auto-save: a few seconds after any local change settles, push it to the
+  // cloud without needing a button press. Skips changes that were caused by
+  // sync itself, so this can't loop.
+  useEffect(() => {
+    if (!user || !isCloudConfigured()) return;
+    if (data.updatedAt === lastSyncedAtRef.current) return;
+    const delay = firstSyncRef.current ? 800 : 4000;
+    const t = setTimeout(() => { firstSyncRef.current = false; syncNowRef.current('auto'); }, delay);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.updatedAt, user]);
+
+  // Also sync whenever the app comes back to the foreground — the common
+  // case on a phone is backgrounding the app rather than closing it, and a
+  // debounce timer doesn't run while the tab is suspended.
+  useEffect(() => {
+    if (!user || !isCloudConfigured()) return;
+    function onVisible() {
+      if (document.visibilityState === 'visible') syncNowRef.current('auto');
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [user]);
 
   // On sign-in, pull whatever is already in the cloud so a new device
   // starts from the real data rather than the seeded defaults.
@@ -662,9 +740,11 @@ export default function App() {
         const merged = migrate(remote.state);
         setData(merged);
         setActiveFlockId(merged.flocks[0].id);
+        lastSyncedAtRef.current = merged.updatedAt;
         setSync({ status: 'ok', message: 'Loaded from cloud', lastSync: new Date().toISOString() });
       } else {
         const at = await pushRemote(data);
+        lastSyncedAtRef.current = at;
         setData((d) => ({ ...d, updatedAt: at }));
         setSync({ status: 'ok', message: 'Farm saved to cloud', lastSync: at });
       }
@@ -677,6 +757,8 @@ export default function App() {
     signOut();
     setUser(null);
     setSync({ status: 'idle', message: '', lastSync: null });
+    lastSyncedAtRef.current = null;
+    firstSyncRef.current = true;
   }
 
   function backupData() {
@@ -830,6 +912,16 @@ export default function App() {
         onSignOut={handleSignOut}
       />
 
+      {sync.message && sync.message.includes('restored automatically') && (
+        <div className="stale-banner" style={{ marginBottom: 18, borderColor: 'rgba(122, 154, 102, 0.5)' }}>
+          🌱 <span>
+            This device had far less data than your cloud account, so the app pulled your real data back
+            down automatically instead of overwriting it. If anything looks missing, check{' '}
+            <strong>Backup</strong> or your Supabase <code>farm_state_history</code> table for older versions.
+          </span>
+        </div>
+      )}
+
       {workspace === 'poultry' && (<>
       <header className="header">
         <div>
@@ -931,6 +1023,7 @@ export default function App() {
       {tab === 'log' && (
         <LogTab
           dailyLog={[...dailyLog].reverse()}
+          flockStartDate={activeFlock.startDate}
           onAdd={() => { setEditingLog(null); setModal('log'); }}
           onEdit={(entry) => { setEditingLog(entry); setModal('log'); }}
           onDelete={deleteDailyLog}
@@ -1056,7 +1149,7 @@ export default function App() {
         <LogForm
           entry={editingLog}
           lastClosing={latest ? latest.closing : activeFlock.initialBirds}
-          flockType={activeFlock.type}
+          flockStartDate={activeFlock.startDate}
           onClose={() => { setModal(null); setEditingLog(null); }}
           onSave={(e) => {
             if (editingLog) updateDailyLog(editingLog.id, e);
@@ -1083,7 +1176,7 @@ export default function App() {
         <MedForm onClose={() => setModal(null)} onSave={(e) => { addMed(e); setModal(null); }} />
       )}
       {modal === 'vax' && (
-        <VaxForm onClose={() => setModal(null)} onSave={(e) => { addVax(e); setModal(null); }} />
+        <VaxForm flockStartDate={activeFlock.startDate} onClose={() => setModal(null)} onSave={(e) => { addVax(e); setModal(null); }} />
       )}
       {modal === 'weight' && (
         <WeightForm onClose={() => setModal(null)} onSave={(e) => { addWeightSample(e); setModal(null); }} />
@@ -1391,7 +1484,7 @@ function DashboardTab({
 
 /* ---------------- Daily Log tab ---------------- */
 
-function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
+function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1407,10 +1500,15 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
             </tr>
           </thead>
           <tbody>
-            {dailyLog.map((r) => (
+            {dailyLog.map((r) => {
+              // Bird age is always derived from arrival date + this entry's
+              // own date — never trusted from storage, so it's correct even
+              // for old records or ones logged after the fact.
+              const age = flockStartDate && r.date ? daysBetween(flockStartDate, r.date) : null;
+              return (
               <tr key={r.id || r.date}>
                 <td className="mono">{fmtDate(r.date)}</td>
-                <td className="mono">{r.birdAge ?? '—'}</td>
+                <td className="mono">{age != null ? age : '—'}</td>
                 <td className="mono">{num(r.opening)}</td>
                 <td className="mono">{r.mortality ? <span style={{ color: 'var(--rust)' }}>{num(r.mortality)}</span> : num(r.mortality)}</td>
                 <td>{r.mortalityCause ? <span className="tag rust">{r.mortalityCause}</span> : '—'}</td>
@@ -1432,7 +1530,8 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
                   </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {dailyLog.length === 0 && <tr><td colSpan={15} className="empty">No entries yet — log the first day.</td></tr>}
           </tbody>
         </table>
@@ -1441,11 +1540,10 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
   );
 }
 
-function LogForm({ entry, lastClosing, onClose, onSave }) {
+function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
   const isEdit = Boolean(entry);
   const [f, setF] = useState({
     date: entry?.date || todayISO(),
-    birdAge: entry?.birdAge ?? '',
     opening: entry?.opening ?? (lastClosing ?? ''),
     mortality: entry?.mortality ?? 0,
     mortalityCause: entry?.mortalityCause || '',
@@ -1460,13 +1558,17 @@ function LogForm({ entry, lastClosing, onClose, onSave }) {
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
+  // Bird age always comes from arrival date + whatever date this entry is
+  // for — so a backdated entry gets the right age automatically, and
+  // there's nothing to type or get wrong.
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) : null;
 
   function submit() {
     if (!f.date || f.opening === '') return;
     onSave({
       id: entry?.id || newId(),
       date: f.date,
-      birdAge: f.birdAge === '' ? null : Number(f.birdAge),
+      birdAge,
       opening: Number(f.opening),
       mortality: Number(f.mortality) || 0,
       mortalityCause: Number(f.mortality) > 0 ? (f.mortalityCause || null) : null,
@@ -1490,7 +1592,7 @@ function LogForm({ entry, lastClosing, onClose, onSave }) {
     >
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
-        <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
+        <Field label="Bird age (auto)"><input value={birdAge != null ? `${birdAge} days` : 'set flock start date'} disabled /></Field>
         <Field label="Opening birds"><input type="number" value={f.opening} onChange={set('opening')} /></Field>
         <Field label="Mortality"><input type="number" value={f.mortality} onChange={set('mortality')} /></Field>
         <Field label="Cause of death">
@@ -1829,15 +1931,16 @@ function MedForm({ onClose, onSave }) {
   );
 }
 
-function VaxForm({ onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', birdAge: '', method: 'Water', notes: '' });
+function VaxForm({ flockStartDate, onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', method: 'Water', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) : null;
   function submit() {
     if (!f.date || !f.vaccine) return;
     onSave({
       id: newId(),
       date: f.date, vaccine: f.vaccine, disease: f.disease || f.vaccine,
-      birdAge: f.birdAge === '' ? null : Number(f.birdAge), method: f.method || null,
+      birdAge, method: f.method || null,
       notes: f.notes || null,
     });
   }
@@ -1847,7 +1950,7 @@ function VaxForm({ onClose, onSave }) {
         <Field label="Date given"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Vaccine name"><input value={f.vaccine} onChange={set('vaccine')} /></Field>
         <Field label="Disease"><input value={f.disease} onChange={set('disease')} /></Field>
-        <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
+        <Field label="Bird age (auto)"><input value={birdAge != null ? `${birdAge} days` : 'set flock start date'} disabled /></Field>
         <Field label="Method">
           <select value={f.method} onChange={set('method')}>
             <option>Water</option><option>Injection</option><option>Eye drop</option><option>Spray</option>
@@ -2011,6 +2114,7 @@ function latestFieldRound(soilReadings, fieldId) {
 /** Where a value sits against a min/max target: 'below' | 'ok' | 'above'. */
 function bandStatus(value, min, max) {
   if (value == null || min == null || max == null) return null;
+  if (min > max) [min, max] = [max, min]; // guards against a mistyped/swapped target range
   if (value < min) return 'below';
   if (value > max) return 'above';
   return 'ok';
@@ -3149,10 +3253,10 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
     ? 'Saved on this device only'
-    : sync.status === 'syncing' ? (sync.message || 'Syncing…')
+    : sync.status === 'syncing' ? (sync.message || 'Auto-saving…')
     : sync.status === 'error' ? sync.message
-    : when ? `${sync.message || 'Synced'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-    : 'Not synced yet this session';
+    : when ? `${sync.message || 'Auto-saved to cloud'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : (user ? 'Auto-sync on — saving shortly' : 'Not synced yet this session');
 
   return (
     <div className={`sync-bar${sync.status === 'error' ? ' error' : ''}`}>
