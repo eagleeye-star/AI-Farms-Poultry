@@ -1503,8 +1503,9 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
             {dailyLog.map((r) => {
               // Bird age is always derived from arrival date + this entry's
               // own date — never trusted from storage, so it's correct even
-              // for old records or ones logged after the fact.
-              const age = flockStartDate && r.date ? daysBetween(flockStartDate, r.date) : null;
+              // for old records or ones logged after the fact. +1 so arrival
+              // day is "Day 1", matching the dashboard's Day/Week ring.
+              const age = flockStartDate && r.date ? daysBetween(flockStartDate, r.date) + 1 : null;
               return (
               <tr key={r.id || r.date}>
                 <td className="mono">{fmtDate(r.date)}</td>
@@ -1560,8 +1561,9 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
   // Bird age always comes from arrival date + whatever date this entry is
   // for — so a backdated entry gets the right age automatically, and
-  // there's nothing to type or get wrong.
-  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) : null;
+  // there's nothing to type or get wrong. +1 so arrival day is "Day 1",
+  // matching the dashboard's Day/Week ring.
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) + 1 : null;
 
   function submit() {
     if (!f.date || f.opening === '') return;
@@ -1934,7 +1936,7 @@ function MedForm({ onClose, onSave }) {
 function VaxForm({ flockStartDate, onClose, onSave }) {
   const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', method: 'Water', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) : null;
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) + 1 : null;
   function submit() {
     if (!f.date || !f.vaccine) return;
     onSave({
