@@ -107,6 +107,29 @@ which batch from their dates.
 
 ---
 
+## Fuel Tracker
+
+Under **Whole Farm → Fuel**, log every fuel purchase — generator, water pump,
+vehicle, tiller, motorbike:
+
+- **Date, fuel type, equipment, liters, price per liter** — cost calculates
+  itself from liters × price, or you can type the total directly.
+- **Assign it** to poultry, bell pepper, or the whole farm — down to a
+  specific field or flock, same as expenses and staff payments. A water
+  pump run for Field A shows up in Field A's own cost, not just a farm-wide
+  total.
+- **Totals and averages** — total spent, total liters, average price per
+  liter, and a spend-by-equipment breakdown, so you can see whether the
+  generator or the vehicle is the real cost driver.
+
+Fuel counts as a running cost the same way labour does, so it flows straight
+into the Whole Farm P&L and the relevant field/flock margin automatically.
+Edit and Delete a purchase from the Fuel tab — editing from the general
+Whole Farm expenses list is disabled for fuel records, since that form
+doesn't know about liters or price per liter and would drop them.
+
+---
+
 ## Farm Team & Payroll
 
 Under **Whole Farm → Farm Team**, track your farm help and what you pay them.

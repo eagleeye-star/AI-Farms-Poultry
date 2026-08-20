@@ -3846,6 +3846,8 @@ function FeedMixTab({ recipes, flock, onSave, onDelete }) {
 /* ============================================================= */
 
 const EXPENSE_CATEGORIES = ['Labour', 'Transport', 'Utilities', 'Repairs & maintenance', 'Equipment', 'Rent', 'Other'];
+const FUEL_TYPES = ['Petrol', 'Diesel', 'Kerosene'];
+const FUEL_EQUIPMENT = ['Generator', 'Water pump', 'Vehicle', 'Tiller / cultivator', 'Motorbike', 'Other'];
 
 /* Farm help / payroll. Payments live in the SAME `expenses` array as other
    costs (tagged with staffId + paymentKind), so they automatically flow
@@ -3942,15 +3944,17 @@ function annualCharge(item) {
 
 function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff }) {
   const [modal, setModal] = useState(null);
-  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff'
+  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel'
   const [editingPayment, setEditingPayment] = useState(null);
   const [editingStaff, setEditingStaff] = useState(null);
+  const [editingFuel, setEditingFuel] = useState(null);
 
   const allExpenses = data.expenses || [];
   const capital = allExpenses.filter((e) => e.capital);
   const running = allExpenses.filter((e) => !e.capital);
   const staff = data.staff || [];
   const payments = allExpenses.filter((e) => e.staffId);
+  const fuel = allExpenses.filter((e) => e.category === 'Fuel');
 
   const fields = (data.pepper && data.pepper.fields) || [];
   const flocks = data.flocks || [];
@@ -4034,6 +4038,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         <button className={view === 'pl' ? 'active' : ''} onClick={() => setView('pl')}>Profit &amp; loss</button>
         <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}>Structures &amp; assets</button>
         <button className={view === 'staff' ? 'active' : ''} onClick={() => setView('staff')}>Farm Team</button>
+        <button className={view === 'fuel' ? 'active' : ''} onClick={() => setView('fuel')}>Fuel</button>
       </div>
 
       {view === 'pl' && (<>
@@ -4114,7 +4119,10 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
                   <td className="mono">GH₵ {num(r.amount, 2)}</td>
                   <td>
                     <span style={{ display: 'flex', gap: 8 }}>
-                      {!r.staffId && <button className="link-btn" onClick={() => setModal(`expense:${r.id}`)}>Edit</button>}
+                      {!r.staffId && r.category !== 'Fuel' && (
+                        <button className="link-btn" onClick={() => setModal(`expense:${r.id}`)}>Edit</button>
+                      )}
+                      {r.category === 'Fuel' && <span className="stat-foot" style={{ margin: 0 }}>edit in Fuel tab</span>}
                       <button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button>
                     </span>
                   </td>
@@ -4171,6 +4179,16 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         />
       )}
 
+      {view === 'fuel' && (
+        <FuelTab
+          fuel={fuel}
+          labelFor={labelFor}
+          onAdd={() => { setEditingFuel(null); setModal('fuel'); }}
+          onEdit={(f) => { setEditingFuel(f); setModal('fuel'); }}
+          onDelete={onDeleteExpense}
+        />
+      )}
+
       {(modal === 'expense' || (typeof modal === 'string' && modal.startsWith('expense:'))) && (
         <ExpenseForm
           entry={modal.startsWith('expense:') ? running.concat(capital).find((r) => r.id === modal.split(':')[1]) : null}
@@ -4206,6 +4224,21 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
             else onAddExpense(e);
             setModal(null);
             setEditingPayment(null);
+          }}
+        />
+      )}
+
+      {modal === 'fuel' && (
+        <FuelForm
+          entry={editingFuel}
+          fields={fields}
+          flocks={flocks}
+          onClose={() => { setModal(null); setEditingFuel(null); }}
+          onSave={(e) => {
+            if (editingFuel) onUpdateExpense(e.id, e);
+            else onAddExpense(e);
+            setModal(null);
+            setEditingFuel(null);
           }}
         />
       )}
@@ -4695,6 +4728,176 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save payment'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ========================= FUEL TRACKER ======================= */
+/* ============================================================= */
+
+function FuelTab({ fuel, labelFor, onAdd, onEdit, onDelete }) {
+  const sorted = [...fuel].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalSpent = fuel.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const totalLiters = fuel.reduce((s, r) => s + (Number(r.liters) || 0), 0);
+  const avgPrice = totalLiters ? totalSpent / totalLiters : null;
+
+  const byEquipment = {};
+  fuel.forEach((r) => {
+    const key = r.equipment || 'Unspecified';
+    byEquipment[key] = (byEquipment[key] || 0) + (Number(r.amount) || 0);
+  });
+  const topEquipment = Object.entries(byEquipment).sort((a, b) => b[1] - a[1]).slice(0, 4);
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Fuel</h3>
+        <button className="btn btn-gold" onClick={onAdd}>+ Log purchase</button>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard title="Total Spent" value={`GH₵ ${num(totalSpent, 2)}`} tone="rust" foot={`${fuel.length} purchase(s)`} />
+        <StatCard title="Total Liters" value={`${num(totalLiters, 1)} L`} tone="gold" />
+        <StatCard title="Avg Price / Liter" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="across all purchases" />
+        <StatCard title="Last Purchase" value={sorted.length ? fmtDate(sorted[0].date) : '—'} tone="green" foot={sorted.length ? (sorted[0].equipment || '—') : ''} />
+      </div>
+
+      {topEquipment.length > 0 && (
+        <>
+          <p className="section-title">Spend by equipment</p>
+          <div className="grid grid-4" style={{ marginBottom: 6 }}>
+            {topEquipment.map(([eq, amt]) => (
+              <StatCard key={eq} title={eq} value={`GH₵ ${num(amt, 2)}`} foot="spent to date" />
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="section-title">Purchases</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Type</th><th>Equipment</th><th>Liters</th><th>Price/L</th><th>Cost</th><th>Assigned to</th><th>Supplier</th><th>Notes</th><th></th></tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{fmtDate(r.date)}</td>
+                <td>{r.fuelType || '—'}</td>
+                <td>{r.equipment || '—'}</td>
+                <td className="mono">{r.liters != null ? num(r.liters, 1) : '—'}</td>
+                <td className="mono">{r.pricePerLiter != null ? num(r.pricePerLiter, 2) : '—'}</td>
+                <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                <td>{labelFor(r)}</td>
+                <td>{r.supplier || '—'}</td>
+                <td className="notes">{r.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                    <button className="link-btn rust" onClick={() => { if (confirm('Delete this fuel record?')) onDelete(r.id); }}>Delete</button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {sorted.length === 0 && <tr><td colSpan={10} className="empty">No fuel purchases logged yet — track what the generator, pump, or vehicle actually costs to run.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Fuel counts as a running cost the same as labour or feed — assigning a purchase to a field or
+        flock (rather than "Whole farm") means it shows up in that field's or flock's own margin too.
+      </p>
+    </>
+  );
+}
+
+function FuelForm({ entry, fields, flocks, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    date: entry?.date || todayISO(),
+    fuelType: entry?.fuelType || FUEL_TYPES[1], // Diesel default — most common for generators/tillers
+    equipment: entry?.equipment || FUEL_EQUIPMENT[0],
+    liters: entry?.liters ?? '',
+    pricePerLiter: entry?.pricePerLiter ?? '',
+    amount: entry?.amount ?? '',
+    supplier: entry?.supplier || '',
+    scope: entry?.scope || 'general',
+    target: entry?.target || 'shared',
+    notes: entry?.notes || '',
+  });
+
+  function set(k) {
+    return (e) => {
+      const v = e.target.value;
+      if (k === 'scope') { setF({ ...f, scope: v, target: 'shared' }); return; }
+      setF({ ...f, [k]: v });
+    };
+  }
+
+  const autoAmount = (Number(f.liters) || 0) * (Number(f.pricePerLiter) || 0);
+  const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+
+  const targetOptions = f.scope === 'pepper'
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    : f.scope === 'poultry'
+      ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
+      : [['shared', 'Whole farm']];
+
+  function submit() {
+    if (!f.date || (f.liters === '' && f.amount === '')) return;
+    onSave({
+      id: entry?.id || newId(), date: f.date, capital: false, category: 'Fuel',
+      fuelType: f.fuelType, equipment: f.equipment,
+      liters: f.liters === '' ? null : Number(f.liters),
+      pricePerLiter: f.pricePerLiter === '' ? null : Number(f.pricePerLiter),
+      description: `${f.fuelType} — ${f.equipment}`,
+      amount, supplier: f.supplier || null,
+      scope: f.scope, target: f.target,
+      notes: f.notes || null,
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? 'Edit fuel purchase' : 'Log fuel purchase'}
+      sub={autoAmount ? `Cost: GH₵ ${num(autoAmount, 2)}.` : 'Enter liters × price, or type the total directly.'}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Fuel type">
+          <select value={f.fuelType} onChange={set('fuelType')}>
+            {FUEL_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Equipment / purpose">
+          <select value={f.equipment} onChange={set('equipment')}>
+            {FUEL_EQUIPMENT.map((eq) => <option key={eq}>{eq}</option>)}
+          </select>
+        </Field>
+        <Field label="Liters"><input type="number" step="0.1" value={f.liters} onChange={set('liters')} /></Field>
+        <Field label="Price per liter (GH₵)"><input type="number" step="0.01" value={f.pricePerLiter} onChange={set('pricePerLiter')} /></Field>
+        <Field label="Total cost (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
+        <Field label="Supplier"><input value={f.supplier} onChange={set('supplier')} /></Field>
+        <Field label="Enterprise">
+          <select value={f.scope} onChange={set('scope')}>
+            <option value="general">Whole farm</option>
+            <option value="poultry">Poultry</option>
+            <option value="pepper">Bell pepper</option>
+          </select>
+        </Field>
+        <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock?' : 'Applies to'}>
+          <select value={f.target} onChange={set('target')}>
+            {targetOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save purchase'}</button>
       </div>
     </Modal>
   );
