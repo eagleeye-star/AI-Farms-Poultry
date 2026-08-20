@@ -107,6 +107,28 @@ which batch from their dates.
 
 ---
 
+## Bell Pepper Spray & Nutrition Programme
+
+Under **Bell Pepper Fields → Spray Programme**, a 14-week, 42-event nutrition
+and pest/disease schedule (Omex Starter, Boom Boost, Finisher Pro, CalMag,
+Boron, Konmidor, Emamectin, CYDIM SUPER, Alt Sulfur, Neem Oil) — computed
+from **each field's own transplant date**, not a fixed calendar. Switch
+fields at the top of Bell Pepper Fields and the whole programme recalculates
+for that field's actual dates.
+
+- Grouped by week and growth stage (Establishment → Vegetative → Pre-flower
+  → Flowering → Fruiting → Harvest Approach), filterable by category.
+- Tap any event for its exact rate (ml or g per 15L, drip rates, PHI notes).
+- **Generate reminders** turns the remaining (not-yet-passed) events into
+  actual Reminders with due dates and rates in the notes — safe to tap more
+  than once, it skips anything already added.
+
+This is a plan, not a log — record what you actually spray in **Spray &
+Fertigation** as you go, which is what your PHI holds, resistance-rotation
+warnings, and spray costs are based on.
+
+---
+
 ## Fuel Tracker
 
 Under **Whole Farm → Fuel**, log every fuel purchase — generator, water pump,

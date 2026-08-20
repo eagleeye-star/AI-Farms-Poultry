@@ -2322,6 +2322,7 @@ function PepperWorkspace({
         {[
           ['dashboard', 'Dashboard'],
           ['cycle', 'Crop Cycle'],
+          ['programme', 'Spray Programme'],
           ['soil', 'Soil & Batches'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
@@ -2351,6 +2352,15 @@ function PepperWorkspace({
           fields={fieldsScoped} datOf={datOf}
           onEdit={(id) => setModal(`field:${id}`)}
           onNewBatch={(id) => setModal(`batch:${id}`)}
+        />
+      )}
+
+      {ptab === 'programme' && (
+        <SprayProgrammeTab
+          activeField={activeField}
+          fields={fields}
+          reminders={reminders}
+          onAddReminder={onAddReminder}
         />
       )}
 
@@ -2638,6 +2648,221 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
         Bell peppers usually reach first harvest around 60–90 days after transplant; the default is set to 70. Adjust per field once you see how your crop runs.
         Starting a <strong>New Batch</strong> archives the current planting to Soil &amp; Batches → Batch Performance and begins the next one.
       </p>
+    </>
+  );
+}
+
+/* ============================================================= */
+/* =================== BELL PEPPER SPRAY PROGRAMME =============== */
+/* ============================================================= */
+
+/* Day offsets are relative to transplant (Day 0). Dates shown in the app are
+   computed live from each field's own transplant date — this is the same
+   14-week nutrition/pest/disease regimen, just not locked to one calendar. */
+const PEPPER_PROGRAMME = [
+  { day: 0, week: 1, title: 'Transplant Day — Imidacloprid Drench + Vital 05 + Algua', cat: 'transplant', time: '6am' },
+  { day: 4, week: 1, title: 'Omex Starter + Algua + Vital 05 + OFA', cat: 'nutrition', time: '6am' },
+  { day: 7, week: 1, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 8, week: 2, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 11, week: 2, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 14, week: 2, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 15, week: 3, title: 'Omex Starter + Vital 05 + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 18, week: 3, title: 'Konmidor (systemic insecticide)', cat: 'pesticide', time: '6am' },
+  { day: 21, week: 3, title: 'CYDIM SUPER (preventive fungicide)', cat: 'fungicide', time: '6am' },
+  { day: 22, week: 4, title: 'Urea Foliar + Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 25, week: 4, title: 'Emamectin Benzoate + CYDIM SUPER', cat: 'pesticide', time: '6am' },
+  { day: 28, week: 4, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 29, week: 5, title: 'Alt Sulfur (MORNING — check temp <30°C)', cat: 'fungicide', time: '6am' },
+  { day: 32, week: 5, title: 'Omex Starter + Algua + OFA + Vital 05', cat: 'nutrition', time: '6am' },
+  { day: 35, week: 5, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 36, week: 6, title: 'FINAL UREA + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 39, week: 6, title: 'Konmidor (2nd rotation)', cat: 'pesticide', time: '6am' },
+  { day: 42, week: 6, title: 'SWITCH: Boom Boost begins + Algua + OFA', cat: 'transition', time: '6am' },
+  { day: 43, week: 7, title: 'Boom Boost + CalMag + Algua + Vital 05 + BORON', cat: 'flowering', time: '6am' },
+  { day: 46, week: 7, title: 'Emamectin + CYDIM SUPER + CalMag', cat: 'pesticide', time: '6am' },
+  { day: 49, week: 7, title: 'Boom Boost + CalMag + Algua + Boron (2nd & final)', cat: 'flowering', time: '6am' },
+  { day: 50, week: 8, title: 'Boom Boost + CalMag + Algua + OFA', cat: 'flowering', time: '6am' },
+  { day: 53, week: 8, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 56, week: 8, title: 'Boom Boost + CalMag + OFA', cat: 'flowering', time: '6am' },
+  { day: 57, week: 9, title: 'Alt Sulfur (MORNING — check temp <30°C)', cat: 'fungicide', time: '6am' },
+  { day: 60, week: 9, title: 'Boom Boost + CalMag 3ml + Vital 05 + Algua', cat: 'flowering', time: '6am' },
+  { day: 63, week: 9, title: 'Konmidor + Boom Boost + CalMag 3ml', cat: 'pesticide', time: '6am' },
+  { day: 64, week: 10, title: 'Boom Boost + Finisher Pro (BEGINS) + CalMag', cat: 'fruiting', time: '6am' },
+  { day: 67, week: 10, title: 'Emamectin + CalMag + Algua', cat: 'pesticide', time: '6am' },
+  { day: 70, week: 10, title: 'CYDIM SUPER + Finisher Pro + CalMag', cat: 'fungicide', time: '6am' },
+  { day: 71, week: 11, title: 'Finisher Pro + CalMag + Algua + OFA', cat: 'fruiting', time: '6am' },
+  { day: 74, week: 11, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 77, week: 11, title: 'Alt Sulfur MORNING — 48hrs after Neem', cat: 'fungicide', time: '6am' },
+  { day: 78, week: 12, title: 'Finisher Pro + CalMag + Vital 05 + Algua', cat: 'fruiting', time: '6am' },
+  { day: 81, week: 12, title: 'Konmidor + Finisher Pro + CalMag (PHI 7d)', cat: 'pesticide', time: '6am' },
+  { day: 84, week: 12, title: 'CYDIM SUPER + Finisher Pro + CalMag (PHI 7d)', cat: 'fungicide', time: '6am' },
+  { day: 85, week: 13, title: 'Finisher Pro + CalMag 2ml + OFA', cat: 'fruiting', time: '6am' },
+  { day: 88, week: 13, title: 'Emamectin IF needed (PHI 3d)', cat: 'pesticide', time: '6am' },
+  { day: 91, week: 13, title: 'FINAL FOLIAR SPRAY — Finisher Pro + CalMag + OFA', cat: 'fruiting', time: '6am' },
+  { day: 92, week: 14, title: 'OFA DRIP ONLY', cat: 'harvest', time: '6am' },
+  { day: 95, week: 14, title: 'OFA DRIP ONLY — Monitor harvest readiness', cat: 'harvest', time: '6am' },
+  { day: 98, week: 14, title: 'HARVEST — Inspect and begin picking', cat: 'harvest', time: '6am' },
+];
+
+const PEPPER_STAGES = [
+  { weeks: [1, 2], label: 'Establishment' },
+  { weeks: [3, 4, 5], label: 'Vegetative' },
+  { weeks: [6], label: 'Pre-flower Transition' },
+  { weeks: [7, 8, 9], label: 'Flowering' },
+  { weeks: [10, 11, 12], label: 'Fruiting' },
+  { weeks: [13, 14], label: 'Harvest Approach' },
+];
+
+const PEPPER_CAT_TONE = {
+  transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
+  neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
+};
+
+const PEPPER_CAT_LABEL = {
+  transplant: 'Transplant', nutrition: 'Nutrition', pesticide: 'Pesticide', fungicide: 'Fungicide',
+  neem: 'Neem Oil (5pm)', transition: 'Transition', flowering: 'Flowering', fruiting: 'Fruiting', harvest: 'Harvest',
+};
+
+const PEPPER_RATES = {
+  transplant: 'Imidacloprid 70WG: 1g/1000L drip (ONE TIME ONLY) · Vital 05: 10ml/15L · Algua: 10ml/15L · OFA drip: 60ml/1000L',
+  nutrition: 'Omex Starter: 4–5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Urea (if applicable): 5g/15L dissolved first · OFA drip: 60ml/1000L',
+  pesticide: 'Konmidor: 5ml/15L OR Emamectin: 5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Rotate between the two every 2–3 weeks',
+  fungicide: 'CYDIM SUPER: 25–30g/15L OR Alt Sulfur: 30–35g/15L (spray alone, temp <30°C) · Apply before rain as preventive',
+  neem: 'Neem Oil: 25ml/15L + 2ml dish soap · SPRAY ALONE — mix with nothing · APPLY AFTER 5PM ONLY · Never on same day as Sulfur',
+  transition: 'Omex Boom Boost: 5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · STOP Omex Starter from today',
+  flowering: 'Boom Boost: 5ml/15L · CalMag: 2–3ml/15L (never stop once started) · Algua: 10ml/15L · Boron (Solubor): 1–2g/15L (Wk7 only)',
+  fruiting: 'Finisher Pro: 5ml/15L · CalMag: 2–3ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Check PHI for any pesticides',
+  harvest: 'OFA drip only: 30ml/1000L · NO foliar spray · Monitor fruit colour — harvest at 70–80% colour change · Early morning 5–8am',
+};
+
+function pepperStageForWeek(week) {
+  return (PEPPER_STAGES.find((s) => s.weeks.includes(week)) || PEPPER_STAGES[0]).label;
+}
+
+const PEPPER_PROGRAMME_CATS = ['transplant', 'nutrition', 'pesticide', 'fungicide', 'neem', 'transition', 'flowering', 'fruiting', 'harvest'];
+
+function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder }) {
+  const [filter, setFilter] = useState('all');
+  const [openId, setOpenId] = useState(null);
+
+  const field = activeField || fields[0];
+  const hasTransplant = Boolean(field && field.transplantDate);
+
+  const events = PEPPER_PROGRAMME.map((ev) => ({
+    ...ev,
+    date: hasTransplant ? addDaysISO(field.transplantDate, ev.day) : null,
+    daysLeft: hasTransplant ? daysBetween(todayISO(), addDaysISO(field.transplantDate, ev.day)) : null,
+  }));
+  const filtered = filter === 'all' ? events : events.filter((e) => e.cat === filter);
+  const weeks = [...new Set(events.map((e) => e.week))];
+
+  const counts = {};
+  PEPPER_PROGRAMME.forEach((e) => { counts[e.cat] = (counts[e.cat] || 0) + 1; });
+
+  const harvestEvent = events.find((e) => e.day === 98);
+
+  function generateReminders() {
+    if (!hasTransplant) return;
+    const existingIds = new Set((reminders || []).map((r) => r.id));
+    let added = 0;
+    events.forEach((ev) => {
+      if (ev.daysLeft < 0) return; // don't clutter reminders with the past
+      const id = `prog-${field.id}-${ev.day}`;
+      if (existingIds.has(id)) return;
+      onAddReminder({
+        id, title: `${field.name}: ${ev.title}`, dueDate: ev.date,
+        repeatDays: null, scope: 'pepper', notes: PEPPER_RATES[ev.cat] || null, done: false,
+      });
+      added += 1;
+    });
+    alert(added ? `Added ${added} reminder(s) for ${field.name}'s remaining programme.` : 'All upcoming events already have reminders.');
+  }
+
+  if (!field) {
+    return <p className="empty" style={{ padding: '18px 0' }}>Add a field first to plan its spray programme.</p>;
+  }
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 6 }}>
+        <h3 style={{ fontSize: 18 }}>{field.name} — 14-week Spray &amp; Nutrition Programme</h3>
+        <button className="btn btn-green" onClick={generateReminders} disabled={!hasTransplant}>
+          ⤓ Generate reminders
+        </button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
+        {hasTransplant
+          ? <>Transplant {fmtDate(field.transplantDate)} · estimated harvest {fmtDate(harvestEvent.date)} (Day 98). Dates below are computed from this field&apos;s transplant date — switch fields above to see another field&apos;s schedule.</>
+          : <>Set a transplant date for {field.name} in Crop Cycle to see actual dates — showing day offsets only until then.</>}
+        {' '}This is a plan, not a log — record what you actually spray in <strong>Spray &amp; Fertigation</strong> as you go.
+      </p>
+
+      <div className="field-seg" style={{ marginBottom: 18 }}>
+        <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All events</button>
+        {PEPPER_PROGRAMME_CATS.map((c) => (
+          <button key={c} className={filter === c ? 'active' : ''} onClick={() => setFilter(c)}>{PEPPER_CAT_LABEL[c]}</button>
+        ))}
+      </div>
+
+      {weeks.map((wk) => {
+        const wkEvents = filtered.filter((e) => e.week === wk);
+        if (!wkEvents.length) return null;
+        return (
+          <div key={wk} style={{ marginBottom: 16 }}>
+            <div className="panel-head" style={{ marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14 }}>Week {wk} · {pepperStageForWeek(wk)}</h3>
+              <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {wkEvents.map((ev) => {
+                const id = `${ev.day}-${ev.title}`;
+                const isOpen = openId === id;
+                const overdue = ev.daysLeft != null && ev.daysLeft < 0;
+                return (
+                  <div className="panel" key={id} style={{ marginBottom: 0, cursor: 'pointer' }} onClick={() => setOpenId(isOpen ? null : id)}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <span className={`tag ${PEPPER_CAT_TONE[ev.cat] || ''}`} style={{ flexShrink: 0 }}>
+                        {PEPPER_CAT_LABEL[ev.cat]}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{ev.title}</div>
+                        <div className="stat-foot" style={{ margin: '3px 0 0' }}>
+                          Day {ev.day} · {ev.time}
+                          {ev.date && ` · ${fmtDate(ev.date)}`}
+                          {ev.daysLeft != null && (
+                            overdue ? ` · ${Math.abs(ev.daysLeft)}d ago` : ev.daysLeft === 0 ? ' · today' : ` · in ${ev.daysLeft}d`
+                          )}
+                        </div>
+                        {isOpen && (
+                          <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
+                            {PEPPER_RATES[ev.cat] || 'See spray programme for full rates.'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      <p className="section-title">Programme summary</p>
+      <div className="grid grid-4">
+        <StatCard title="Total Events" value={String(PEPPER_PROGRAMME.length)} tone="gold" foot="over 14 weeks" />
+        <StatCard title="Nutrition Sprays" value={String(counts.nutrition || 0)} tone="green" />
+        <StatCard title="Pesticide Events" value={String(counts.pesticide || 0)} tone="rust" />
+        <StatCard title="Fungicide Events" value={String((counts.fungicide || 0))} tone="gold" />
+      </div>
+
+      <div className="stale-banner" style={{ marginTop: 18 }}>
+        ⚠ <span>
+          Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
+          CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
+          Alt Sulfur application.
+        </span>
+      </div>
     </>
   );
 }
