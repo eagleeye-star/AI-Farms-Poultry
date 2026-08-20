@@ -263,15 +263,34 @@ anon key in the bundle cannot read your records without a valid login.
 
 ### How syncing behaves
 
-The whole farm state is one record per user, last-write-wins. Signing in pulls
-your data down. Hit **Sync now** when you arrive at the farm and again when you
-finish. If you log on two devices without syncing in between, the last one to
-push wins — so sync before you start logging on a different device.
+Sync is **automatic** once you're signed in — you never have to remember to
+tap a button:
 
-**Backup / Restore** buttons remain as an offline safety net.
+- A few seconds after you save anything, it's pushed to the cloud on its own.
+- Reopening the app, or bringing it back to the foreground after it's been
+  backgrounded, triggers a check too.
+- **Sync now** and **Pull from cloud** are still there for manual control —
+  useful right before you hand the phone to someone else, or if you just want
+  to confirm everything's up to date.
+
+**Built-in protection against the failure that matters most:** if a device's
+local data gets wiped — storage cleared, app reinstalled, phone reset — it
+still starts with a fresh, "just now" timestamp, which could otherwise trick
+the app into thinking that empty local copy is the newest version and
+pushing it over your real cloud data. Auto-sync checks for this: if a device
+looks dramatically emptier than your cloud account, it **pulls your real
+data back down instead of overwriting it**, and shows a banner explaining
+what happened. This is last-write-wins for genuine edits across devices —
+log on two devices without syncing in between and the later push still wins
+— but a wipe is never mistaken for a genuine edit.
+
+**Backup / Restore** buttons remain as an extra, offline safety net — worth
+using occasionally regardless, since a local file is one thing that doesn't
+depend on your connection or your Supabase project being reachable.
 
 If no Supabase keys are configured, the app skips the login screen entirely and
-runs purely on-device.
+runs purely on-device — no auto-sync, no cloud copy, so Backup/Restore is the
+only safety net in that mode.
 
 ---
 
