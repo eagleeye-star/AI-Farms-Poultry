@@ -300,6 +300,21 @@ given. Each appears under **To confirm** in the Health tab with **Done** and
 **Not given** buttons, and stays there until you say which. Confirming Done
 stamps it with today's date. You can undo a confirmation at any time.
 
+### Medications — day-by-day courses
+
+Logging a medication with a **Duration** (e.g. Amprocox for 5 days) creates
+the full course, not just one entry. It shows up under **Active courses** in
+the Health tab with a chip for each day — tap a day once it's actually been
+given. The day you log it starts checked, since you're giving that dose right
+then; the rest confirm as you go.
+
+- A day left unchecked after its date has passed turns red — a missed dose,
+  visible at a glance rather than buried in a table.
+- The main Medications table shows a **Progress** column (e.g. 3/5) so you
+  can see every course's status without opening it.
+- A reminder appears automatically on any day a course is active and that
+  day hasn't been confirmed yet.
+
 ### Security
 
 Each row in `farm_state` is tied to your user id, and row-level security means

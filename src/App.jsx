@@ -539,6 +539,21 @@ export default function App() {
   function addMed(entry) {
     setData((d) => touch({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
   }
+  /** Confirm or un-confirm a single day of a medication course. */
+  function toggleMedDay(medId, dateISO) {
+    setData((d) => touch({
+      ...d,
+      meds: d.meds.map((m) => {
+        if (m.id !== medId) return m;
+        const given = new Set(m.daysGiven || []);
+        if (given.has(dateISO)) given.delete(dateISO); else given.add(dateISO);
+        return { ...m, daysGiven: [...given] };
+      }),
+    }));
+  }
+  function deleteMed(id) {
+    setData((d) => touch({ ...d, meds: d.meds.filter((m) => m.id !== id) }));
+  }
   function addVax(entry) {
     setData((d) => touch({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id, status: 'done' }] }));
   }
@@ -1123,6 +1138,15 @@ export default function App() {
               dueDate: todayISO(),
               source: activeFlock.flockName,
             }] : []),
+            ...meds
+              .map((m) => ({ med: m, status: medCourseStatus(m) }))
+              .filter(({ med, status }) => status.activeToday && !(med.daysGiven || []).includes(todayISO()) && !status.complete)
+              .map(({ med, status }) => ({
+                id: `med-${med.id}-${todayISO()}`,
+                title: `Give ${med.drug} — day ${status.givenCount + 1} of ${status.total}`,
+                dueDate: todayISO(),
+                source: activeFlock.flockName,
+              })),
           ]}
           onAdd={() => setModal('reminder')}
           onToggle={toggleReminder}
@@ -1142,6 +1166,8 @@ export default function App() {
           onLoadTemplate={applyVaxTemplate}
           onAddMed={() => setModal('med')}
           onAddVax={() => setModal('vax')}
+          onToggleMedDay={toggleMedDay}
+          onDeleteMed={deleteMed}
         />
       )}
 
@@ -1794,7 +1820,7 @@ function FeedForm({ entry, lastBalance, onClose, onSave }) {
 
 /* ---------------- Health tab ---------------- */
 
-function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax }) {
+function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax, onToggleMedDay, onDeleteMed }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1879,22 +1905,76 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
       </div>
 
       <p className="section-title">Medications</p>
+      {(() => {
+        const active = meds
+          .map((m) => ({ med: m, status: medCourseStatus(m) }))
+          .filter(({ status }) => !status.complete && (status.activeToday || status.overdue));
+        return active.length > 0 && (
+          <>
+            <p className="stat-foot" style={{ marginTop: -6, marginBottom: 12 }}>
+              <strong style={{ color: 'var(--gold)' }}>{active.length} course(s) in progress</strong> — tap a day
+              once it's actually been given.
+            </p>
+            <div className="confirm-list" style={{ marginBottom: 18 }}>
+              {active.map(({ med, status }) => (
+                <div className="confirm-row" key={med.id} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div className="confirm-main">
+                      <div className="confirm-title">{med.drug}{med.purpose ? ` — ${med.purpose}` : ''}</div>
+                      <div className="confirm-sub">
+                        {med.dosage ? `${med.dosage} · ` : ''}{fmtDate(status.dates[0])}–{fmtDate(status.dates[status.dates.length - 1])}
+                        {status.overdue && <span style={{ color: 'var(--rust)' }}> · a day was missed</span>}
+                      </div>
+                    </div>
+                    <span className={`tag ${status.overdue ? 'rust' : 'gold'}`}>{status.givenCount}/{status.total} days</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {status.dates.map((d, i) => {
+                      const given = (med.daysGiven || []).includes(d);
+                      const missed = !given && d < todayISO();
+                      return (
+                        <button
+                          key={d}
+                          className={`day-chip${given ? ' given' : ''}${missed ? ' missed' : ''}`}
+                          onClick={() => onToggleMedDay(med.id, d)}
+                          title={fmtDate(d)}
+                        >
+                          {given ? '✓' : missed ? '!' : i + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      })()}
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Date</th><th>Drug</th><th>Purpose</th><th>Dosage</th><th>Duration</th><th>By</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Date</th><th>Drug</th><th>Purpose</th><th>Dosage</th><th>Duration</th><th>Progress</th><th>By</th><th>Notes</th><th></th></tr></thead>
           <tbody>
-            {meds.map((m) => (
-              <tr key={m.id || m.date}>
-                <td className="mono">{fmtDate(m.date)}</td>
-                <td>{m.drug}</td>
-                <td>{m.purpose || '—'}</td>
-                <td>{m.dosage || '—'}</td>
-                <td className="mono">{m.duration ? `${m.duration}d` : '—'}</td>
-                <td>{m.by || '—'}</td>
-                <td className="notes">{m.notes || ''}</td>
-              </tr>
-            ))}
-            {meds.length === 0 && <tr><td colSpan={7} className="empty">No medications logged yet.</td></tr>}
+            {meds.map((m) => {
+              const status = medCourseStatus(m);
+              return (
+                <tr key={m.id || m.date}>
+                  <td className="mono">{fmtDate(m.date)}</td>
+                  <td>{m.drug}</td>
+                  <td>{m.purpose || '—'}</td>
+                  <td>{m.dosage || '—'}</td>
+                  <td className="mono">{m.duration ? `${m.duration}d` : '—'}</td>
+                  <td>
+                    <span className={`tag ${status.complete ? 'green' : status.overdue ? 'rust' : 'gold'}`}>
+                      {status.givenCount}/{status.total}
+                    </span>
+                  </td>
+                  <td>{m.by || '—'}</td>
+                  <td className="notes">{m.notes || ''}</td>
+                  <td>{m.id && onDeleteMed && <button className="link-btn rust" onClick={() => { if (confirm('Delete this medication record?')) onDeleteMed(m.id); }}>Delete</button>}</td>
+                </tr>
+              );
+            })}
+            {meds.length === 0 && <tr><td colSpan={9} className="empty">No medications logged yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1905,23 +1985,28 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
 function MedForm({ onClose, onSave }) {
   const [f, setF] = useState({ date: todayISO(), drug: '', purpose: '', dosage: '', duration: '', by: 'Oscar', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const duration = f.duration === '' ? 1 : Math.max(1, Number(f.duration) || 1);
+  const end = addDaysISO(f.date, duration - 1);
   function submit() {
     if (!f.date || !f.drug) return;
     onSave({
       id: newId(),
       date: f.date, drug: f.drug, purpose: f.purpose || null, dosage: f.dosage || null,
-      duration: f.duration === '' ? null : Number(f.duration), start: f.date, end: f.date,
+      duration: f.duration === '' ? null : Number(f.duration), start: f.date, end,
+      // Today's dose is being given right now, so Day 1 starts checked —
+      // the rest of the course gets confirmed day by day as it happens.
+      daysGiven: [f.date],
       by: f.by || null, notes: f.notes || null,
     });
   }
   return (
-    <Modal title="Add medication" onClose={onClose}>
+    <Modal title="Add medication" sub={f.duration !== '' ? `Course runs ${fmtDate(f.date)} through ${fmtDate(end)} (${duration} day${duration > 1 ? 's' : ''}).` : undefined} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Drug name"><input value={f.drug} onChange={set('drug')} /></Field>
         <Field label="Purpose"><input value={f.purpose} onChange={set('purpose')} /></Field>
         <Field label="Dosage"><input value={f.dosage} onChange={set('dosage')} placeholder="e.g. 3g per 3L water" /></Field>
-        <Field label="Duration (days)"><input type="number" value={f.duration} onChange={set('duration')} /></Field>
+        <Field label="Duration (days)"><input type="number" min="1" value={f.duration} onChange={set('duration')} placeholder="how many days the course runs" /></Field>
         <Field label="Administered by"><input value={f.by} onChange={set('by')} /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
@@ -2081,6 +2166,30 @@ function addDaysISO(iso, days) {
   return d.toISOString().slice(0, 10);
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
+
+/* ---------------- Medication course helpers ---------------- */
+
+/** Every calendar day a medication course covers, from its start date for
+    `duration` days. A course with no duration set is treated as one day. */
+function medCourseDates(med) {
+  const start = med.start || med.date;
+  const duration = Math.max(1, Number(med.duration) || 1);
+  const days = [];
+  for (let i = 0; i < duration; i++) days.push(addDaysISO(start, i));
+  return days;
+}
+
+/** Where a course stands today: which days are confirmed given, which are
+    still open, and whether it's finished, on track, or has a missed day. */
+function medCourseStatus(med, asOf = todayISO()) {
+  const dates = medCourseDates(med);
+  const given = new Set(med.daysGiven || []);
+  const givenCount = dates.filter((d) => given.has(d)).length;
+  const complete = givenCount >= dates.length;
+  const overdue = !complete && dates.some((d) => d < asOf && !given.has(d));
+  const activeToday = dates.includes(asOf);
+  return { dates, givenCount, total: dates.length, complete, overdue, activeToday };
+}
 
 /* ---------------- Soil monitoring helpers ---------------- */
 
