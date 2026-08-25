@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react';
 import {
   ResponsiveContainer, ComposedChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart,
@@ -14,6 +14,17 @@ import './App.css';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
 
+/**
+ * Bump this whenever the shape of `data` changes in a way old code
+ * couldn't safely read (a field renamed, a record type restructured — not
+ * just a new optional field, since migrate() already defaults those). Every
+ * backup file and cloud save carries the version it was written with, so a
+ * restore or sync can tell "this is from a future version of the app" from
+ * "this is just old and needs the usual defaults filled in" instead of
+ * guessing from a timestamp alone.
+ */
+const SCHEMA_VERSION = 1;
+
 const STANDARDS = {
   hyline_layer: SEED.feedStandard,
   ross308_broiler: ROSS308,
@@ -22,7 +33,16 @@ const STANDARDS = {
 /* ---------------- utils ---------------- */
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  // Local Y/M/D, not toISOString() (which is always UTC) — otherwise "today"
+  // can read as tomorrow or yesterday for anyone west/east of UTC in the
+  // evening/early morning. daysBetween() itself doesn't need this fix: ISO
+  // date-only strings always parse as UTC regardless of device timezone, so
+  // a difference between two of them is timezone-invariant already.
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function daysBetween(a, b) {
@@ -35,7 +55,10 @@ function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d)) return iso;
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  // Force UTC when reading the date back out — the ISO string was parsed as
+  // UTC midnight, so rendering in the viewer's *local* zone can silently
+  // shift the displayed day by one for anyone west of UTC.
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 function num(v, digits = 0) {
@@ -94,6 +117,7 @@ function defaultPepper() {
     manureReadings: [],  // raw manure pile samples before mixing into soil
     soilReadings: [],    // per-field soil tests after manure mix, over time
     batches: [],         // closed planting cycles per field (history)
+    nurseryBatches: [],  // seed-sowing through germination, before transplant
   };
 }
 
@@ -135,6 +159,7 @@ function freshData() {
     recipes: [],      // saved home-mix feed formulations
     pepper: defaultPepper(),
     updatedAt: new Date().toISOString(),
+    schemaVersion: SCHEMA_VERSION,
   };
 }
 
@@ -156,8 +181,45 @@ function dataRichness(d) {
     (d.reminders || []).length + (d.recipes || []).length +
     (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
+    (p.nurseryBatches || []).length +
     (p.inputs || []).length
   );
+}
+
+/* ---------------- CSV export ---------------- */
+
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  // RFC4180: quote a field whenever it contains a comma, quote, or newline,
+  // and double up any quotes inside it. A reader (Excel, Sheets) treats an
+  // embedded newline inside quotes as part of the cell, not a new row.
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function toCSV(rows, columns) {
+  const header = columns.map((c) => csvCell(c.label)).join(',');
+  const body = rows
+    .map((r) => columns.map((c) => csvCell(typeof c.get === 'function' ? c.get(r) : r[c.key])).join(','))
+    .join('\n');
+  return rows.length ? `${header}\n${body}` : header;
+}
+
+function downloadCSV(filename, csv) {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** True if a saved payload was written by a newer app version than this
+    build understands. Never guess at upgrading it — just flag it so the
+    caller (restore, sync) can decide whether to proceed. */
+function isFromNewerSchema(saved) {
+  return Boolean(saved) && Number(saved.schemaVersion) > SCHEMA_VERSION;
 }
 
 function migrate(saved) {
@@ -189,8 +251,13 @@ function migrate(saved) {
       manureReadings: pepper.manureReadings || [],
       soilReadings: pepper.soilReadings || [],
       batches: pepper.batches || [],
+      nurseryBatches: pepper.nurseryBatches || [],
     },
     updatedAt: saved.updatedAt || new Date().toISOString(),
+    // Always stamped with what THIS build produced, not what was read in —
+    // once migrate() has run, the in-memory shape matches the current
+    // schema regardless of how old the source file or cloud record was.
+    schemaVersion: SCHEMA_VERSION,
   };
 }
 
@@ -298,9 +365,82 @@ function Field({ label, span2, children }) {
   return <div className={`field${span2 ? ' span-2' : ''}`}>{label && <label>{label}</label>}{children}</div>;
 }
 
+/* ---------------- toast + confirm (replaces alert()/confirm()) ---------------- */
+
+const ToastConfirmContext = createContext(null);
+
+/** In-app replacement for window.alert/confirm — neither freezes the page
+    nor looks foreign on mobile. Mounted once at the root; any component
+    calls useToastConfirm() to reach it without prop-threading through
+    every intermediate table and tab. */
+function ToastConfirmProvider({ children }) {
+  const [toast, setToast] = useState(null);
+  const [confirmState, setConfirmState] = useState(null);
+
+  const showToast = useCallback((message, tone = 'default') => {
+    setToast({ message, tone, key: Date.now() });
+  }, []);
+
+  const askConfirm = useCallback((message, opts = {}) => {
+    return new Promise((resolve) => {
+      setConfirmState({ message, resolve, danger: opts.danger !== false, confirmLabel: opts.confirmLabel || 'Delete' });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3400);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  function resolveConfirm(result) {
+    confirmState?.resolve(result);
+    setConfirmState(null);
+  }
+
+  return (
+    <ToastConfirmContext.Provider value={{ showToast, askConfirm }}>
+      {children}
+      {toast && (
+        <div className={`toast-pop toast-${toast.tone}`} key={toast.key} role="status">
+          {toast.message}
+        </div>
+      )}
+      {confirmState && (
+        <div className="confirm-overlay" onClick={() => resolveConfirm(false)}>
+          <div className="confirm-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <p>{confirmState.message}</p>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => resolveConfirm(false)}>Cancel</button>
+              <button className={confirmState.danger ? 'btn btn-rust' : 'btn btn-gold'} onClick={() => resolveConfirm(true)}>
+                {confirmState.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </ToastConfirmContext.Provider>
+  );
+}
+
+function useToastConfirm() {
+  const ctx = useContext(ToastConfirmContext);
+  if (!ctx) throw new Error('useToastConfirm must be used inside ToastConfirmProvider');
+  return ctx;
+}
+
 /* ---------------- main app ---------------- */
 
-export default function App() {
+export default function AppRoot() {
+  return (
+    <ToastConfirmProvider>
+      <AppInner />
+    </ToastConfirmProvider>
+  );
+}
+
+function AppInner() {
+  const { showToast, askConfirm } = useToastConfirm();
   const [data, setData] = useState(loadData);
   const [workspace, setWorkspace] = useState('poultry');
   const [tab, setTab] = useState('dashboard');
@@ -316,7 +456,16 @@ export default function App() {
   const [showCloudSetup, setShowCloudSetup] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // Kept synchronous and un-debounced on purpose: this app's core promise
+    // (see the auto-sync safety net) is not losing farm data, and a debounce
+    // window is exactly where an edit could vanish if the tab closes before
+    // it fires. Only real gap was the missing guard against Safari private
+    // mode / storage quota throwing here.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {
+      console.warn('Local save failed (storage full or unavailable):', e);
+    }
   }, [data]);
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
@@ -494,7 +643,7 @@ export default function App() {
     return Object.values(map);
   }, [vaxSchedule]);
 
-  const chartData = dailyLog.map((r) => ({
+  const chartData = useMemo(() => dailyLog.map((r) => ({
     date: fmtDate(r.date).slice(0, 6),
     closing: r.closing,
     mortality: Number(r.mortality) || 0,
@@ -502,14 +651,14 @@ export default function App() {
     eggs: r.eggs ?? null,
     water: r.waterGiven ?? null,
     henDay: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
-  }));
+  })), [dailyLog]);
 
-  const feedChartData = feedLedger.map((e) => ({
+  const feedChartData = useMemo(() => feedLedger.map((e) => ({
     date: fmtDate(e.date).slice(0, 6),
     balance: e.balance,
     purchased: e.kind === 'purchase' ? e.ref.purchased : null,
     used: e.kind === 'usage' ? e.ref.feedGiven : e.ref.used,
-  }));
+  })), [feedLedger]);
 
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
@@ -641,11 +790,11 @@ export default function App() {
       };
     }).filter((r) => !existing.has(`${r.disease}|${r.date}`));
     if (!rows.length) {
-      alert('This programme is already loaded for this flock.');
+      showToast('This programme is already loaded for this flock.');
       return;
     }
     setData((d) => touch({ ...d, vax: [...d.vax, ...rows] }));
-    alert(`Loaded ${rows.length} vaccination dates for ${activeFlock.flockName}. Check them against your vet's advice.`);
+    showToast(`Loaded ${rows.length} vaccination dates for ${activeFlock.flockName} — check them against your vet's advice.`, 'green');
   }
 
   function saveFlock(flock) {
@@ -683,6 +832,19 @@ export default function App() {
       const remoteTime = remote ? new Date(remote.updatedAt).getTime() : 0;
       const localCount = dataRichness(data);
       const remoteCount = remote ? dataRichness(remote.state) : 0;
+
+      // If the cloud copy was written by a newer version of the app, this
+      // build doesn't fully understand its shape — don't pull it in (could
+      // drop fields on the next save) and don't push over it either (could
+      // discard whatever the newer version added). Surface it and stop.
+      if (remote && isFromNewerSchema(remote.state)) {
+        setSync({
+          status: 'error',
+          message: `Cloud data is from a newer app version (v${remote.state.schemaVersion}) — update the app to keep syncing`,
+          lastSync: sync.lastSync,
+        });
+        return;
+      }
 
       // Safety net: local storage getting wiped or reinstalled still produces
       // a fresh "now" timestamp, which would otherwise look newer than the
@@ -751,6 +913,14 @@ export default function App() {
     setSync({ status: 'syncing', message: 'Loading your farm…', lastSync: null });
     try {
       const remote = await pullRemote();
+      if (remote && isFromNewerSchema(remote.state)) {
+        setSync({
+          status: 'error',
+          message: `Cloud data is from a newer app version (v${remote.state.schemaVersion}) — update the app to keep syncing`,
+          lastSync: null,
+        });
+        return;
+      }
       if (remote) {
         const merged = migrate(remote.state);
         setData(merged);
@@ -781,23 +951,45 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ai-farms-backup-${todayISO()}.json`;
+    a.download = `ai-farms-backup-v${SCHEMA_VERSION}-${todayISO()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
   function restoreData(file) {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
+      let parsed;
       try {
-        const parsed = JSON.parse(reader.result);
-        const merged = migrate(parsed);
-        setData(merged);
-        setActiveFlockId(merged.flocks[0].id);
-        alert('Backup restored successfully.');
+        parsed = JSON.parse(reader.result);
       } catch (err) {
-        alert('Could not read that file — make sure it is an AI Farms backup (.json).');
+        showToast('Could not read that file — it doesn\'t look like valid JSON.', 'rust');
+        return;
       }
+      // Loose but real shape check — catches "wrong file entirely" before
+      // migrate()'s defensive fallbacks turn it into a silently near-empty
+      // farm that LOOKS like a successful restore.
+      const looksLikeBackup = parsed && typeof parsed === 'object'
+        && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
+      if (!looksLikeBackup) {
+        showToast('That doesn\'t look like an AI Farms backup file — nothing was changed.', 'rust');
+        return;
+      }
+      if (isFromNewerSchema(parsed)) {
+        const proceed = await askConfirm(
+          `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
+          'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
+          'Update the app first if you can. Restore anyway?',
+          { confirmLabel: 'Restore anyway' }
+        );
+        if (!proceed) return;
+      }
+      const merged = migrate(parsed);
+      const recordCount = dataRichness(merged);
+      setData(merged);
+      setActiveFlockId(merged.flocks[0].id);
+      showToast(`Backup restored — ${recordCount} record(s) loaded across the farm.`, 'green');
     };
+    reader.onerror = () => showToast('Could not read that file from your device — please try again.', 'rust');
     reader.readAsText(file);
   }
 
@@ -874,6 +1066,27 @@ export default function App() {
   }
   function deleteBatch(id) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, batches: (d.pepper.batches || []).filter((b) => b.id !== id) } }));
+  }
+  function addNurseryBatch(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, nurseryBatches: [...(d.pepper.nurseryBatches || []), entry] } }));
+  }
+  function updateNurseryBatch(id, patch) {
+    setData((d) => touch({
+      ...d,
+      pepper: { ...d.pepper, nurseryBatches: (d.pepper.nurseryBatches || []).map((b) => (b.id === id ? { ...b, ...patch } : b)) },
+    }));
+  }
+  function deleteNurseryBatch(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, nurseryBatches: (d.pepper.nurseryBatches || []).filter((b) => b.id !== id) } }));
+  }
+  /** Moves a nursery batch into the field it's ready for — closes out any
+      current planting on that field the same way "+ New Batch" does, and
+      marks the nursery batch transplanted so it drops off the active list. */
+  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch) {
+    startNewBatch(fieldId, newBatch);
+    updateNurseryBatch(nurseryBatchId, {
+      status: 'transplanted', transplantedDate: newBatch.transplantDate, transplantedToFieldId: fieldId,
+    });
   }
   function addScouting(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
@@ -1257,6 +1470,10 @@ export default function App() {
           onDeleteSoilReading={deleteSoilReading}
           onStartNewBatch={startNewBatch}
           onDeleteBatch={deleteBatch}
+          onAddNurseryBatch={addNurseryBatch}
+          onUpdateNurseryBatch={updateNurseryBatch}
+          onDeleteNurseryBatch={deleteNurseryBatch}
+          onTransplantNurseryBatch={transplantNurseryBatch}
         />
       )}
 
@@ -1288,6 +1505,13 @@ function DashboardTab({
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
+  // A layer flock racks up 365+ daily entries a year — plotting all of them
+  // slows the charts down for no real benefit, since the last few months
+  // are what actually matters day to day. Default to a 90-day window with
+  // the option to see everything.
+  const [chartWindow, setChartWindow] = useState(90);
+  const windowedChart = chartWindow === 0 ? chartData : chartData.slice(-chartWindow);
+  const windowedFeedChart = chartWindow === 0 ? feedChartData : feedChartData.slice(-chartWindow);
   const feedTone = feedDaysLeft == null ? undefined : feedDaysLeft <= 3 ? 'rust' : feedDaysLeft <= 7 ? 'gold' : 'green';
   const litterTone = litterCondition === 'Wet' || litterCondition === 'Caked' ? 'rust'
     : litterDue ? 'gold' : litterCondition ? 'green' : undefined;
@@ -1342,7 +1566,7 @@ function DashboardTab({
           foot="per breed feeding standard"
         />
         {isBroiler ? (
-          <StatCard title="Feed / Bird" value={feedCostPerBird ? `GH₵ ${num(feedCostPerBird, 2)}` : '—'} foot="feed cost per bird" />
+          <StatCard title="Feed Cost" value={totalFeedCost ? `GH₵ ${num(totalFeedCost, 2)}` : '—'} tone="rust" foot="total spent, this flock" />
         ) : (
           <StatCard
             title="Weight vs Standard"
@@ -1382,11 +1606,20 @@ function DashboardTab({
         <StatCard title="Feed / Bird" value={feedCostPerBird ? `GH₵ ${num(feedCostPerBird, 2)}` : '—'} foot="feed cost per bird" />
       </div>
 
+      <div className="panel-head" style={{ marginTop: 8 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Trends</h3>
+        <div className="field-seg" style={{ marginBottom: 0 }}>
+          {[[30, '30d'], [90, '90d'], [180, '180d'], [0, 'All']].map(([d, label]) => (
+            <button key={d} className={chartWindow === d ? 'active' : ''} onClick={() => setChartWindow(d)}>{label}</button>
+          ))}
+        </div>
+      </div>
+
       <div className="panel">
         <div className="panel-head"><h3>Flock population &amp; daily mortality</h3></div>
         <div className="chart-card">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <ComposedChart data={windowedChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
               <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
               <YAxis yAxisId="left" tickLine={false} axisLine={false} />
@@ -1405,7 +1638,7 @@ function DashboardTab({
           <div className="panel-head"><h3>Feed given per day (kg)</h3></div>
           <div className="chart-card">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <AreaChart data={windowedChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
                 <YAxis tickLine={false} axisLine={false} />
@@ -1420,7 +1653,7 @@ function DashboardTab({
           <div className="panel-head"><h3>Feed store balance (kg)</h3></div>
           <div className="chart-card">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={feedChartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <AreaChart data={windowedFeedChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
                 <YAxis tickLine={false} axisLine={false} />
@@ -1511,6 +1744,15 @@ function DashboardTab({
 /* ---------------- Daily Log tab ---------------- */
 
 function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
+  const { askConfirm } = useToastConfirm();
+  // A layer flock racks up hundreds of rows a year — render a page at a
+  // time instead of the whole table, which gets sluggish to scroll well
+  // before it gets genuinely large.
+  const PAGE_SIZE = 30;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const visible = dailyLog.slice(0, visibleCount);
+  const hasMore = dailyLog.length > visibleCount;
+
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1526,7 +1768,7 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
             </tr>
           </thead>
           <tbody>
-            {dailyLog.map((r) => {
+            {visible.map((r) => {
               // Bird age is always derived from arrival date + this entry's
               // own date — never trusted from storage, so it's correct even
               // for old records or ones logged after the fact. +1 so arrival
@@ -1552,7 +1794,7 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
                   <span style={{ display: 'flex', gap: 8 }}>
                     <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
                     {r.id && onDelete && (
-                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this entry?')) onDelete(r.id); }}>Delete</button>
+                      <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(r.id); }}>Delete</button>
                     )}
                   </span>
                 </td>
@@ -1563,6 +1805,20 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
           </tbody>
         </table>
       </div>
+      {dailyLog.length > 0 && (
+        <p className="stat-foot" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          Showing {visible.length} of {dailyLog.length} entries
+          {hasMore && (
+            <>
+              <button className="link-btn" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>Show 30 more</button>
+              <button className="link-btn" onClick={() => setVisibleCount(dailyLog.length)}>Show all</button>
+            </>
+          )}
+          {!hasMore && visibleCount > PAGE_SIZE && (
+            <button className="link-btn" onClick={() => setVisibleCount(PAGE_SIZE)}>Show fewer</button>
+          )}
+        </p>
+      )}
     </>
   );
 }
@@ -1585,6 +1841,13 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
+  // A flock can't have a negative bird count — mortality + culls exceeding
+  // opening is always a typo, not a real farm event, so this blocks the
+  // save instead of quietly producing a number that poisons every other
+  // calculation downstream (survival %, current flock, cost per bird).
+  const closingError = closing < 0
+    ? `Mortality + culls (${(Number(f.mortality) || 0) + (Number(f.culls) || 0)}) is more than the opening count (${Number(f.opening) || 0}) — closing can't go below 0.`
+    : null;
   // Bird age always comes from arrival date + whatever date this entry is
   // for — so a backdated entry gets the right age automatically, and
   // there's nothing to type or get wrong. +1 so arrival day is "Day 1",
@@ -1592,7 +1855,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
   const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) + 1 : null;
 
   function submit() {
-    if (!f.date || f.opening === '') return;
+    if (!f.date || f.opening === '' || closingError) return;
     onSave({
       id: entry?.id || newId(),
       date: f.date,
@@ -1635,7 +1898,14 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
           </select>
         </Field>
         <Field label="Culls"><input type="number" value={f.culls} onChange={set('culls')} /></Field>
-        <Field label="Closing (auto)"><input value={closing} disabled /></Field>
+        <Field label="Closing (auto)">
+          <input value={closing} disabled style={closingError ? { color: 'var(--rust)', borderColor: 'var(--rust)' } : undefined} />
+        </Field>
+        {closingError && (
+          <div className="field span-2">
+            <p className="stat-foot" style={{ margin: 0, color: 'var(--rust)' }}>⚠ {closingError}</p>
+          </div>
+        )}
         <Field label="Feed given (kg)"><input type="number" step="0.01" value={f.feedGiven} onChange={set('feedGiven')} /></Field>
         <Field label="Water given (L)"><input type="number" step="0.1" value={f.waterGiven} onChange={set('waterGiven')} /></Field>
         <Field label="Light hours"><input type="number" step="0.5" value={f.lightHours} onChange={set('lightHours')} /></Field>
@@ -1646,7 +1916,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save entry'}</button>
+        <button className="btn btn-gold" onClick={submit} disabled={Boolean(closingError)}>{isEdit ? 'Save changes' : 'Save entry'}</button>
       </div>
     </Modal>
   );
@@ -1655,6 +1925,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
 /* ---------------- Feed tab ---------------- */
 
 function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd, onEdit, onDelete }) {
+  const { askConfirm } = useToastConfirm();
   const totalCost = feed.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const totalPurchased = feed.reduce((s, r) => s + (Number(r.purchased) || 0), 0);
   return (
@@ -1716,7 +1987,7 @@ function FeedTab({ feed, ledger, feedDaysLeft, avgDailyFeed, feedBalance, onAdd,
                   <span style={{ display: 'flex', gap: 8 }}>
                     <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
                     {onDelete && r.id && (
-                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this feed record?')) onDelete(r.id); }}>Delete</button>
+                      <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this feed record?')) onDelete(r.id); }}>Delete</button>
                     )}
                   </span>
                 </td>
@@ -1821,6 +2092,7 @@ function FeedForm({ entry, lastBalance, onClose, onSave }) {
 /* ---------------- Health tab ---------------- */
 
 function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax, onToggleMedDay, onDeleteMed }) {
+  const { askConfirm } = useToastConfirm();
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1970,7 +2242,7 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
                   </td>
                   <td>{m.by || '—'}</td>
                   <td className="notes">{m.notes || ''}</td>
-                  <td>{m.id && onDeleteMed && <button className="link-btn rust" onClick={() => { if (confirm('Delete this medication record?')) onDeleteMed(m.id); }}>Delete</button>}</td>
+                  <td>{m.id && onDeleteMed && <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this medication record?')) onDeleteMed(m.id); }}>Delete</button>}</td>
                 </tr>
               );
             })}
@@ -2055,7 +2327,7 @@ function VaxForm({ flockStartDate, onClose, onSave }) {
 
 /* ---------------- Growth tab ---------------- */
 
-function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
+function GrowthTab({ weightSamples, growthChartData, feedStandard, flockType, onAdd }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -2098,7 +2370,7 @@ function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
         </table>
       </div>
 
-      <p className="section-title">Breed feeding &amp; growth standard (Hy-Line)</p>
+      <p className="section-title">Breed feeding &amp; growth standard ({flockType === 'broiler' ? 'Ross 308' : 'Hy-Line'})</p>
       <div className="table-wrap">
         <table className="data">
           <thead><tr><th>Week</th><th>Feed type</th><th>Feed intake (g/bird/day)</th><th>Target weight (g)</th></tr></thead>
@@ -2268,16 +2540,35 @@ function nearestSoilRound(soilReadings, fieldId, date, toleranceDays = 10) {
   return best && bestDiff <= toleranceDays ? best : null;
 }
 
+/* ---------------- Nursery helpers ---------------- */
+
+const NURSERY_METHODS = ['Seed trays', 'Seedbed', 'Poly bags', 'Other'];
+const NURSERY_DEFAULT_DAYS = 30; // typical bell pepper nursery duration before transplant-ready
+const NURSERY_STATUSES = { active: 'Active', transplanted: 'Transplanted', failed: 'Failed / discarded' };
+
+/** Where a nursery batch stands: days since sowing, days until it's expected
+    to be transplant-ready, and whether that expected date has passed
+    without a germination check ever being logged (worth a nudge). */
+function nurseryStatus(batch, asOf = todayISO()) {
+  const daysSinceSow = daysBetween(batch.seedSowDate, asOf);
+  const expectedReady = addDaysISO(batch.seedSowDate, batch.expectedNurseryDays || NURSERY_DEFAULT_DAYS);
+  const daysToReady = daysBetween(asOf, expectedReady);
+  const needsGerminationCheck = !batch.germinationDate && daysSinceSow >= 7;
+  return { daysSinceSow, expectedReady, daysToReady, needsGerminationCheck };
+}
+
 function PepperWorkspace({
   pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
+  onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
   const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
+  const [sprayPrefill, setSprayPrefill] = useState(null); // pre-fill data when opening SprayForm from the programme
 
   const fields = pepper.fields;
   const inScope = (fieldId) => scope === 'all' || fieldId === scope;
@@ -2364,6 +2655,17 @@ function PepperWorkspace({
       source: f.name,
     };
   }).filter(Boolean);
+  const nurseryBatches = (pepper.nurseryBatches || []).filter((b) => b.status === 'active');
+  const nurseryReminders = nurseryBatches.map((b) => {
+    const ns = nurseryStatus(b);
+    if (ns.needsGerminationCheck) {
+      return { id: `nursery-germ-${b.id}`, title: `Check germination — ${b.batchLabel} (${ns.daysSinceSow}d since sowing)`, dueDate: todayISO(), source: 'Nursery' };
+    }
+    if (ns.daysToReady <= 3) {
+      return { id: `nursery-ready-${b.id}`, title: `${b.batchLabel} nearing transplant-ready (${ns.daysToReady <= 0 ? 'due now' : `in ${ns.daysToReady}d`})`, dueDate: ns.expectedReady, source: 'Nursery' };
+    }
+    return null;
+  }).filter(Boolean);
   const pepperAuto = [
     ...phiWindows.map((w) => ({ id: `phi-${w.field.id}`, title: `${w.field.name}: harvest hold (${w.product || 'spray'})`, dueDate: w.safe, source: w.field.name })),
     ...fields.map((f) => {
@@ -2373,6 +2675,7 @@ function PepperWorkspace({
       return { id: `scout-${f.id}`, title: `Scout ${f.name}${last ? ` (last ${days}d ago)` : ' (not scouted yet)'}`, dueDate: todayISO(), source: f.name };
     }).filter(Boolean),
     ...soilRetestReminders,
+    ...nurseryReminders,
   ];
 
   const harvestChart = harvestScoped.map((h) => ({
@@ -2430,6 +2733,7 @@ function PepperWorkspace({
       <nav className="tabs pepper">
         {[
           ['dashboard', 'Dashboard'],
+          ['nursery', 'Nursery'],
           ['cycle', 'Crop Cycle'],
           ['programme', 'Spray Programme'],
           ['soil', 'Soil & Batches'],
@@ -2456,6 +2760,17 @@ function PepperWorkspace({
         />
       )}
 
+      {ptab === 'nursery' && (
+        <NurseryTab
+          batches={pepper.nurseryBatches || []}
+          fields={fields}
+          onAdd={() => setModal('nursery')}
+          onEdit={(b) => setModal(`nursery:${b.id}`)}
+          onDelete={onDeleteNurseryBatch}
+          onTransplant={(b) => setModal(`transplant-nursery:${b.id}`)}
+        />
+      )}
+
       {ptab === 'cycle' && (
         <CropCycleTab
           fields={fieldsScoped} datOf={datOf}
@@ -2470,6 +2785,7 @@ function PepperWorkspace({
           fields={fields}
           reminders={reminders}
           onAddReminder={onAddReminder}
+          onLogNow={(prefill) => { setSprayPrefill(prefill); setModal('spray'); }}
         />
       )}
 
@@ -2545,8 +2861,13 @@ function PepperWorkspace({
           onClose={() => setModal(null)} onSave={(e) => { onAddScouting(e); setModal(null); }} />
       )}
       {modal === 'spray' && (
-        <SprayForm fields={fields} defaultField={scope === 'all' ? fields[0].id : scope}
-          onClose={() => setModal(null)} onSave={(e) => { onAddSpray(e); setModal(null); }} />
+        <SprayForm
+          fields={fields}
+          defaultField={sprayPrefill?.fieldId || (scope === 'all' ? fields[0].id : scope)}
+          prefill={sprayPrefill}
+          onClose={() => { setModal(null); setSprayPrefill(null); }}
+          onSave={(e) => { onAddSpray(e); setModal(null); setSprayPrefill(null); }}
+        />
       )}
       {modal === 'harvest' && (
         <HarvestForm fields={fields} defaultField={scope === 'all' ? fields[0].id : scope}
@@ -2570,6 +2891,28 @@ function PepperWorkspace({
           field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
           onSave={(patch) => { onStartNewBatch(modal.split(':')[1], patch); setModal(null); }}
+        />
+      )}
+      {(modal === 'nursery' || (typeof modal === 'string' && modal.startsWith('nursery:'))) && (
+        <NurseryBatchForm
+          entry={modal.startsWith('nursery:') ? (pepper.nurseryBatches || []).find((b) => b.id === modal.split(':')[1]) : null}
+          onClose={() => setModal(null)}
+          onSave={(e) => {
+            if (modal.startsWith('nursery:')) onUpdateNurseryBatch(e.id, e);
+            else onAddNurseryBatch(e);
+            setModal(null);
+          }}
+        />
+      )}
+      {modal && modal.startsWith('transplant-nursery:') && (
+        <TransplantNurseryForm
+          batch={(pepper.nurseryBatches || []).find((b) => b.id === modal.split(':')[1])}
+          fields={fields}
+          onClose={() => setModal(null)}
+          onSave={(fieldId, patch) => {
+            onTransplantNurseryBatch(modal.split(':')[1], fieldId, patch);
+            setModal(null);
+          }}
         />
       )}
     </>
@@ -2832,6 +3175,12 @@ const PEPPER_CAT_LABEL = {
   neem: 'Neem Oil (5pm)', transition: 'Transition', flowering: 'Flowering', fruiting: 'Fruiting', harvest: 'Harvest',
 };
 
+// What each category becomes in the Spray & Fertigation log's own Type field.
+const PEPPER_CAT_SPRAY_TYPE = {
+  transplant: 'Insecticide', nutrition: 'Foliar feed', pesticide: 'Insecticide', fungicide: 'Fungicide',
+  neem: 'Insecticide', transition: 'Foliar feed', flowering: 'Foliar feed', fruiting: 'Foliar feed', harvest: 'Other',
+};
+
 const PEPPER_RATES = {
   transplant: 'Imidacloprid 70WG: 1g/1000L drip (ONE TIME ONLY) · Vital 05: 10ml/15L · Algua: 10ml/15L · OFA drip: 60ml/1000L',
   nutrition: 'Omex Starter: 4–5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Urea (if applicable): 5g/15L dissolved first · OFA drip: 60ml/1000L',
@@ -2850,7 +3199,8 @@ function pepperStageForWeek(week) {
 
 const PEPPER_PROGRAMME_CATS = ['transplant', 'nutrition', 'pesticide', 'fungicide', 'neem', 'transition', 'flowering', 'fruiting', 'harvest'];
 
-function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder }) {
+function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder, onLogNow }) {
+  const { showToast } = useToastConfirm();
   const [filter, setFilter] = useState('all');
   const [openId, setOpenId] = useState(null);
 
@@ -2884,7 +3234,7 @@ function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder }) {
       });
       added += 1;
     });
-    alert(added ? `Added ${added} reminder(s) for ${field.name}'s remaining programme.` : 'All upcoming events already have reminders.');
+    showToast(added ? `Added ${added} reminder(s) for ${field.name}'s remaining programme.` : 'All upcoming events already have reminders.', added ? 'green' : 'default');
   }
 
   if (!field) {
@@ -2946,6 +3296,24 @@ function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder }) {
                           <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
                             {PEPPER_RATES[ev.cat] || 'See spray programme for full rates.'}
                           </div>
+                        )}
+                        {isOpen && hasTransplant && (
+                          <button
+                            className="btn btn-green"
+                            style={{ marginTop: 8 }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onLogNow({
+                                fieldId: field.id,
+                                product: ev.title,
+                                rate: PEPPER_RATES[ev.cat] || '',
+                                type: PEPPER_CAT_SPRAY_TYPE[ev.cat] || 'Other',
+                                notes: `From spray programme — Day ${ev.day}, Week ${ev.week}`,
+                              });
+                            }}
+                          >
+                            ⤓ Log this spray now
+                          </button>
                         )}
                       </div>
                     </div>
@@ -3187,8 +3555,12 @@ function SprayTab({ rows, fieldName, scopePhi, scopeResistance, onAdd }) {
   );
 }
 
-function SprayForm({ fields, defaultField, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, type: 'Insecticide', product: '', activeIngredient: '', rate: '', cost: '', phiDays: '', notes: '' });
+function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
+  const [f, setF] = useState({
+    date: todayISO(), fieldId: defaultField, type: prefill?.type || 'Insecticide',
+    product: prefill?.product || '', activeIngredient: '', rate: prefill?.rate || '',
+    cost: '', phiDays: '', notes: prefill?.notes || '',
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const safePreview = f.phiDays !== '' ? addDaysISO(f.date, f.phiDays) : null;
   function submit() {
@@ -3201,7 +3573,13 @@ function SprayForm({ fields, defaultField, onClose, onSave }) {
     });
   }
   return (
-    <Modal title="Log spray / feed" sub={safePreview ? `Safe to harvest from ${fmtDate(safePreview)}.` : 'Set a PHI to auto-flag the harvest hold.'} onClose={onClose}>
+    <Modal
+      title={prefill ? 'Log spray — from programme' : 'Log spray / feed'}
+      sub={prefill
+        ? 'Pre-filled from the spray programme — check the rate and add cost before saving.'
+        : (safePreview ? `Safe to harvest from ${fmtDate(safePreview)}.` : 'Set a PHI to auto-flag the harvest hold.')}
+      onClose={onClose}
+    >
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Field">
@@ -3325,7 +3703,7 @@ function FlockForm({ flock, onClose, onSave }) {
     flockName: flock?.flockName || '', type: flock?.type || 'broiler',
     breed: flock?.breed || '', startDate: flock?.startDate || todayISO(),
     initialBirds: flock?.initialBirds ?? '', location: flock?.location || 'Eikwe, Western Region',
-    setupCost: flock?.setupCost ?? '',
+    setupCost: flock?.setupCost ?? '', notes: flock?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
@@ -3340,6 +3718,7 @@ function FlockForm({ flock, onClose, onSave }) {
       location: f.location || '',
       standardKey: f.type === 'broiler' ? 'ross308_broiler' : 'hyline_layer',
       setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+      notes: f.notes || '',
     });
   }
   return (
@@ -3730,6 +4109,7 @@ function AuthScreen({ onSignedIn, onSetupCloud }) {
 /* ============================================================= */
 
 function LitterTab({ rows, daysSinceChange, condition, due, manureHarvested, litterCost, onAdd, onEdit, onDelete }) {
+  const { askConfirm } = useToastConfirm();
   const conditionTone = condition === 'Wet' || condition === 'Caked' ? 'rust' : condition === 'Damp' ? 'gold' : 'green';
   const toManure = rows.filter((r) => r.action === 'Removed to field');
   const byField = {};
@@ -3830,7 +4210,7 @@ function LitterTab({ rows, daysSinceChange, condition, due, manureHarvested, lit
                   <span style={{ display: 'flex', gap: 8 }}>
                     <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
                     {onDelete && (
-                      <button className="link-btn rust" onClick={() => { if (confirm('Delete this litter record?')) onDelete(r.id); }}>Delete</button>
+                      <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this litter record?')) onDelete(r.id); }}>Delete</button>
                     )}
                   </span>
                 </td>
@@ -4275,6 +4655,222 @@ function annualCharge(item) {
   return (Number(item.amount) || 0) / life;
 }
 
+/* ---------------- Export Center dataset definitions ---------------- */
+
+function buildExportDatasets(data) {
+  const p = data.pepper || {};
+  const flockName = (id) => (data.flocks || []).find((f) => f.id === id)?.flockName || id || '—';
+  const fieldName = (id) => (p.fields || []).find((f) => f.id === id)?.name || id || '—';
+  const staffName = (id) => (data.staff || []).find((s) => s.id === id)?.name || '—';
+
+  return [
+    {
+      key: 'dailyLog', label: 'Poultry — Daily Log', rows: data.dailyLog || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'birdAge', label: 'Bird Age' }, { key: 'opening', label: 'Opening' },
+        { key: 'mortality', label: 'Mortality' }, { key: 'mortalityCause', label: 'Cause' },
+        { key: 'culls', label: 'Culls' }, { key: 'closing', label: 'Closing' },
+        { key: 'feedGiven', label: 'Feed Given (kg)' }, { key: 'waterGiven', label: 'Water (L)' },
+        { key: 'lightHours', label: 'Light (h)' }, { key: 'eggs', label: 'Eggs' },
+        { key: 'eggsCracked', label: 'Eggs Cracked' }, { key: 'medication', label: 'Medication' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'feed', label: 'Poultry — Feed Purchases', rows: data.feed || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'feedType', label: 'Feed Type' }, { key: 'purchased', label: 'Purchased (kg)' },
+        { key: 'adjustment', label: 'Adjustment (kg)' }, { key: 'cost', label: 'Cost (GH₵)' },
+        { key: 'supplier', label: 'Supplier' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'meds', label: 'Poultry — Medications', rows: data.meds || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'drug', label: 'Drug' }, { key: 'purpose', label: 'Purpose' }, { key: 'dosage', label: 'Dosage' },
+        { key: 'start', label: 'Start' }, { key: 'end', label: 'End' }, { key: 'duration', label: 'Duration (d)' },
+        { key: 'daysGiven', label: 'Days Given', get: (r) => (r.daysGiven || []).length },
+        { key: 'by', label: 'By' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'vax', label: 'Poultry — Vaccinations', rows: data.vax || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'disease', label: 'Disease' }, { key: 'vaccine', label: 'Vaccine' }, { key: 'method', label: 'Method' },
+        { key: 'status', label: 'Status', get: (r) => r.status || 'done' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'weightSamples', label: 'Poultry — Growth Samples', rows: data.weightSamples || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'sampleSize', label: 'Sample Size' }, { key: 'avgWeightG', label: 'Avg Weight (g)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'sales', label: 'Poultry — Sales', rows: data.sales || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'item', label: 'Item' }, { key: 'quantity', label: 'Quantity' }, { key: 'unitPrice', label: 'Unit Price' },
+        { key: 'amount', label: 'Amount (GH₵)' }, { key: 'buyer', label: 'Buyer' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'litter', label: 'Poultry — Litter & Manure', rows: data.litter || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'flockId', label: 'Flock', get: (r) => flockName(r.flockId) },
+        { key: 'action', label: 'Action' }, { key: 'material', label: 'Material' }, { key: 'quantity', label: 'Qty (bags)' },
+        { key: 'condition', label: 'Condition' }, { key: 'cost', label: 'Cost (GH₵)' },
+        { key: 'toField', label: 'To Field' }, { key: 'batchLabel', label: 'Batch Label' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'scouting', label: 'Bell Pepper — Scouting', rows: p.scouting || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
+        { key: 'pest', label: 'Pest / Issue' }, { key: 'severity', label: 'Severity' },
+        { key: 'pctAffected', label: '% Affected' }, { key: 'action', label: 'Action' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'sprays', label: 'Bell Pepper — Spray & Fertigation', rows: p.sprays || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
+        { key: 'type', label: 'Type' }, { key: 'product', label: 'Product' }, { key: 'activeIngredient', label: 'Active Ingredient' },
+        { key: 'rate', label: 'Rate' }, { key: 'cost', label: 'Cost (GH₵)' }, { key: 'phiDays', label: 'PHI (d)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'harvests', label: 'Bell Pepper — Harvest & Sales', rows: p.harvests || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
+        { key: 'weightKg', label: 'Weight (kg)' }, { key: 'grade', label: 'Grade' }, { key: 'pricePerKg', label: 'Price/kg' },
+        { key: 'buyer', label: 'Buyer' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'manureReadings', label: 'Bell Pepper — Manure Readings', rows: p.manureReadings || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
+        { key: 'ec', label: 'EC' }, { key: 'ph', label: 'pH' }, { key: 'n', label: 'N' }, { key: 'p', label: 'P' }, { key: 'k', label: 'K' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'soilReadings', label: 'Bell Pepper — Soil Readings', rows: p.soilReadings || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
+        { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
+        { key: 'ec', label: 'EC' }, { key: 'ph', label: 'pH' }, { key: 'n', label: 'N' }, { key: 'p', label: 'P' }, { key: 'k', label: 'K' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'batches', label: 'Bell Pepper — Planting Batches', rows: p.batches || [],
+      columns: [
+        { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) }, { key: 'batchLabel', label: 'Batch' },
+        { key: 'variety', label: 'Variety' }, { key: 'transplantDate', label: 'Transplanted' },
+        { key: 'closedDate', label: 'Closed' }, { key: 'plantCount', label: 'Plants' },
+        { key: 'setupCost', label: 'Setup Cost (GH₵)' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'nurseryBatches', label: 'Bell Pepper — Nursery', rows: p.nurseryBatches || [],
+      columns: [
+        { key: 'batchLabel', label: 'Batch' }, { key: 'variety', label: 'Variety' }, { key: 'seedSowDate', label: 'Sown' },
+        { key: 'method', label: 'Method' }, { key: 'quantitySown', label: 'Qty Sown' },
+        { key: 'germinationDate', label: 'Germination Date' }, { key: 'germinationPct', label: 'Germination %' },
+        { key: 'expectedNurseryDays', label: 'Expected Days' }, { key: 'status', label: 'Status' },
+        { key: 'transplantedDate', label: 'Transplanted' },
+        { key: 'transplantedToFieldId', label: 'Transplanted To', get: (r) => (r.transplantedToFieldId ? fieldName(r.transplantedToFieldId) : '') },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'inputs', label: 'Bell Pepper — Input Stock', rows: p.inputs || [],
+      columns: [
+        { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'activeIngredient', label: 'Active Ingredient' },
+        { key: 'quantity', label: 'Quantity' }, { key: 'unit', label: 'Unit' }, { key: 'reorderAt', label: 'Reorder At' },
+        { key: 'unitCost', label: 'Unit Cost (GH₵)' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'expenses', label: 'Whole Farm — Expenses, Fuel & Structures', rows: data.expenses || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'category', label: 'Category' }, { key: 'description', label: 'Description' },
+        { key: 'amount', label: 'Amount (GH₵)' }, { key: 'capital', label: 'Structure?', get: (r) => (r.capital ? 'Yes' : 'No') },
+        { key: 'usefulLifeYears', label: 'Useful Life (yr)' }, { key: 'scope', label: 'Enterprise' }, { key: 'target', label: 'Target' },
+        { key: 'staffId', label: 'Staff', get: (r) => (r.staffId ? staffName(r.staffId) : '') },
+        { key: 'liters', label: 'Fuel Liters' }, { key: 'pricePerLiter', label: 'Fuel Price/L' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'staff', label: 'Whole Farm — Staff', rows: data.staff || [],
+      columns: [
+        { key: 'name', label: 'Name' }, { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
+        { key: 'payType', label: 'Pay Type' }, { key: 'rate', label: 'Rate (GH₵)' }, { key: 'startDate', label: 'Started' },
+        { key: 'status', label: 'Status' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+  ];
+}
+
+function ExportCenterTab({ data }) {
+  const { showToast } = useToastConfirm();
+  const datasets = useMemo(() => buildExportDatasets(data), [data]);
+  const nonEmpty = datasets.filter((d) => d.rows.length > 0);
+
+  function exportOne(ds) {
+    const csv = toCSV(ds.rows, ds.columns);
+    downloadCSV(`ai-farms-${ds.key}-${todayISO()}.csv`, csv);
+  }
+
+  function exportAll() {
+    if (!nonEmpty.length) {
+      showToast('Nothing to export yet — add some records first.');
+      return;
+    }
+    nonEmpty.forEach((ds, i) => setTimeout(() => exportOne(ds), i * 250));
+    showToast(`Downloading ${nonEmpty.length} CSV file(s) — allow multiple downloads if your browser asks.`, 'green');
+  }
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Export Center</h3>
+        <button className="btn btn-gold" onClick={exportAll} disabled={!nonEmpty.length}>⤓ Export everything</button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
+        Each dataset downloads as its own CSV file — opens straight in Excel, Google Sheets, or any
+        spreadsheet app. Useful for your own analysis, or handing records to a bank, buyer, or co-op.
+      </p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Dataset</th><th>Records</th><th></th></tr></thead>
+          <tbody>
+            {datasets.map((ds) => (
+              <tr key={ds.key}>
+                <td>{ds.label}</td>
+                <td className="mono">{num(ds.rows.length)}</td>
+                <td>
+                  <button className="link-btn" disabled={!ds.rows.length} onClick={() => exportOne(ds)}>
+                    {ds.rows.length ? 'Export CSV' : 'No data'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
 
 function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff }) {
   const [modal, setModal] = useState(null);
@@ -4373,6 +4969,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}>Structures &amp; assets</button>
         <button className={view === 'staff' ? 'active' : ''} onClick={() => setView('staff')}>Farm Team</button>
         <button className={view === 'fuel' ? 'active' : ''} onClick={() => setView('fuel')}>Fuel</button>
+        <button className={view === 'export' ? 'active' : ''} onClick={() => setView('export')}>Export</button>
       </div>
 
       {view === 'pl' && (<>
@@ -4522,6 +5119,8 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           onDelete={onDeleteExpense}
         />
       )}
+
+      {view === 'export' && <ExportCenterTab data={data} />}
 
       {(modal === 'expense' || (typeof modal === 'string' && modal.startsWith('expense:'))) && (
         <ExpenseForm
@@ -4764,6 +5363,7 @@ function AssetsTable({ capital, labelFor, onDelete }) {
 /* ============================================================= */
 
 function StaffPayrollTab({ staff, payments, labelFor, onAddStaff, onEditStaff, onDeleteStaff, onAddPayment, onEditPayment, onDeletePayment }) {
+  const { askConfirm } = useToastConfirm();
   const active = staff.filter((s) => s.status !== 'inactive');
   const inactive = staff.filter((s) => s.status === 'inactive');
 
@@ -4850,7 +5450,7 @@ function StaffPayrollTab({ staff, payments, labelFor, onAddStaff, onEditStaff, o
                       {payments.some((p) => p.staffId === s.id) ? (
                         <span className="stat-foot" style={{ margin: 0 }} title="Has payment history — mark Inactive instead">has history</span>
                       ) : (
-                        <button className="link-btn rust" onClick={() => { if (confirm(`Remove ${s.name} from the team?`)) onDeleteStaff(s.id); }}>Delete</button>
+                        <button className="link-btn rust" onClick={async () => { if (await askConfirm(`Remove ${s.name} from the team?`)) onDeleteStaff(s.id); }}>Delete</button>
                       )}
                     </span>
                   </td>
@@ -4887,7 +5487,7 @@ function StaffPayrollTab({ staff, payments, labelFor, onAddStaff, onEditStaff, o
                 <td>
                   <span style={{ display: 'flex', gap: 8 }}>
                     <button className="link-btn" onClick={() => onEditPayment(p)}>Edit</button>
-                    <button className="link-btn rust" onClick={() => { if (confirm('Delete this payment record?')) onDeletePayment(p.id); }}>Delete</button>
+                    <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this payment record?')) onDeletePayment(p.id); }}>Delete</button>
                   </span>
                 </td>
               </tr>
@@ -5072,6 +5672,7 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
 /* ============================================================= */
 
 function FuelTab({ fuel, labelFor, onAdd, onEdit, onDelete }) {
+  const { askConfirm } = useToastConfirm();
   const sorted = [...fuel].sort((a, b) => new Date(b.date) - new Date(a.date));
   const totalSpent = fuel.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const totalLiters = fuel.reduce((s, r) => s + (Number(r.liters) || 0), 0);
@@ -5130,7 +5731,7 @@ function FuelTab({ fuel, labelFor, onAdd, onEdit, onDelete }) {
                 <td>
                   <span style={{ display: 'flex', gap: 8 }}>
                     <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
-                    <button className="link-btn rust" onClick={() => { if (confirm('Delete this fuel record?')) onDelete(r.id); }}>Delete</button>
+                    <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this fuel record?')) onDelete(r.id); }}>Delete</button>
                   </span>
                 </td>
               </tr>
@@ -5259,6 +5860,7 @@ function SoilBatchesTab({
   view, setView, scope, fields, fieldsScoped, manureReadings, soilReadings, batches,
   harvests, scouting, sprays, onAddManure, onDeleteManure, onAddSoil, onDeleteSoil, onDeleteBatch,
 }) {
+  const { askConfirm } = useToastConfirm();
   const manureAvg = averageReading(manureReadings);
   const sortedManure = [...manureReadings].sort((a, b) => new Date(b.date) - new Date(a.date));
   const sortedSoil = [...soilReadings]
@@ -5343,7 +5945,7 @@ function SoilBatchesTab({
                   <td className="mono">{r.p != null ? num(r.p) : '—'}</td>
                   <td className="mono">{r.k != null ? num(r.k) : '—'}</td>
                   <td className="mono">{fertility(r)}</td>
-                  <td><button className="link-btn rust" onClick={() => { if (confirm('Delete this sample?')) onDeleteManure(r.id); }}>Delete</button></td>
+                  <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this sample?')) onDeleteManure(r.id); }}>Delete</button></td>
                 </tr>
               ))}
               {sortedManure.length === 0 && <tr><td colSpan={10} className="empty">No manure samples logged yet — test a few spots in the pile before mixing.</td></tr>}
@@ -5376,7 +5978,7 @@ function SoilBatchesTab({
                     <td className="mono">{r.n != null ? num(r.n) : '—'}</td>
                     <td className="mono">{r.p != null ? num(r.p) : '—'}</td>
                     <td className="mono">{r.k != null ? num(r.k) : '—'}</td>
-                    <td><button className="link-btn rust" onClick={() => { if (confirm('Delete this test?')) onDeleteSoil(r.id); }}>Delete</button></td>
+                    <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this test?')) onDeleteSoil(r.id); }}>Delete</button></td>
                   </tr>
                 );
               })}
@@ -5398,6 +6000,7 @@ function SoilBatchesTab({
 }
 
 function BatchPerformanceView({ fields, batches, soilReadings, harvests, scouting, sprays, onDeleteBatch }) {
+  const { askConfirm } = useToastConfirm();
   // Every batch to show per field: its closed history, plus the current
   // live planting synthesized from the field's own state.
   const entries = [];
@@ -5444,7 +6047,7 @@ function BatchPerformanceView({ fields, batches, soilReadings, harvests, scoutin
           <div className="panel" key={b.id}>
             <div className="panel-head">
               <h3>{b.field.name} — {b.batchLabel}{b.isCurrent && <span className="tag gold" style={{ marginLeft: 8 }}>Ongoing</span>}</h3>
-              {!b.isCurrent && <button className="link-btn rust" onClick={() => { if (confirm('Delete this batch record? Harvest/scouting history is not affected.')) onDeleteBatch(b.id); }}>Delete</button>}
+              {!b.isCurrent && <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this batch record? Harvest/scouting history is not affected.')) onDeleteBatch(b.id); }}>Delete</button>}
             </div>
             <p className="stat-foot" style={{ marginTop: 0 }}>
               {b.variety || 'no variety set'} · transplanted {fmtDate(b.transplantDate)} ·{' '}
@@ -5600,6 +6203,213 @@ function NewBatchForm({ field, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-green" onClick={submit}>Start batch</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ========================= NURSERY ============================ */
+/* ============================================================= */
+
+function nurseryStatusTag(batch) {
+  if (batch.status === 'transplanted') return <span className="tag green">Transplanted</span>;
+  if (batch.status === 'failed') return <span className="tag rust">Failed / discarded</span>;
+  return <span className="tag gold">Active</span>;
+}
+
+function NurseryTab({ batches, fields, onAdd, onEdit, onDelete, onTransplant }) {
+  const { askConfirm } = useToastConfirm();
+  const active = batches.filter((b) => b.status !== 'transplanted' && b.status !== 'failed');
+  const past = batches.filter((b) => b.status === 'transplanted' || b.status === 'failed');
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 6 }}>
+        <h3 style={{ fontSize: 18 }}>Nursery</h3>
+        <button className="btn btn-green" onClick={onAdd}>+ Sow new batch</button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
+        Track seedlings from sowing through germination to transplant-ready, before they ever reach
+        Field A or B. Typical bell pepper nursery duration is around 30 days, but every batch can set
+        its own.
+      </p>
+
+      {active.length === 0 && past.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          No nursery batches yet — log one when you sow seeds, and this tracks it through to transplant.
+        </p>
+      ) : (
+        <div className="field-card-grid">
+          {active.map((b) => {
+            const ns = nurseryStatus(b);
+            return (
+              <div className="panel" key={b.id} style={{ marginBottom: 0 }}>
+                <div className="panel-head">
+                  <h3>{b.batchLabel}</h3>
+                  {nurseryStatusTag(b)}
+                </div>
+                <div style={{ padding: '4px 0 10px' }}>
+                  <div className="kv"><span className="k">Variety</span><span className="v">{b.variety || '—'}</span></div>
+                  <div className="kv"><span className="k">Sown</span><span className="v">{fmtDate(b.seedSowDate)} ({ns.daysSinceSow}d ago)</span></div>
+                  <div className="kv"><span className="k">Method</span><span className="v">{b.method || '—'}</span></div>
+                  <div className="kv"><span className="k">Quantity sown</span><span className="v">{num(b.quantitySown)}</span></div>
+                  <div className="kv">
+                    <span className="k">Germination</span>
+                    <span className="v">{b.germinationDate ? `${num(b.germinationPct)}% on ${fmtDate(b.germinationDate)}` : 'not checked yet'}</span>
+                  </div>
+                  <div className="kv">
+                    <span className="k">Expected ready</span>
+                    <span className="v">{fmtDate(ns.expectedReady)}{ns.daysToReady > 0 ? ` (${ns.daysToReady}d)` : ' (due)'}</span>
+                  </div>
+                  {b.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{b.notes}</span></div>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn" onClick={() => onEdit(b)}>Edit / log germination</button>
+                  <button className="btn btn-green" onClick={() => onTransplant(b)}>Transplant to field</button>
+                  <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this nursery batch?')) onDelete(b.id); }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {past.length > 0 && (
+        <>
+          <p className="section-title">Past batches</p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Batch</th><th>Variety</th><th>Sown</th><th>Status</th><th>Transplanted</th><th></th></tr></thead>
+              <tbody>
+                {past.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.batchLabel}</td>
+                    <td>{b.variety || '—'}</td>
+                    <td className="mono">{fmtDate(b.seedSowDate)}</td>
+                    <td>{nurseryStatusTag(b)}</td>
+                    <td className="mono">
+                      {b.transplantedDate
+                        ? `${fmtDate(b.transplantedDate)} → ${(fields.find((f) => f.id === b.transplantedToFieldId) || {}).name || '—'}`
+                        : '—'}
+                    </td>
+                    <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this nursery batch?')) onDelete(b.id); }}>Delete</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function NurseryBatchForm({ entry, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    batchLabel: entry?.batchLabel || '', variety: entry?.variety || '',
+    seedSowDate: entry?.seedSowDate || todayISO(), seedSource: entry?.seedSource || '',
+    method: entry?.method || NURSERY_METHODS[0], quantitySown: entry?.quantitySown ?? '',
+    expectedNurseryDays: entry?.expectedNurseryDays ?? NURSERY_DEFAULT_DAYS,
+    germinationDate: entry?.germinationDate || '', germinationPct: entry?.germinationPct ?? '',
+    status: entry?.status || 'active', notes: entry?.notes || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.batchLabel || !f.seedSowDate) return;
+    onSave({
+      id: entry?.id || newId(),
+      batchLabel: f.batchLabel, variety: f.variety || null, seedSowDate: f.seedSowDate,
+      seedSource: f.seedSource || null, method: f.method,
+      quantitySown: f.quantitySown === '' ? null : Number(f.quantitySown),
+      expectedNurseryDays: f.expectedNurseryDays === '' ? NURSERY_DEFAULT_DAYS : Number(f.expectedNurseryDays),
+      germinationDate: f.germinationDate || null,
+      germinationPct: f.germinationPct === '' ? null : Number(f.germinationPct),
+      status: f.status, notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title={isEdit ? `Edit ${entry.batchLabel}` : 'Sow new nursery batch'} sub="Seeds sown, method, and germination progress." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Batch label"><input value={f.batchLabel} onChange={set('batchLabel')} placeholder="e.g. June sowing" /></Field>
+        <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
+        <Field label="Seed sowing date"><input type="date" value={f.seedSowDate} onChange={set('seedSowDate')} /></Field>
+        <Field label="Seed source"><input value={f.seedSource} onChange={set('seedSource')} placeholder="supplier / variety batch" /></Field>
+        <Field label="Method">
+          <select value={f.method} onChange={set('method')}>
+            {NURSERY_METHODS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Quantity sown"><input type="number" value={f.quantitySown} onChange={set('quantitySown')} placeholder="seeds or trays" /></Field>
+        <Field label="Expected nursery days"><input type="number" value={f.expectedNurseryDays} onChange={set('expectedNurseryDays')} placeholder={String(NURSERY_DEFAULT_DAYS)} /></Field>
+        <Field label="Germination check date"><input type="date" value={f.germinationDate} onChange={set('germinationDate')} /></Field>
+        <Field label="Germination rate (%)"><input type="number" value={f.germinationPct} onChange={set('germinationPct')} /></Field>
+        {isEdit && (
+          <Field label="Status">
+            <select value={f.status} onChange={set('status')}>
+              {Object.entries(NURSERY_STATUSES).filter(([k]) => k !== 'transplanted').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+        )}
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="damping-off watch, shading, hardening off..." /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>{isEdit ? 'Save changes' : 'Sow batch'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function TransplantNurseryForm({ batch, fields, onClose, onSave }) {
+  const [f, setF] = useState({
+    fieldId: fields[0]?.id || '', transplantDate: todayISO(), plantCount: batch?.quantitySown ?? '',
+    spacing: '', expectedHarvestDAT: 70, setupCost: '', manureAppliedDate: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const ns = batch ? nurseryStatus(batch, f.transplantDate) : null;
+  function submit() {
+    if (!f.fieldId || !f.transplantDate) return;
+    onSave(f.fieldId, {
+      currentBatchLabel: `From nursery: ${batch.batchLabel}`,
+      variety: batch.variety || '', transplantDate: f.transplantDate,
+      plantCount: f.plantCount === '' ? null : Number(f.plantCount),
+      spacing: f.spacing || '',
+      expectedHarvestDAT: f.expectedHarvestDAT === '' ? null : Number(f.expectedHarvestDAT),
+      setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+      manureAppliedDate: f.manureAppliedDate || null,
+      notes: f.notes || `Transplanted from nursery batch "${batch.batchLabel}" (sown ${fmtDate(batch.seedSowDate)}).`,
+    });
+  }
+  if (!batch) return null;
+  return (
+    <Modal
+      title={`Transplant ${batch.batchLabel}`}
+      sub={ns ? `${ns.daysSinceSow} days in the nursery by this transplant date.` : undefined}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Field">
+          <select value={f.fieldId} onChange={set('fieldId')}>
+            {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Plants transplanted"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
+        <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
+        <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
+        <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="land prep, drip, labour" /></Field>
+        <Field label="Manure applied date"><input type="date" value={f.manureAppliedDate} onChange={set('manureAppliedDate')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 4 }}>
+        This closes out whatever's currently planted on that field (archived to Batch Performance) and
+        starts this batch as the new planting, carrying the variety across from the nursery record.
+      </p>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Transplant</button>
       </div>
     </Modal>
   );
