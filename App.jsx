@@ -117,6 +117,7 @@ function defaultPepper() {
     manureReadings: [],  // raw manure pile samples before mixing into soil
     soilReadings: [],    // per-field soil tests after manure mix, over time
     batches: [],         // closed planting cycles per field (history)
+    nurseryBatches: [],  // seed-sowing through germination, before transplant
   };
 }
 
@@ -180,6 +181,7 @@ function dataRichness(d) {
     (d.reminders || []).length + (d.recipes || []).length +
     (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
+    (p.nurseryBatches || []).length +
     (p.inputs || []).length
   );
 }
@@ -249,6 +251,7 @@ function migrate(saved) {
       manureReadings: pepper.manureReadings || [],
       soilReadings: pepper.soilReadings || [],
       batches: pepper.batches || [],
+      nurseryBatches: pepper.nurseryBatches || [],
     },
     updatedAt: saved.updatedAt || new Date().toISOString(),
     // Always stamped with what THIS build produced, not what was read in —
@@ -1064,6 +1067,27 @@ function AppInner() {
   function deleteBatch(id) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, batches: (d.pepper.batches || []).filter((b) => b.id !== id) } }));
   }
+  function addNurseryBatch(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, nurseryBatches: [...(d.pepper.nurseryBatches || []), entry] } }));
+  }
+  function updateNurseryBatch(id, patch) {
+    setData((d) => touch({
+      ...d,
+      pepper: { ...d.pepper, nurseryBatches: (d.pepper.nurseryBatches || []).map((b) => (b.id === id ? { ...b, ...patch } : b)) },
+    }));
+  }
+  function deleteNurseryBatch(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, nurseryBatches: (d.pepper.nurseryBatches || []).filter((b) => b.id !== id) } }));
+  }
+  /** Moves a nursery batch into the field it's ready for — closes out any
+      current planting on that field the same way "+ New Batch" does, and
+      marks the nursery batch transplanted so it drops off the active list. */
+  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch) {
+    startNewBatch(fieldId, newBatch);
+    updateNurseryBatch(nurseryBatchId, {
+      status: 'transplanted', transplantedDate: newBatch.transplantDate, transplantedToFieldId: fieldId,
+    });
+  }
   function addScouting(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
   }
@@ -1446,6 +1470,10 @@ function AppInner() {
           onDeleteSoilReading={deleteSoilReading}
           onStartNewBatch={startNewBatch}
           onDeleteBatch={deleteBatch}
+          onAddNurseryBatch={addNurseryBatch}
+          onUpdateNurseryBatch={updateNurseryBatch}
+          onDeleteNurseryBatch={deleteNurseryBatch}
+          onTransplantNurseryBatch={transplantNurseryBatch}
         />
       )}
 
@@ -2512,11 +2540,29 @@ function nearestSoilRound(soilReadings, fieldId, date, toleranceDays = 10) {
   return best && bestDiff <= toleranceDays ? best : null;
 }
 
+/* ---------------- Nursery helpers ---------------- */
+
+const NURSERY_METHODS = ['Seed trays', 'Seedbed', 'Poly bags', 'Other'];
+const NURSERY_DEFAULT_DAYS = 30; // typical bell pepper nursery duration before transplant-ready
+const NURSERY_STATUSES = { active: 'Active', transplanted: 'Transplanted', failed: 'Failed / discarded' };
+
+/** Where a nursery batch stands: days since sowing, days until it's expected
+    to be transplant-ready, and whether that expected date has passed
+    without a germination check ever being logged (worth a nudge). */
+function nurseryStatus(batch, asOf = todayISO()) {
+  const daysSinceSow = daysBetween(batch.seedSowDate, asOf);
+  const expectedReady = addDaysISO(batch.seedSowDate, batch.expectedNurseryDays || NURSERY_DEFAULT_DAYS);
+  const daysToReady = daysBetween(asOf, expectedReady);
+  const needsGerminationCheck = !batch.germinationDate && daysSinceSow >= 7;
+  return { daysSinceSow, expectedReady, daysToReady, needsGerminationCheck };
+}
+
 function PepperWorkspace({
   pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
+  onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -2609,6 +2655,17 @@ function PepperWorkspace({
       source: f.name,
     };
   }).filter(Boolean);
+  const nurseryBatches = (pepper.nurseryBatches || []).filter((b) => b.status === 'active');
+  const nurseryReminders = nurseryBatches.map((b) => {
+    const ns = nurseryStatus(b);
+    if (ns.needsGerminationCheck) {
+      return { id: `nursery-germ-${b.id}`, title: `Check germination — ${b.batchLabel} (${ns.daysSinceSow}d since sowing)`, dueDate: todayISO(), source: 'Nursery' };
+    }
+    if (ns.daysToReady <= 3) {
+      return { id: `nursery-ready-${b.id}`, title: `${b.batchLabel} nearing transplant-ready (${ns.daysToReady <= 0 ? 'due now' : `in ${ns.daysToReady}d`})`, dueDate: ns.expectedReady, source: 'Nursery' };
+    }
+    return null;
+  }).filter(Boolean);
   const pepperAuto = [
     ...phiWindows.map((w) => ({ id: `phi-${w.field.id}`, title: `${w.field.name}: harvest hold (${w.product || 'spray'})`, dueDate: w.safe, source: w.field.name })),
     ...fields.map((f) => {
@@ -2618,6 +2675,7 @@ function PepperWorkspace({
       return { id: `scout-${f.id}`, title: `Scout ${f.name}${last ? ` (last ${days}d ago)` : ' (not scouted yet)'}`, dueDate: todayISO(), source: f.name };
     }).filter(Boolean),
     ...soilRetestReminders,
+    ...nurseryReminders,
   ];
 
   const harvestChart = harvestScoped.map((h) => ({
@@ -2675,6 +2733,7 @@ function PepperWorkspace({
       <nav className="tabs pepper">
         {[
           ['dashboard', 'Dashboard'],
+          ['nursery', 'Nursery'],
           ['cycle', 'Crop Cycle'],
           ['programme', 'Spray Programme'],
           ['soil', 'Soil & Batches'],
@@ -2698,6 +2757,17 @@ function PepperWorkspace({
           scopePhi={scopePhi} soonestClear={soonestClear} scopeResistance={scopeResistance}
           harvestChart={harvestChart} pressureChart={pressureChart} harvestScoped={harvestScoped}
           datOf={datOf}
+        />
+      )}
+
+      {ptab === 'nursery' && (
+        <NurseryTab
+          batches={pepper.nurseryBatches || []}
+          fields={fields}
+          onAdd={() => setModal('nursery')}
+          onEdit={(b) => setModal(`nursery:${b.id}`)}
+          onDelete={onDeleteNurseryBatch}
+          onTransplant={(b) => setModal(`transplant-nursery:${b.id}`)}
         />
       )}
 
@@ -2821,6 +2891,28 @@ function PepperWorkspace({
           field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
           onSave={(patch) => { onStartNewBatch(modal.split(':')[1], patch); setModal(null); }}
+        />
+      )}
+      {(modal === 'nursery' || (typeof modal === 'string' && modal.startsWith('nursery:'))) && (
+        <NurseryBatchForm
+          entry={modal.startsWith('nursery:') ? (pepper.nurseryBatches || []).find((b) => b.id === modal.split(':')[1]) : null}
+          onClose={() => setModal(null)}
+          onSave={(e) => {
+            if (modal.startsWith('nursery:')) onUpdateNurseryBatch(e.id, e);
+            else onAddNurseryBatch(e);
+            setModal(null);
+          }}
+        />
+      )}
+      {modal && modal.startsWith('transplant-nursery:') && (
+        <TransplantNurseryForm
+          batch={(pepper.nurseryBatches || []).find((b) => b.id === modal.split(':')[1])}
+          fields={fields}
+          onClose={() => setModal(null)}
+          onSave={(fieldId, patch) => {
+            onTransplantNurseryBatch(modal.split(':')[1], fieldId, patch);
+            setModal(null);
+          }}
         />
       )}
     </>
@@ -4689,6 +4781,18 @@ function buildExportDatasets(data) {
       ],
     },
     {
+      key: 'nurseryBatches', label: 'Bell Pepper — Nursery', rows: p.nurseryBatches || [],
+      columns: [
+        { key: 'batchLabel', label: 'Batch' }, { key: 'variety', label: 'Variety' }, { key: 'seedSowDate', label: 'Sown' },
+        { key: 'method', label: 'Method' }, { key: 'quantitySown', label: 'Qty Sown' },
+        { key: 'germinationDate', label: 'Germination Date' }, { key: 'germinationPct', label: 'Germination %' },
+        { key: 'expectedNurseryDays', label: 'Expected Days' }, { key: 'status', label: 'Status' },
+        { key: 'transplantedDate', label: 'Transplanted' },
+        { key: 'transplantedToFieldId', label: 'Transplanted To', get: (r) => (r.transplantedToFieldId ? fieldName(r.transplantedToFieldId) : '') },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
       key: 'inputs', label: 'Bell Pepper — Input Stock', rows: p.inputs || [],
       columns: [
         { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'activeIngredient', label: 'Active Ingredient' },
@@ -6099,6 +6203,213 @@ function NewBatchForm({ field, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-green" onClick={submit}>Start batch</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ========================= NURSERY ============================ */
+/* ============================================================= */
+
+function nurseryStatusTag(batch) {
+  if (batch.status === 'transplanted') return <span className="tag green">Transplanted</span>;
+  if (batch.status === 'failed') return <span className="tag rust">Failed / discarded</span>;
+  return <span className="tag gold">Active</span>;
+}
+
+function NurseryTab({ batches, fields, onAdd, onEdit, onDelete, onTransplant }) {
+  const { askConfirm } = useToastConfirm();
+  const active = batches.filter((b) => b.status !== 'transplanted' && b.status !== 'failed');
+  const past = batches.filter((b) => b.status === 'transplanted' || b.status === 'failed');
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 6 }}>
+        <h3 style={{ fontSize: 18 }}>Nursery</h3>
+        <button className="btn btn-green" onClick={onAdd}>+ Sow new batch</button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
+        Track seedlings from sowing through germination to transplant-ready, before they ever reach
+        Field A or B. Typical bell pepper nursery duration is around 30 days, but every batch can set
+        its own.
+      </p>
+
+      {active.length === 0 && past.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          No nursery batches yet — log one when you sow seeds, and this tracks it through to transplant.
+        </p>
+      ) : (
+        <div className="field-card-grid">
+          {active.map((b) => {
+            const ns = nurseryStatus(b);
+            return (
+              <div className="panel" key={b.id} style={{ marginBottom: 0 }}>
+                <div className="panel-head">
+                  <h3>{b.batchLabel}</h3>
+                  {nurseryStatusTag(b)}
+                </div>
+                <div style={{ padding: '4px 0 10px' }}>
+                  <div className="kv"><span className="k">Variety</span><span className="v">{b.variety || '—'}</span></div>
+                  <div className="kv"><span className="k">Sown</span><span className="v">{fmtDate(b.seedSowDate)} ({ns.daysSinceSow}d ago)</span></div>
+                  <div className="kv"><span className="k">Method</span><span className="v">{b.method || '—'}</span></div>
+                  <div className="kv"><span className="k">Quantity sown</span><span className="v">{num(b.quantitySown)}</span></div>
+                  <div className="kv">
+                    <span className="k">Germination</span>
+                    <span className="v">{b.germinationDate ? `${num(b.germinationPct)}% on ${fmtDate(b.germinationDate)}` : 'not checked yet'}</span>
+                  </div>
+                  <div className="kv">
+                    <span className="k">Expected ready</span>
+                    <span className="v">{fmtDate(ns.expectedReady)}{ns.daysToReady > 0 ? ` (${ns.daysToReady}d)` : ' (due)'}</span>
+                  </div>
+                  {b.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{b.notes}</span></div>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn" onClick={() => onEdit(b)}>Edit / log germination</button>
+                  <button className="btn btn-green" onClick={() => onTransplant(b)}>Transplant to field</button>
+                  <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this nursery batch?')) onDelete(b.id); }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {past.length > 0 && (
+        <>
+          <p className="section-title">Past batches</p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Batch</th><th>Variety</th><th>Sown</th><th>Status</th><th>Transplanted</th><th></th></tr></thead>
+              <tbody>
+                {past.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.batchLabel}</td>
+                    <td>{b.variety || '—'}</td>
+                    <td className="mono">{fmtDate(b.seedSowDate)}</td>
+                    <td>{nurseryStatusTag(b)}</td>
+                    <td className="mono">
+                      {b.transplantedDate
+                        ? `${fmtDate(b.transplantedDate)} → ${(fields.find((f) => f.id === b.transplantedToFieldId) || {}).name || '—'}`
+                        : '—'}
+                    </td>
+                    <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this nursery batch?')) onDelete(b.id); }}>Delete</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function NurseryBatchForm({ entry, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    batchLabel: entry?.batchLabel || '', variety: entry?.variety || '',
+    seedSowDate: entry?.seedSowDate || todayISO(), seedSource: entry?.seedSource || '',
+    method: entry?.method || NURSERY_METHODS[0], quantitySown: entry?.quantitySown ?? '',
+    expectedNurseryDays: entry?.expectedNurseryDays ?? NURSERY_DEFAULT_DAYS,
+    germinationDate: entry?.germinationDate || '', germinationPct: entry?.germinationPct ?? '',
+    status: entry?.status || 'active', notes: entry?.notes || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.batchLabel || !f.seedSowDate) return;
+    onSave({
+      id: entry?.id || newId(),
+      batchLabel: f.batchLabel, variety: f.variety || null, seedSowDate: f.seedSowDate,
+      seedSource: f.seedSource || null, method: f.method,
+      quantitySown: f.quantitySown === '' ? null : Number(f.quantitySown),
+      expectedNurseryDays: f.expectedNurseryDays === '' ? NURSERY_DEFAULT_DAYS : Number(f.expectedNurseryDays),
+      germinationDate: f.germinationDate || null,
+      germinationPct: f.germinationPct === '' ? null : Number(f.germinationPct),
+      status: f.status, notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title={isEdit ? `Edit ${entry.batchLabel}` : 'Sow new nursery batch'} sub="Seeds sown, method, and germination progress." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Batch label"><input value={f.batchLabel} onChange={set('batchLabel')} placeholder="e.g. June sowing" /></Field>
+        <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
+        <Field label="Seed sowing date"><input type="date" value={f.seedSowDate} onChange={set('seedSowDate')} /></Field>
+        <Field label="Seed source"><input value={f.seedSource} onChange={set('seedSource')} placeholder="supplier / variety batch" /></Field>
+        <Field label="Method">
+          <select value={f.method} onChange={set('method')}>
+            {NURSERY_METHODS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Quantity sown"><input type="number" value={f.quantitySown} onChange={set('quantitySown')} placeholder="seeds or trays" /></Field>
+        <Field label="Expected nursery days"><input type="number" value={f.expectedNurseryDays} onChange={set('expectedNurseryDays')} placeholder={String(NURSERY_DEFAULT_DAYS)} /></Field>
+        <Field label="Germination check date"><input type="date" value={f.germinationDate} onChange={set('germinationDate')} /></Field>
+        <Field label="Germination rate (%)"><input type="number" value={f.germinationPct} onChange={set('germinationPct')} /></Field>
+        {isEdit && (
+          <Field label="Status">
+            <select value={f.status} onChange={set('status')}>
+              {Object.entries(NURSERY_STATUSES).filter(([k]) => k !== 'transplanted').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+        )}
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="damping-off watch, shading, hardening off..." /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>{isEdit ? 'Save changes' : 'Sow batch'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function TransplantNurseryForm({ batch, fields, onClose, onSave }) {
+  const [f, setF] = useState({
+    fieldId: fields[0]?.id || '', transplantDate: todayISO(), plantCount: batch?.quantitySown ?? '',
+    spacing: '', expectedHarvestDAT: 70, setupCost: '', manureAppliedDate: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const ns = batch ? nurseryStatus(batch, f.transplantDate) : null;
+  function submit() {
+    if (!f.fieldId || !f.transplantDate) return;
+    onSave(f.fieldId, {
+      currentBatchLabel: `From nursery: ${batch.batchLabel}`,
+      variety: batch.variety || '', transplantDate: f.transplantDate,
+      plantCount: f.plantCount === '' ? null : Number(f.plantCount),
+      spacing: f.spacing || '',
+      expectedHarvestDAT: f.expectedHarvestDAT === '' ? null : Number(f.expectedHarvestDAT),
+      setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+      manureAppliedDate: f.manureAppliedDate || null,
+      notes: f.notes || `Transplanted from nursery batch "${batch.batchLabel}" (sown ${fmtDate(batch.seedSowDate)}).`,
+    });
+  }
+  if (!batch) return null;
+  return (
+    <Modal
+      title={`Transplant ${batch.batchLabel}`}
+      sub={ns ? `${ns.daysSinceSow} days in the nursery by this transplant date.` : undefined}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Field">
+          <select value={f.fieldId} onChange={set('fieldId')}>
+            {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Plants transplanted"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
+        <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
+        <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
+        <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="land prep, drip, labour" /></Field>
+        <Field label="Manure applied date"><input type="date" value={f.manureAppliedDate} onChange={set('manureAppliedDate')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 4 }}>
+        This closes out whatever's currently planted on that field (archived to Batch Performance) and
+        starts this batch as the new planting, carrying the variety across from the nursery record.
+      </p>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Transplant</button>
       </div>
     </Modal>
   );

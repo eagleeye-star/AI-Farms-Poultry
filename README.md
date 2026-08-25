@@ -107,6 +107,29 @@ which batch from their dates.
 
 ---
 
+## Nursery
+
+Under **Bell Pepper Fields → Nursery**, tracking starts before a field ever
+gets planted — from the day seeds go into trays or a seedbed, through
+germination, to transplant-ready.
+
+- **Sow a batch** — label, variety, sowing date, method, quantity sown, and
+  how many days you expect it to need before it's ready (30 is the typical
+  default for bell pepper, editable per batch).
+- **Log germination** — date and percentage, whenever you check. A reminder
+  appears automatically about a week after sowing if it hasn't been checked
+  yet, and again as the expected transplant-ready date approaches.
+- **Transplant to field** — picks a field, carries the variety across
+  automatically, and closes out whatever was previously growing there the
+  same way starting a new batch always does. The nursery batch itself is
+  marked Transplanted, with the actual date recorded — so you can see how
+  long it really spent in the nursery versus what you expected.
+
+Past batches (transplanted or failed) stay visible in a simple history table
+underneath the active ones.
+
+---
+
 ## Bell Pepper Spray & Nutrition Programme
 
 Under **Bell Pepper Fields → Spray Programme**, a 14-week, 42-event nutrition
