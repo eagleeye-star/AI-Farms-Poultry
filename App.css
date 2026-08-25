@@ -802,3 +802,64 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   border-color: rgba(193, 95, 65, 0.5);
   color: var(--rust);
 }
+
+/* ---------- Toast + confirm dialog (replaces alert()/confirm()) ---------- */
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.toast-pop {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: min(440px, calc(100vw - 32px));
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--gold);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 16px;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  z-index: 300;
+  animation: toast-in 0.18s ease-out;
+}
+.toast-pop.toast-green { border-left-color: var(--green); }
+.toast-pop.toast-rust { border-left-color: var(--rust); }
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 5, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 310;
+}
+
+.confirm-dialog {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 360px;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.confirm-dialog p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.btn-rust {
+  background: var(--rust);
+  color: #2a140c;
+  border-color: var(--rust);
+}
+.btn-rust:hover { background: #d1794f; }

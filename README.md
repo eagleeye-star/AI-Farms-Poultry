@@ -257,6 +257,49 @@ syncs whenever you're back online.
 
 ---
 
+## Export Center
+
+Under **Whole Farm → Export**, every dataset in the app — Daily Log, Feed,
+Medications, Vaccinations, Growth, Sales, Litter, Scouting, Sprays, Harvests,
+Soil & Manure Readings, Batches, Input Stock, Expenses (incl. Fuel and Staff
+Payments), and Staff — downloads as its own CSV file, opens straight in
+Excel or Google Sheets. Useful for your own analysis, or handing records to
+a bank, buyer, or co-op. **Export everything** downloads all of them in one
+go (your browser may ask permission for multiple downloads — allow it).
+
+## In-app confirmations
+
+Deleting anything now shows a proper in-app dialog instead of the browser's
+native popup, and actions like loading a vaccination programme or restoring
+a backup show a small toast message instead of freezing the screen — works
+the same, just doesn't feel foreign on a phone.
+
+## Daily Log safeguard
+
+If mortality + culls would take a flock's closing count below zero — always
+a typo, never a real event — the entry is blocked from saving, with a clear
+explanation of the numbers that don't add up, instead of quietly accepting
+an impossible bird count that throws off survival %, current flock size, and
+every cost-per-bird figure downstream.
+
+## Faster on long-running flocks
+
+The population, feed, and feed-balance charts on the poultry dashboard now
+default to the last 90 days, with a 30/90/180/All toggle — a layer flock
+racking up hundreds of daily entries a year no longer has to render (and
+recompute) all of them just to show what happened this week. The Daily Log
+table loads 30 rows at a time with "Show more" / "Show all," instead of every
+entry from day one.
+
+## Spray Programme → Spray & Fertigation shortcut
+
+Every event in the Spray Programme has a **Log this spray now** button —
+opens Spray & Fertigation pre-filled with the product, rate, and the right
+spray type for that event's category, so recording what you actually sprayed
+takes one tap instead of retyping the programme by hand.
+
+---
+
 ## Backup & Restore
 
 **Backup** downloads your whole farm as a `.json` file. **Restore** loads one
