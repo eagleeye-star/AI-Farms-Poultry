@@ -257,6 +257,31 @@ syncs whenever you're back online.
 
 ---
 
+## Backup & Restore
+
+**Backup** downloads your whole farm as a `.json` file. **Restore** loads one
+back in — both sit in the poultry header, and work with no internet at all.
+
+Every backup carries the app's schema version, so restoring an old file
+never silently produces a half-broken farm:
+
+- A backup missing a field the current app expects gets that field filled
+  in with a sensible default, same as it always has.
+- A backup written by a **newer** version of the app than you're currently
+  running gets flagged before anything loads, with the choice to proceed or
+  update first — rather than silently losing whatever that newer version
+  understood that this one doesn't.
+- Selecting a file that isn't an AI Farms backup at all (wrong file, empty
+  JSON) is rejected outright, instead of "succeeding" into a near-empty farm.
+- A successful restore reports how many records were loaded, so you can see
+  at a glance whether it was the file you meant.
+
+The same version check applies to **cloud sync** — if your account's cloud
+data was written by a newer app version, sync pauses in both directions
+(neither pulling nor pushing) until you update, rather than guessing.
+
+---
+
 ## Login & cloud sync
 
 You sign in with an email and password. The Supabase URL and key are built

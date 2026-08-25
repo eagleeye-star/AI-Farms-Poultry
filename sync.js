@@ -144,6 +144,8 @@ export function signOut() {
 }
 
 /** Swap an expiring refresh token for a fresh access token. */
+let refreshInFlight = null;
+
 async function refreshSession(session) {
   const data = await authRequest('token?grant_type=refresh_token', {
     refresh_token: session.refresh_token,
@@ -158,14 +160,20 @@ async function refreshSession(session) {
   return next;
 }
 
-/** Return a valid session, refreshing it if it's close to expiry. */
+/** Return a valid session, refreshing it if it's close to expiry.
+    Auto-sync can trigger from more than one place in quick succession
+    (a debounced save, the tab regaining focus), so concurrent calls here
+    share a single in-flight refresh — otherwise two requests can race to
+    use the same one-time refresh token and the loser gets signed out. */
 async function validSession() {
   let session = getSession();
   if (!session) throw new Error('Not signed in.');
-  // Refresh a minute before expiry so a sync never fails mid-request.
   if (session.expires_at && session.expires_at - Date.now() < 60_000) {
     try {
-      session = await refreshSession(session);
+      if (!refreshInFlight) {
+        refreshInFlight = refreshSession(session).finally(() => { refreshInFlight = null; });
+      }
+      session = await refreshInFlight;
     } catch (e) {
       setSession(null);
       throw new Error('Session expired — please sign in again.');

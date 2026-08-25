@@ -14,6 +14,17 @@ import './App.css';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
 
+/**
+ * Bump this whenever the shape of `data` changes in a way old code
+ * couldn't safely read (a field renamed, a record type restructured — not
+ * just a new optional field, since migrate() already defaults those). Every
+ * backup file and cloud save carries the version it was written with, so a
+ * restore or sync can tell "this is from a future version of the app" from
+ * "this is just old and needs the usual defaults filled in" instead of
+ * guessing from a timestamp alone.
+ */
+const SCHEMA_VERSION = 1;
+
 const STANDARDS = {
   hyline_layer: SEED.feedStandard,
   ross308_broiler: ROSS308,
@@ -22,7 +33,16 @@ const STANDARDS = {
 /* ---------------- utils ---------------- */
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  // Local Y/M/D, not toISOString() (which is always UTC) — otherwise "today"
+  // can read as tomorrow or yesterday for anyone west/east of UTC in the
+  // evening/early morning. daysBetween() itself doesn't need this fix: ISO
+  // date-only strings always parse as UTC regardless of device timezone, so
+  // a difference between two of them is timezone-invariant already.
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function daysBetween(a, b) {
@@ -35,7 +55,10 @@ function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d)) return iso;
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  // Force UTC when reading the date back out — the ISO string was parsed as
+  // UTC midnight, so rendering in the viewer's *local* zone can silently
+  // shift the displayed day by one for anyone west of UTC.
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 function num(v, digits = 0) {
@@ -135,6 +158,7 @@ function freshData() {
     recipes: [],      // saved home-mix feed formulations
     pepper: defaultPepper(),
     updatedAt: new Date().toISOString(),
+    schemaVersion: SCHEMA_VERSION,
   };
 }
 
@@ -158,6 +182,13 @@ function dataRichness(d) {
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
     (p.inputs || []).length
   );
+}
+
+/** True if a saved payload was written by a newer app version than this
+    build understands. Never guess at upgrading it — just flag it so the
+    caller (restore, sync) can decide whether to proceed. */
+function isFromNewerSchema(saved) {
+  return Boolean(saved) && Number(saved.schemaVersion) > SCHEMA_VERSION;
 }
 
 function migrate(saved) {
@@ -191,6 +222,10 @@ function migrate(saved) {
       batches: pepper.batches || [],
     },
     updatedAt: saved.updatedAt || new Date().toISOString(),
+    // Always stamped with what THIS build produced, not what was read in —
+    // once migrate() has run, the in-memory shape matches the current
+    // schema regardless of how old the source file or cloud record was.
+    schemaVersion: SCHEMA_VERSION,
   };
 }
 
@@ -316,7 +351,16 @@ export default function App() {
   const [showCloudSetup, setShowCloudSetup] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // Kept synchronous and un-debounced on purpose: this app's core promise
+    // (see the auto-sync safety net) is not losing farm data, and a debounce
+    // window is exactly where an edit could vanish if the tab closes before
+    // it fires. Only real gap was the missing guard against Safari private
+    // mode / storage quota throwing here.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {
+      console.warn('Local save failed (storage full or unavailable):', e);
+    }
   }, [data]);
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
@@ -382,7 +426,12 @@ export default function App() {
         delta: -(Number(r.feedGiven) || 0),
         kind: 'usage', ref: r,
       })),
-    ].sort((a, b) => new Date(a.date) - new Date(b.date) || (a.kind === 'purchase' ? -1 : 1));
+    ].sort((a, b) => {
+      const dateDiff = new Date(a.date) - new Date(b.date);
+      if (dateDiff !== 0) return dateDiff;
+      if (a.kind === b.kind) return 0; // same date, same kind — order doesn't affect the running total
+      return a.kind === 'purchase' ? -1 : 1; // a same-day purchase should still land before that day's usage
+    });
 
     let running = 0;
     return events.map((e) => { running += e.delta; return { ...e, balance: running }; });
@@ -534,6 +583,21 @@ export default function App() {
   function addMed(entry) {
     setData((d) => touch({ ...d, meds: [...d.meds, { ...entry, flockId: activeFlock.id }] }));
   }
+  /** Confirm or un-confirm a single day of a medication course. */
+  function toggleMedDay(medId, dateISO) {
+    setData((d) => touch({
+      ...d,
+      meds: d.meds.map((m) => {
+        if (m.id !== medId) return m;
+        const given = new Set(m.daysGiven || []);
+        if (given.has(dateISO)) given.delete(dateISO); else given.add(dateISO);
+        return { ...m, daysGiven: [...given] };
+      }),
+    }));
+  }
+  function deleteMed(id) {
+    setData((d) => touch({ ...d, meds: d.meds.filter((m) => m.id !== id) }));
+  }
   function addVax(entry) {
     setData((d) => touch({ ...d, vax: [...d.vax, { ...entry, flockId: activeFlock.id, status: 'done' }] }));
   }
@@ -650,9 +714,12 @@ export default function App() {
   const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
   const firstSyncRef = useRef(true);      // sync sooner right after the app opens, for faster recovery
   const syncNowRef = useRef(null);        // always holds the latest syncNow closure, for stable event listeners
+  const syncInFlightRef = useRef(false);  // blocks overlapping syncs — auto-sync now fires from several independent triggers
 
   async function syncNow(mode = 'auto') {
     if (!user) return;
+    if (syncInFlightRef.current) return; // a sync is already running — let it finish rather than overlap
+    syncInFlightRef.current = true;
     setSync({ status: 'syncing', message: 'Syncing…', lastSync: sync.lastSync });
     try {
       const remote = await pullRemote();
@@ -660,6 +727,19 @@ export default function App() {
       const remoteTime = remote ? new Date(remote.updatedAt).getTime() : 0;
       const localCount = dataRichness(data);
       const remoteCount = remote ? dataRichness(remote.state) : 0;
+
+      // If the cloud copy was written by a newer version of the app, this
+      // build doesn't fully understand its shape — don't pull it in (could
+      // drop fields on the next save) and don't push over it either (could
+      // discard whatever the newer version added). Surface it and stop.
+      if (remote && isFromNewerSchema(remote.state)) {
+        setSync({
+          status: 'error',
+          message: `Cloud data is from a newer app version (v${remote.state.schemaVersion}) — update the app to keep syncing`,
+          lastSync: sync.lastSync,
+        });
+        return;
+      }
 
       // Safety net: local storage getting wiped or reinstalled still produces
       // a fresh "now" timestamp, which would otherwise look newer than the
@@ -690,6 +770,8 @@ export default function App() {
       const msg = err.message || 'Sync failed';
       setSync({ status: 'error', message: msg, lastSync: sync.lastSync });
       if (msg.includes('sign in')) setUser(null);
+    } finally {
+      syncInFlightRef.current = false;
     }
   }
 
@@ -726,6 +808,14 @@ export default function App() {
     setSync({ status: 'syncing', message: 'Loading your farm…', lastSync: null });
     try {
       const remote = await pullRemote();
+      if (remote && isFromNewerSchema(remote.state)) {
+        setSync({
+          status: 'error',
+          message: `Cloud data is from a newer app version (v${remote.state.schemaVersion}) — update the app to keep syncing`,
+          lastSync: null,
+        });
+        return;
+      }
       if (remote) {
         const merged = migrate(remote.state);
         setData(merged);
@@ -756,23 +846,44 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ai-farms-backup-${todayISO()}.json`;
+    a.download = `ai-farms-backup-v${SCHEMA_VERSION}-${todayISO()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
   function restoreData(file) {
     const reader = new FileReader();
     reader.onload = () => {
+      let parsed;
       try {
-        const parsed = JSON.parse(reader.result);
-        const merged = migrate(parsed);
-        setData(merged);
-        setActiveFlockId(merged.flocks[0].id);
-        alert('Backup restored successfully.');
+        parsed = JSON.parse(reader.result);
       } catch (err) {
-        alert('Could not read that file — make sure it is an AI Farms backup (.json).');
+        alert('Could not read that file — it doesn\'t look like valid JSON.');
+        return;
       }
+      // Loose but real shape check — catches "wrong file entirely" before
+      // migrate()'s defensive fallbacks turn it into a silently near-empty
+      // farm that LOOKS like a successful restore.
+      const looksLikeBackup = parsed && typeof parsed === 'object'
+        && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
+      if (!looksLikeBackup) {
+        alert('That doesn\'t look like an AI Farms backup file — nothing was changed.');
+        return;
+      }
+      if (isFromNewerSchema(parsed)) {
+        const proceed = confirm(
+          `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
+          'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
+          'Update the app first if you can. Restore anyway?'
+        );
+        if (!proceed) return;
+      }
+      const merged = migrate(parsed);
+      const recordCount = dataRichness(merged);
+      setData(merged);
+      setActiveFlockId(merged.flocks[0].id);
+      alert(`Backup restored — ${recordCount} record(s) loaded across the farm.`);
     };
+    reader.onerror = () => alert('Could not read that file from your device — please try again.');
     reader.readAsText(file);
   }
 
@@ -1013,6 +1124,7 @@ export default function App() {
       {tab === 'log' && (
         <LogTab
           dailyLog={[...dailyLog].reverse()}
+          flockStartDate={activeFlock.startDate}
           onAdd={() => { setEditingLog(null); setModal('log'); }}
           onEdit={(entry) => { setEditingLog(entry); setModal('log'); }}
           onDelete={deleteDailyLog}
@@ -1112,6 +1224,15 @@ export default function App() {
               dueDate: todayISO(),
               source: activeFlock.flockName,
             }] : []),
+            ...meds
+              .map((m) => ({ med: m, status: medCourseStatus(m) }))
+              .filter(({ med, status }) => status.activeToday && !(med.daysGiven || []).includes(todayISO()) && !status.complete)
+              .map(({ med, status }) => ({
+                id: `med-${med.id}-${todayISO()}`,
+                title: `Give ${med.drug} — day ${status.givenCount + 1} of ${status.total}`,
+                dueDate: todayISO(),
+                source: activeFlock.flockName,
+              })),
           ]}
           onAdd={() => setModal('reminder')}
           onToggle={toggleReminder}
@@ -1131,6 +1252,8 @@ export default function App() {
           onLoadTemplate={applyVaxTemplate}
           onAddMed={() => setModal('med')}
           onAddVax={() => setModal('vax')}
+          onToggleMedDay={toggleMedDay}
+          onDeleteMed={deleteMed}
         />
       )}
 
@@ -1138,7 +1261,7 @@ export default function App() {
         <LogForm
           entry={editingLog}
           lastClosing={latest ? latest.closing : activeFlock.initialBirds}
-          flockType={activeFlock.type}
+          flockStartDate={activeFlock.startDate}
           onClose={() => { setModal(null); setEditingLog(null); }}
           onSave={(e) => {
             if (editingLog) updateDailyLog(editingLog.id, e);
@@ -1165,7 +1288,7 @@ export default function App() {
         <MedForm onClose={() => setModal(null)} onSave={(e) => { addMed(e); setModal(null); }} />
       )}
       {modal === 'vax' && (
-        <VaxForm onClose={() => setModal(null)} onSave={(e) => { addVax(e); setModal(null); }} />
+        <VaxForm flockStartDate={activeFlock.startDate} onClose={() => setModal(null)} onSave={(e) => { addVax(e); setModal(null); }} />
       )}
       {modal === 'weight' && (
         <WeightForm onClose={() => setModal(null)} onSave={(e) => { addWeightSample(e); setModal(null); }} />
@@ -1305,7 +1428,7 @@ function DashboardTab({
           foot="per breed feeding standard"
         />
         {isBroiler ? (
-          <StatCard title="Feed / Bird" value={feedCostPerBird ? `GH₵ ${num(feedCostPerBird, 2)}` : '—'} foot="feed cost per bird" />
+          <StatCard title="Feed Cost" value={totalFeedCost ? `GH₵ ${num(totalFeedCost, 2)}` : '—'} tone="rust" foot="total spent, this flock" />
         ) : (
           <StatCard
             title="Weight vs Standard"
@@ -1473,7 +1596,7 @@ function DashboardTab({
 
 /* ---------------- Daily Log tab ---------------- */
 
-function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
+function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1489,10 +1612,16 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
             </tr>
           </thead>
           <tbody>
-            {dailyLog.map((r) => (
+            {dailyLog.map((r) => {
+              // Bird age is always derived from arrival date + this entry's
+              // own date — never trusted from storage, so it's correct even
+              // for old records or ones logged after the fact. +1 so arrival
+              // day is "Day 1", matching the dashboard's Day/Week ring.
+              const age = flockStartDate && r.date ? daysBetween(flockStartDate, r.date) + 1 : null;
+              return (
               <tr key={r.id || r.date}>
                 <td className="mono">{fmtDate(r.date)}</td>
-                <td className="mono">{r.birdAge ?? '—'}</td>
+                <td className="mono">{age != null ? age : '—'}</td>
                 <td className="mono">{num(r.opening)}</td>
                 <td className="mono">{r.mortality ? <span style={{ color: 'var(--rust)' }}>{num(r.mortality)}</span> : num(r.mortality)}</td>
                 <td>{r.mortalityCause ? <span className="tag rust">{r.mortalityCause}</span> : '—'}</td>
@@ -1514,7 +1643,8 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
                   </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {dailyLog.length === 0 && <tr><td colSpan={15} className="empty">No entries yet — log the first day.</td></tr>}
           </tbody>
         </table>
@@ -1523,11 +1653,10 @@ function LogTab({ dailyLog, onAdd, onEdit, onDelete }) {
   );
 }
 
-function LogForm({ entry, lastClosing, onClose, onSave }) {
+function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
   const isEdit = Boolean(entry);
   const [f, setF] = useState({
     date: entry?.date || todayISO(),
-    birdAge: entry?.birdAge ?? '',
     opening: entry?.opening ?? (lastClosing ?? ''),
     mortality: entry?.mortality ?? 0,
     mortalityCause: entry?.mortalityCause || '',
@@ -1542,13 +1671,18 @@ function LogForm({ entry, lastClosing, onClose, onSave }) {
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const closing = (Number(f.opening) || 0) - (Number(f.mortality) || 0) - (Number(f.culls) || 0);
+  // Bird age always comes from arrival date + whatever date this entry is
+  // for — so a backdated entry gets the right age automatically, and
+  // there's nothing to type or get wrong. +1 so arrival day is "Day 1",
+  // matching the dashboard's Day/Week ring.
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) + 1 : null;
 
   function submit() {
     if (!f.date || f.opening === '') return;
     onSave({
       id: entry?.id || newId(),
       date: f.date,
-      birdAge: f.birdAge === '' ? null : Number(f.birdAge),
+      birdAge,
       opening: Number(f.opening),
       mortality: Number(f.mortality) || 0,
       mortalityCause: Number(f.mortality) > 0 ? (f.mortalityCause || null) : null,
@@ -1572,7 +1706,7 @@ function LogForm({ entry, lastClosing, onClose, onSave }) {
     >
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
-        <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
+        <Field label="Bird age (auto)"><input value={birdAge != null ? `${birdAge} days` : 'set flock start date'} disabled /></Field>
         <Field label="Opening birds"><input type="number" value={f.opening} onChange={set('opening')} /></Field>
         <Field label="Mortality"><input type="number" value={f.mortality} onChange={set('mortality')} /></Field>
         <Field label="Cause of death">
@@ -1772,7 +1906,7 @@ function FeedForm({ entry, lastBalance, onClose, onSave }) {
 
 /* ---------------- Health tab ---------------- */
 
-function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax }) {
+function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, onDeleteVax, onLoadTemplate, onAddMed, onAddVax, onToggleMedDay, onDeleteMed }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1857,22 +1991,76 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
       </div>
 
       <p className="section-title">Medications</p>
+      {(() => {
+        const active = meds
+          .map((m) => ({ med: m, status: medCourseStatus(m) }))
+          .filter(({ status }) => !status.complete && (status.activeToday || status.overdue));
+        return active.length > 0 && (
+          <>
+            <p className="stat-foot" style={{ marginTop: -6, marginBottom: 12 }}>
+              <strong style={{ color: 'var(--gold)' }}>{active.length} course(s) in progress</strong> — tap a day
+              once it's actually been given.
+            </p>
+            <div className="confirm-list" style={{ marginBottom: 18 }}>
+              {active.map(({ med, status }) => (
+                <div className="confirm-row" key={med.id} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div className="confirm-main">
+                      <div className="confirm-title">{med.drug}{med.purpose ? ` — ${med.purpose}` : ''}</div>
+                      <div className="confirm-sub">
+                        {med.dosage ? `${med.dosage} · ` : ''}{fmtDate(status.dates[0])}–{fmtDate(status.dates[status.dates.length - 1])}
+                        {status.overdue && <span style={{ color: 'var(--rust)' }}> · a day was missed</span>}
+                      </div>
+                    </div>
+                    <span className={`tag ${status.overdue ? 'rust' : 'gold'}`}>{status.givenCount}/{status.total} days</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {status.dates.map((d, i) => {
+                      const given = (med.daysGiven || []).includes(d);
+                      const missed = !given && d < todayISO();
+                      return (
+                        <button
+                          key={d}
+                          className={`day-chip${given ? ' given' : ''}${missed ? ' missed' : ''}`}
+                          onClick={() => onToggleMedDay(med.id, d)}
+                          title={fmtDate(d)}
+                        >
+                          {given ? '✓' : missed ? '!' : i + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      })()}
       <div className="table-wrap">
         <table className="data">
-          <thead><tr><th>Date</th><th>Drug</th><th>Purpose</th><th>Dosage</th><th>Duration</th><th>By</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Date</th><th>Drug</th><th>Purpose</th><th>Dosage</th><th>Duration</th><th>Progress</th><th>By</th><th>Notes</th><th></th></tr></thead>
           <tbody>
-            {meds.map((m) => (
-              <tr key={m.id || m.date}>
-                <td className="mono">{fmtDate(m.date)}</td>
-                <td>{m.drug}</td>
-                <td>{m.purpose || '—'}</td>
-                <td>{m.dosage || '—'}</td>
-                <td className="mono">{m.duration ? `${m.duration}d` : '—'}</td>
-                <td>{m.by || '—'}</td>
-                <td className="notes">{m.notes || ''}</td>
-              </tr>
-            ))}
-            {meds.length === 0 && <tr><td colSpan={7} className="empty">No medications logged yet.</td></tr>}
+            {meds.map((m) => {
+              const status = medCourseStatus(m);
+              return (
+                <tr key={m.id || m.date}>
+                  <td className="mono">{fmtDate(m.date)}</td>
+                  <td>{m.drug}</td>
+                  <td>{m.purpose || '—'}</td>
+                  <td>{m.dosage || '—'}</td>
+                  <td className="mono">{m.duration ? `${m.duration}d` : '—'}</td>
+                  <td>
+                    <span className={`tag ${status.complete ? 'green' : status.overdue ? 'rust' : 'gold'}`}>
+                      {status.givenCount}/{status.total}
+                    </span>
+                  </td>
+                  <td>{m.by || '—'}</td>
+                  <td className="notes">{m.notes || ''}</td>
+                  <td>{m.id && onDeleteMed && <button className="link-btn rust" onClick={() => { if (confirm('Delete this medication record?')) onDeleteMed(m.id); }}>Delete</button>}</td>
+                </tr>
+              );
+            })}
+            {meds.length === 0 && <tr><td colSpan={9} className="empty">No medications logged yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1883,23 +2071,28 @@ function HealthTab({ meds, vax, vaxStatus, vaxPending, flock, onSetVaxStatus, on
 function MedForm({ onClose, onSave }) {
   const [f, setF] = useState({ date: todayISO(), drug: '', purpose: '', dosage: '', duration: '', by: 'Oscar', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const duration = f.duration === '' ? 1 : Math.max(1, Number(f.duration) || 1);
+  const end = addDaysISO(f.date, duration - 1);
   function submit() {
     if (!f.date || !f.drug) return;
     onSave({
       id: newId(),
       date: f.date, drug: f.drug, purpose: f.purpose || null, dosage: f.dosage || null,
-      duration: f.duration === '' ? null : Number(f.duration), start: f.date, end: f.date,
+      duration: f.duration === '' ? null : Number(f.duration), start: f.date, end,
+      // Today's dose is being given right now, so Day 1 starts checked —
+      // the rest of the course gets confirmed day by day as it happens.
+      daysGiven: [f.date],
       by: f.by || null, notes: f.notes || null,
     });
   }
   return (
-    <Modal title="Add medication" onClose={onClose}>
+    <Modal title="Add medication" sub={f.duration !== '' ? `Course runs ${fmtDate(f.date)} through ${fmtDate(end)} (${duration} day${duration > 1 ? 's' : ''}).` : undefined} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Drug name"><input value={f.drug} onChange={set('drug')} /></Field>
         <Field label="Purpose"><input value={f.purpose} onChange={set('purpose')} /></Field>
         <Field label="Dosage"><input value={f.dosage} onChange={set('dosage')} placeholder="e.g. 3g per 3L water" /></Field>
-        <Field label="Duration (days)"><input type="number" value={f.duration} onChange={set('duration')} /></Field>
+        <Field label="Duration (days)"><input type="number" min="1" value={f.duration} onChange={set('duration')} placeholder="how many days the course runs" /></Field>
         <Field label="Administered by"><input value={f.by} onChange={set('by')} /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
@@ -1911,15 +2104,16 @@ function MedForm({ onClose, onSave }) {
   );
 }
 
-function VaxForm({ onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', birdAge: '', method: 'Water', notes: '' });
+function VaxForm({ flockStartDate, onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), vaccine: '', disease: '', method: 'Water', notes: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const birdAge = flockStartDate && f.date ? daysBetween(flockStartDate, f.date) + 1 : null;
   function submit() {
     if (!f.date || !f.vaccine) return;
     onSave({
       id: newId(),
       date: f.date, vaccine: f.vaccine, disease: f.disease || f.vaccine,
-      birdAge: f.birdAge === '' ? null : Number(f.birdAge), method: f.method || null,
+      birdAge, method: f.method || null,
       notes: f.notes || null,
     });
   }
@@ -1929,7 +2123,7 @@ function VaxForm({ onClose, onSave }) {
         <Field label="Date given"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Vaccine name"><input value={f.vaccine} onChange={set('vaccine')} /></Field>
         <Field label="Disease"><input value={f.disease} onChange={set('disease')} /></Field>
-        <Field label="Bird age (days)"><input type="number" value={f.birdAge} onChange={set('birdAge')} /></Field>
+        <Field label="Bird age (auto)"><input value={birdAge != null ? `${birdAge} days` : 'set flock start date'} disabled /></Field>
         <Field label="Method">
           <select value={f.method} onChange={set('method')}>
             <option>Water</option><option>Injection</option><option>Eye drop</option><option>Spray</option>
@@ -1947,7 +2141,7 @@ function VaxForm({ onClose, onSave }) {
 
 /* ---------------- Growth tab ---------------- */
 
-function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
+function GrowthTab({ weightSamples, growthChartData, feedStandard, flockType, onAdd }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -1990,7 +2184,7 @@ function GrowthTab({ weightSamples, growthChartData, feedStandard, onAdd }) {
         </table>
       </div>
 
-      <p className="section-title">Breed feeding &amp; growth standard (Hy-Line)</p>
+      <p className="section-title">Breed feeding &amp; growth standard ({flockType === 'broiler' ? 'Ross 308' : 'Hy-Line'})</p>
       <div className="table-wrap">
         <table className="data">
           <thead><tr><th>Week</th><th>Feed type</th><th>Feed intake (g/bird/day)</th><th>Target weight (g)</th></tr></thead>
@@ -2059,6 +2253,30 @@ function addDaysISO(iso, days) {
 }
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
+/* ---------------- Medication course helpers ---------------- */
+
+/** Every calendar day a medication course covers, from its start date for
+    `duration` days. A course with no duration set is treated as one day. */
+function medCourseDates(med) {
+  const start = med.start || med.date;
+  const duration = Math.max(1, Number(med.duration) || 1);
+  const days = [];
+  for (let i = 0; i < duration; i++) days.push(addDaysISO(start, i));
+  return days;
+}
+
+/** Where a course stands today: which days are confirmed given, which are
+    still open, and whether it's finished, on track, or has a missed day. */
+function medCourseStatus(med, asOf = todayISO()) {
+  const dates = medCourseDates(med);
+  const given = new Set(med.daysGiven || []);
+  const givenCount = dates.filter((d) => given.has(d)).length;
+  const complete = givenCount >= dates.length;
+  const overdue = !complete && dates.some((d) => d < asOf && !given.has(d));
+  const activeToday = dates.includes(asOf);
+  return { dates, givenCount, total: dates.length, complete, overdue, activeToday };
+}
+
 /* ---------------- Soil monitoring helpers ---------------- */
 
 const SOIL_FIELDS = ['moisture', 'ec', 'ph', 'n', 'p', 'k'];
@@ -2093,6 +2311,7 @@ function latestFieldRound(soilReadings, fieldId) {
 /** Where a value sits against a min/max target: 'below' | 'ok' | 'above'. */
 function bandStatus(value, min, max) {
   if (value == null || min == null || max == null) return null;
+  if (min > max) [min, max] = [max, min]; // guards against a mistyped/swapped target range
   if (value < min) return 'below';
   if (value > max) return 'above';
   return 'ok';
@@ -2298,6 +2517,7 @@ function PepperWorkspace({
         {[
           ['dashboard', 'Dashboard'],
           ['cycle', 'Crop Cycle'],
+          ['programme', 'Spray Programme'],
           ['soil', 'Soil & Batches'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
@@ -2327,6 +2547,15 @@ function PepperWorkspace({
           fields={fieldsScoped} datOf={datOf}
           onEdit={(id) => setModal(`field:${id}`)}
           onNewBatch={(id) => setModal(`batch:${id}`)}
+        />
+      )}
+
+      {ptab === 'programme' && (
+        <SprayProgrammeTab
+          activeField={activeField}
+          fields={fields}
+          reminders={reminders}
+          onAddReminder={onAddReminder}
         />
       )}
 
@@ -2614,6 +2843,221 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
         Bell peppers usually reach first harvest around 60–90 days after transplant; the default is set to 70. Adjust per field once you see how your crop runs.
         Starting a <strong>New Batch</strong> archives the current planting to Soil &amp; Batches → Batch Performance and begins the next one.
       </p>
+    </>
+  );
+}
+
+/* ============================================================= */
+/* =================== BELL PEPPER SPRAY PROGRAMME =============== */
+/* ============================================================= */
+
+/* Day offsets are relative to transplant (Day 0). Dates shown in the app are
+   computed live from each field's own transplant date — this is the same
+   14-week nutrition/pest/disease regimen, just not locked to one calendar. */
+const PEPPER_PROGRAMME = [
+  { day: 0, week: 1, title: 'Transplant Day — Imidacloprid Drench + Vital 05 + Algua', cat: 'transplant', time: '6am' },
+  { day: 4, week: 1, title: 'Omex Starter + Algua + Vital 05 + OFA', cat: 'nutrition', time: '6am' },
+  { day: 7, week: 1, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 8, week: 2, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 11, week: 2, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 14, week: 2, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 15, week: 3, title: 'Omex Starter + Vital 05 + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 18, week: 3, title: 'Konmidor (systemic insecticide)', cat: 'pesticide', time: '6am' },
+  { day: 21, week: 3, title: 'CYDIM SUPER (preventive fungicide)', cat: 'fungicide', time: '6am' },
+  { day: 22, week: 4, title: 'Urea Foliar + Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 25, week: 4, title: 'Emamectin Benzoate + CYDIM SUPER', cat: 'pesticide', time: '6am' },
+  { day: 28, week: 4, title: 'Omex Starter + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 29, week: 5, title: 'Alt Sulfur (MORNING — check temp <30°C)', cat: 'fungicide', time: '6am' },
+  { day: 32, week: 5, title: 'Omex Starter + Algua + OFA + Vital 05', cat: 'nutrition', time: '6am' },
+  { day: 35, week: 5, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 36, week: 6, title: 'FINAL UREA + Algua + OFA', cat: 'nutrition', time: '6am' },
+  { day: 39, week: 6, title: 'Konmidor (2nd rotation)', cat: 'pesticide', time: '6am' },
+  { day: 42, week: 6, title: 'SWITCH: Boom Boost begins + Algua + OFA', cat: 'transition', time: '6am' },
+  { day: 43, week: 7, title: 'Boom Boost + CalMag + Algua + Vital 05 + BORON', cat: 'flowering', time: '6am' },
+  { day: 46, week: 7, title: 'Emamectin + CYDIM SUPER + CalMag', cat: 'pesticide', time: '6am' },
+  { day: 49, week: 7, title: 'Boom Boost + CalMag + Algua + Boron (2nd & final)', cat: 'flowering', time: '6am' },
+  { day: 50, week: 8, title: 'Boom Boost + CalMag + Algua + OFA', cat: 'flowering', time: '6am' },
+  { day: 53, week: 8, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 56, week: 8, title: 'Boom Boost + CalMag + OFA', cat: 'flowering', time: '6am' },
+  { day: 57, week: 9, title: 'Alt Sulfur (MORNING — check temp <30°C)', cat: 'fungicide', time: '6am' },
+  { day: 60, week: 9, title: 'Boom Boost + CalMag 3ml + Vital 05 + Algua', cat: 'flowering', time: '6am' },
+  { day: 63, week: 9, title: 'Konmidor + Boom Boost + CalMag 3ml', cat: 'pesticide', time: '6am' },
+  { day: 64, week: 10, title: 'Boom Boost + Finisher Pro (BEGINS) + CalMag', cat: 'fruiting', time: '6am' },
+  { day: 67, week: 10, title: 'Emamectin + CalMag + Algua', cat: 'pesticide', time: '6am' },
+  { day: 70, week: 10, title: 'CYDIM SUPER + Finisher Pro + CalMag', cat: 'fungicide', time: '6am' },
+  { day: 71, week: 11, title: 'Finisher Pro + CalMag + Algua + OFA', cat: 'fruiting', time: '6am' },
+  { day: 74, week: 11, title: 'Neem Oil (EVENING ONLY)', cat: 'neem', time: '5pm' },
+  { day: 77, week: 11, title: 'Alt Sulfur MORNING — 48hrs after Neem', cat: 'fungicide', time: '6am' },
+  { day: 78, week: 12, title: 'Finisher Pro + CalMag + Vital 05 + Algua', cat: 'fruiting', time: '6am' },
+  { day: 81, week: 12, title: 'Konmidor + Finisher Pro + CalMag (PHI 7d)', cat: 'pesticide', time: '6am' },
+  { day: 84, week: 12, title: 'CYDIM SUPER + Finisher Pro + CalMag (PHI 7d)', cat: 'fungicide', time: '6am' },
+  { day: 85, week: 13, title: 'Finisher Pro + CalMag 2ml + OFA', cat: 'fruiting', time: '6am' },
+  { day: 88, week: 13, title: 'Emamectin IF needed (PHI 3d)', cat: 'pesticide', time: '6am' },
+  { day: 91, week: 13, title: 'FINAL FOLIAR SPRAY — Finisher Pro + CalMag + OFA', cat: 'fruiting', time: '6am' },
+  { day: 92, week: 14, title: 'OFA DRIP ONLY', cat: 'harvest', time: '6am' },
+  { day: 95, week: 14, title: 'OFA DRIP ONLY — Monitor harvest readiness', cat: 'harvest', time: '6am' },
+  { day: 98, week: 14, title: 'HARVEST — Inspect and begin picking', cat: 'harvest', time: '6am' },
+];
+
+const PEPPER_STAGES = [
+  { weeks: [1, 2], label: 'Establishment' },
+  { weeks: [3, 4, 5], label: 'Vegetative' },
+  { weeks: [6], label: 'Pre-flower Transition' },
+  { weeks: [7, 8, 9], label: 'Flowering' },
+  { weeks: [10, 11, 12], label: 'Fruiting' },
+  { weeks: [13, 14], label: 'Harvest Approach' },
+];
+
+const PEPPER_CAT_TONE = {
+  transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
+  neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
+};
+
+const PEPPER_CAT_LABEL = {
+  transplant: 'Transplant', nutrition: 'Nutrition', pesticide: 'Pesticide', fungicide: 'Fungicide',
+  neem: 'Neem Oil (5pm)', transition: 'Transition', flowering: 'Flowering', fruiting: 'Fruiting', harvest: 'Harvest',
+};
+
+const PEPPER_RATES = {
+  transplant: 'Imidacloprid 70WG: 1g/1000L drip (ONE TIME ONLY) · Vital 05: 10ml/15L · Algua: 10ml/15L · OFA drip: 60ml/1000L',
+  nutrition: 'Omex Starter: 4–5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Urea (if applicable): 5g/15L dissolved first · OFA drip: 60ml/1000L',
+  pesticide: 'Konmidor: 5ml/15L OR Emamectin: 5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Rotate between the two every 2–3 weeks',
+  fungicide: 'CYDIM SUPER: 25–30g/15L OR Alt Sulfur: 30–35g/15L (spray alone, temp <30°C) · Apply before rain as preventive',
+  neem: 'Neem Oil: 25ml/15L + 2ml dish soap · SPRAY ALONE — mix with nothing · APPLY AFTER 5PM ONLY · Never on same day as Sulfur',
+  transition: 'Omex Boom Boost: 5ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · STOP Omex Starter from today',
+  flowering: 'Boom Boost: 5ml/15L · CalMag: 2–3ml/15L (never stop once started) · Algua: 10ml/15L · Boron (Solubor): 1–2g/15L (Wk7 only)',
+  fruiting: 'Finisher Pro: 5ml/15L · CalMag: 2–3ml/15L · Algua: 10ml/15L · OFA: 10ml/15L · Check PHI for any pesticides',
+  harvest: 'OFA drip only: 30ml/1000L · NO foliar spray · Monitor fruit colour — harvest at 70–80% colour change · Early morning 5–8am',
+};
+
+function pepperStageForWeek(week) {
+  return (PEPPER_STAGES.find((s) => s.weeks.includes(week)) || PEPPER_STAGES[0]).label;
+}
+
+const PEPPER_PROGRAMME_CATS = ['transplant', 'nutrition', 'pesticide', 'fungicide', 'neem', 'transition', 'flowering', 'fruiting', 'harvest'];
+
+function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder }) {
+  const [filter, setFilter] = useState('all');
+  const [openId, setOpenId] = useState(null);
+
+  const field = activeField || fields[0];
+  const hasTransplant = Boolean(field && field.transplantDate);
+
+  const events = PEPPER_PROGRAMME.map((ev) => ({
+    ...ev,
+    date: hasTransplant ? addDaysISO(field.transplantDate, ev.day) : null,
+    daysLeft: hasTransplant ? daysBetween(todayISO(), addDaysISO(field.transplantDate, ev.day)) : null,
+  }));
+  const filtered = filter === 'all' ? events : events.filter((e) => e.cat === filter);
+  const weeks = [...new Set(events.map((e) => e.week))];
+
+  const counts = {};
+  PEPPER_PROGRAMME.forEach((e) => { counts[e.cat] = (counts[e.cat] || 0) + 1; });
+
+  const harvestEvent = events.find((e) => e.day === 98);
+
+  function generateReminders() {
+    if (!hasTransplant) return;
+    const existingIds = new Set((reminders || []).map((r) => r.id));
+    let added = 0;
+    events.forEach((ev) => {
+      if (ev.daysLeft < 0) return; // don't clutter reminders with the past
+      const id = `prog-${field.id}-${ev.day}`;
+      if (existingIds.has(id)) return;
+      onAddReminder({
+        id, title: `${field.name}: ${ev.title}`, dueDate: ev.date,
+        repeatDays: null, scope: 'pepper', notes: PEPPER_RATES[ev.cat] || null, done: false,
+      });
+      added += 1;
+    });
+    alert(added ? `Added ${added} reminder(s) for ${field.name}'s remaining programme.` : 'All upcoming events already have reminders.');
+  }
+
+  if (!field) {
+    return <p className="empty" style={{ padding: '18px 0' }}>Add a field first to plan its spray programme.</p>;
+  }
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 6 }}>
+        <h3 style={{ fontSize: 18 }}>{field.name} — 14-week Spray &amp; Nutrition Programme</h3>
+        <button className="btn btn-green" onClick={generateReminders} disabled={!hasTransplant}>
+          ⤓ Generate reminders
+        </button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
+        {hasTransplant
+          ? <>Transplant {fmtDate(field.transplantDate)} · estimated harvest {fmtDate(harvestEvent.date)} (Day 98). Dates below are computed from this field&apos;s transplant date — switch fields above to see another field&apos;s schedule.</>
+          : <>Set a transplant date for {field.name} in Crop Cycle to see actual dates — showing day offsets only until then.</>}
+        {' '}This is a plan, not a log — record what you actually spray in <strong>Spray &amp; Fertigation</strong> as you go.
+      </p>
+
+      <div className="field-seg" style={{ marginBottom: 18 }}>
+        <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All events</button>
+        {PEPPER_PROGRAMME_CATS.map((c) => (
+          <button key={c} className={filter === c ? 'active' : ''} onClick={() => setFilter(c)}>{PEPPER_CAT_LABEL[c]}</button>
+        ))}
+      </div>
+
+      {weeks.map((wk) => {
+        const wkEvents = filtered.filter((e) => e.week === wk);
+        if (!wkEvents.length) return null;
+        return (
+          <div key={wk} style={{ marginBottom: 16 }}>
+            <div className="panel-head" style={{ marginBottom: 8 }}>
+              <h3 style={{ fontSize: 14 }}>Week {wk} · {pepperStageForWeek(wk)}</h3>
+              <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {wkEvents.map((ev) => {
+                const id = `${ev.day}-${ev.title}`;
+                const isOpen = openId === id;
+                const overdue = ev.daysLeft != null && ev.daysLeft < 0;
+                return (
+                  <div className="panel" key={id} style={{ marginBottom: 0, cursor: 'pointer' }} onClick={() => setOpenId(isOpen ? null : id)}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <span className={`tag ${PEPPER_CAT_TONE[ev.cat] || ''}`} style={{ flexShrink: 0 }}>
+                        {PEPPER_CAT_LABEL[ev.cat]}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{ev.title}</div>
+                        <div className="stat-foot" style={{ margin: '3px 0 0' }}>
+                          Day {ev.day} · {ev.time}
+                          {ev.date && ` · ${fmtDate(ev.date)}`}
+                          {ev.daysLeft != null && (
+                            overdue ? ` · ${Math.abs(ev.daysLeft)}d ago` : ev.daysLeft === 0 ? ' · today' : ` · in ${ev.daysLeft}d`
+                          )}
+                        </div>
+                        {isOpen && (
+                          <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
+                            {PEPPER_RATES[ev.cat] || 'See spray programme for full rates.'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      <p className="section-title">Programme summary</p>
+      <div className="grid grid-4">
+        <StatCard title="Total Events" value={String(PEPPER_PROGRAMME.length)} tone="gold" foot="over 14 weeks" />
+        <StatCard title="Nutrition Sprays" value={String(counts.nutrition || 0)} tone="green" />
+        <StatCard title="Pesticide Events" value={String(counts.pesticide || 0)} tone="rust" />
+        <StatCard title="Fungicide Events" value={String((counts.fungicide || 0))} tone="gold" />
+      </div>
+
+      <div className="stale-banner" style={{ marginTop: 18 }}>
+        ⚠ <span>
+          Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
+          CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
+          Alt Sulfur application.
+        </span>
+      </div>
     </>
   );
 }
@@ -2967,7 +3411,7 @@ function FlockForm({ flock, onClose, onSave }) {
     flockName: flock?.flockName || '', type: flock?.type || 'broiler',
     breed: flock?.breed || '', startDate: flock?.startDate || todayISO(),
     initialBirds: flock?.initialBirds ?? '', location: flock?.location || 'Eikwe, Western Region',
-    setupCost: flock?.setupCost ?? '',
+    setupCost: flock?.setupCost ?? '', notes: flock?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
@@ -2982,6 +3426,7 @@ function FlockForm({ flock, onClose, onSave }) {
       location: f.location || '',
       standardKey: f.type === 'broiler' ? 'ross308_broiler' : 'hyline_layer',
       setupCost: f.setupCost === '' ? null : Number(f.setupCost),
+      notes: f.notes || '',
     });
   }
   return (
@@ -3822,6 +4267,8 @@ function FeedMixTab({ recipes, flock, onSave, onDelete }) {
 /* ============================================================= */
 
 const EXPENSE_CATEGORIES = ['Labour', 'Transport', 'Utilities', 'Repairs & maintenance', 'Equipment', 'Rent', 'Other'];
+const FUEL_TYPES = ['Petrol', 'Diesel', 'Kerosene'];
+const FUEL_EQUIPMENT = ['Generator', 'Water pump', 'Vehicle', 'Tiller / cultivator', 'Motorbike', 'Other'];
 
 /* Farm help / payroll. Payments live in the SAME `expenses` array as other
    costs (tagged with staffId + paymentKind), so they automatically flow
@@ -3918,15 +4365,17 @@ function annualCharge(item) {
 
 function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff }) {
   const [modal, setModal] = useState(null);
-  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff'
+  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel'
   const [editingPayment, setEditingPayment] = useState(null);
   const [editingStaff, setEditingStaff] = useState(null);
+  const [editingFuel, setEditingFuel] = useState(null);
 
   const allExpenses = data.expenses || [];
   const capital = allExpenses.filter((e) => e.capital);
   const running = allExpenses.filter((e) => !e.capital);
   const staff = data.staff || [];
   const payments = allExpenses.filter((e) => e.staffId);
+  const fuel = allExpenses.filter((e) => e.category === 'Fuel');
 
   const fields = (data.pepper && data.pepper.fields) || [];
   const flocks = data.flocks || [];
@@ -4010,6 +4459,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         <button className={view === 'pl' ? 'active' : ''} onClick={() => setView('pl')}>Profit &amp; loss</button>
         <button className={view === 'assets' ? 'active' : ''} onClick={() => setView('assets')}>Structures &amp; assets</button>
         <button className={view === 'staff' ? 'active' : ''} onClick={() => setView('staff')}>Farm Team</button>
+        <button className={view === 'fuel' ? 'active' : ''} onClick={() => setView('fuel')}>Fuel</button>
       </div>
 
       {view === 'pl' && (<>
@@ -4090,7 +4540,10 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
                   <td className="mono">GH₵ {num(r.amount, 2)}</td>
                   <td>
                     <span style={{ display: 'flex', gap: 8 }}>
-                      {!r.staffId && <button className="link-btn" onClick={() => setModal(`expense:${r.id}`)}>Edit</button>}
+                      {!r.staffId && r.category !== 'Fuel' && (
+                        <button className="link-btn" onClick={() => setModal(`expense:${r.id}`)}>Edit</button>
+                      )}
+                      {r.category === 'Fuel' && <span className="stat-foot" style={{ margin: 0 }}>edit in Fuel tab</span>}
                       <button className="link-btn rust" onClick={() => onDeleteExpense(r.id)}>Delete</button>
                     </span>
                   </td>
@@ -4147,6 +4600,16 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         />
       )}
 
+      {view === 'fuel' && (
+        <FuelTab
+          fuel={fuel}
+          labelFor={labelFor}
+          onAdd={() => { setEditingFuel(null); setModal('fuel'); }}
+          onEdit={(f) => { setEditingFuel(f); setModal('fuel'); }}
+          onDelete={onDeleteExpense}
+        />
+      )}
+
       {(modal === 'expense' || (typeof modal === 'string' && modal.startsWith('expense:'))) && (
         <ExpenseForm
           entry={modal.startsWith('expense:') ? running.concat(capital).find((r) => r.id === modal.split(':')[1]) : null}
@@ -4182,6 +4645,21 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
             else onAddExpense(e);
             setModal(null);
             setEditingPayment(null);
+          }}
+        />
+      )}
+
+      {modal === 'fuel' && (
+        <FuelForm
+          entry={editingFuel}
+          fields={fields}
+          flocks={flocks}
+          onClose={() => { setModal(null); setEditingFuel(null); }}
+          onSave={(e) => {
+            if (editingFuel) onUpdateExpense(e.id, e);
+            else onAddExpense(e);
+            setModal(null);
+            setEditingFuel(null);
           }}
         />
       )}
@@ -4671,6 +5149,176 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save payment'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ========================= FUEL TRACKER ======================= */
+/* ============================================================= */
+
+function FuelTab({ fuel, labelFor, onAdd, onEdit, onDelete }) {
+  const sorted = [...fuel].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalSpent = fuel.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const totalLiters = fuel.reduce((s, r) => s + (Number(r.liters) || 0), 0);
+  const avgPrice = totalLiters ? totalSpent / totalLiters : null;
+
+  const byEquipment = {};
+  fuel.forEach((r) => {
+    const key = r.equipment || 'Unspecified';
+    byEquipment[key] = (byEquipment[key] || 0) + (Number(r.amount) || 0);
+  });
+  const topEquipment = Object.entries(byEquipment).sort((a, b) => b[1] - a[1]).slice(0, 4);
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Fuel</h3>
+        <button className="btn btn-gold" onClick={onAdd}>+ Log purchase</button>
+      </div>
+
+      <div className="grid grid-4">
+        <StatCard title="Total Spent" value={`GH₵ ${num(totalSpent, 2)}`} tone="rust" foot={`${fuel.length} purchase(s)`} />
+        <StatCard title="Total Liters" value={`${num(totalLiters, 1)} L`} tone="gold" />
+        <StatCard title="Avg Price / Liter" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="across all purchases" />
+        <StatCard title="Last Purchase" value={sorted.length ? fmtDate(sorted[0].date) : '—'} tone="green" foot={sorted.length ? (sorted[0].equipment || '—') : ''} />
+      </div>
+
+      {topEquipment.length > 0 && (
+        <>
+          <p className="section-title">Spend by equipment</p>
+          <div className="grid grid-4" style={{ marginBottom: 6 }}>
+            {topEquipment.map(([eq, amt]) => (
+              <StatCard key={eq} title={eq} value={`GH₵ ${num(amt, 2)}`} foot="spent to date" />
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="section-title">Purchases</p>
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr><th>Date</th><th>Type</th><th>Equipment</th><th>Liters</th><th>Price/L</th><th>Cost</th><th>Assigned to</th><th>Supplier</th><th>Notes</th><th></th></tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{fmtDate(r.date)}</td>
+                <td>{r.fuelType || '—'}</td>
+                <td>{r.equipment || '—'}</td>
+                <td className="mono">{r.liters != null ? num(r.liters, 1) : '—'}</td>
+                <td className="mono">{r.pricePerLiter != null ? num(r.pricePerLiter, 2) : '—'}</td>
+                <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                <td>{labelFor(r)}</td>
+                <td>{r.supplier || '—'}</td>
+                <td className="notes">{r.notes || ''}</td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onEdit(r)}>Edit</button>
+                    <button className="link-btn rust" onClick={() => { if (confirm('Delete this fuel record?')) onDelete(r.id); }}>Delete</button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {sorted.length === 0 && <tr><td colSpan={10} className="empty">No fuel purchases logged yet — track what the generator, pump, or vehicle actually costs to run.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Fuel counts as a running cost the same as labour or feed — assigning a purchase to a field or
+        flock (rather than "Whole farm") means it shows up in that field's or flock's own margin too.
+      </p>
+    </>
+  );
+}
+
+function FuelForm({ entry, fields, flocks, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const [f, setF] = useState({
+    date: entry?.date || todayISO(),
+    fuelType: entry?.fuelType || FUEL_TYPES[1], // Diesel default — most common for generators/tillers
+    equipment: entry?.equipment || FUEL_EQUIPMENT[0],
+    liters: entry?.liters ?? '',
+    pricePerLiter: entry?.pricePerLiter ?? '',
+    amount: entry?.amount ?? '',
+    supplier: entry?.supplier || '',
+    scope: entry?.scope || 'general',
+    target: entry?.target || 'shared',
+    notes: entry?.notes || '',
+  });
+
+  function set(k) {
+    return (e) => {
+      const v = e.target.value;
+      if (k === 'scope') { setF({ ...f, scope: v, target: 'shared' }); return; }
+      setF({ ...f, [k]: v });
+    };
+  }
+
+  const autoAmount = (Number(f.liters) || 0) * (Number(f.pricePerLiter) || 0);
+  const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+
+  const targetOptions = f.scope === 'pepper'
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    : f.scope === 'poultry'
+      ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
+      : [['shared', 'Whole farm']];
+
+  function submit() {
+    if (!f.date || (f.liters === '' && f.amount === '')) return;
+    onSave({
+      id: entry?.id || newId(), date: f.date, capital: false, category: 'Fuel',
+      fuelType: f.fuelType, equipment: f.equipment,
+      liters: f.liters === '' ? null : Number(f.liters),
+      pricePerLiter: f.pricePerLiter === '' ? null : Number(f.pricePerLiter),
+      description: `${f.fuelType} — ${f.equipment}`,
+      amount, supplier: f.supplier || null,
+      scope: f.scope, target: f.target,
+      notes: f.notes || null,
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? 'Edit fuel purchase' : 'Log fuel purchase'}
+      sub={autoAmount ? `Cost: GH₵ ${num(autoAmount, 2)}.` : 'Enter liters × price, or type the total directly.'}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Fuel type">
+          <select value={f.fuelType} onChange={set('fuelType')}>
+            {FUEL_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Equipment / purpose">
+          <select value={f.equipment} onChange={set('equipment')}>
+            {FUEL_EQUIPMENT.map((eq) => <option key={eq}>{eq}</option>)}
+          </select>
+        </Field>
+        <Field label="Liters"><input type="number" step="0.1" value={f.liters} onChange={set('liters')} /></Field>
+        <Field label="Price per liter (GH₵)"><input type="number" step="0.01" value={f.pricePerLiter} onChange={set('pricePerLiter')} /></Field>
+        <Field label="Total cost (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
+        <Field label="Supplier"><input value={f.supplier} onChange={set('supplier')} /></Field>
+        <Field label="Enterprise">
+          <select value={f.scope} onChange={set('scope')}>
+            <option value="general">Whole farm</option>
+            <option value="poultry">Poultry</option>
+            <option value="pepper">Bell pepper</option>
+          </select>
+        </Field>
+        <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock?' : 'Applies to'}>
+          <select value={f.target} onChange={set('target')}>
+            {targetOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save purchase'}</button>
       </div>
     </Modal>
   );
