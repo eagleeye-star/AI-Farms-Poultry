@@ -863,3 +863,63 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   border-color: var(--rust);
 }
 .btn-rust:hover { background: #d1794f; }
+
+/* ---------- Invoice / Receipt ---------- */
+.invoice-shell {
+  background: var(--surface-raised);
+  border-radius: 12px;
+  max-width: 720px;
+  width: 100%;
+  max-height: 90dvh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.invoice-editor { padding: 20px; border-bottom: 1px solid var(--border); }
+
+.invoice-print {
+  background: #ffffff;
+  color: #1a1a1a;
+  padding: 24px 26px;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.invoice-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.invoice-biz-name { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
+.invoice-biz-line { font-size: 11px; color: #555555; line-height: 1.5; }
+.invoice-title-block { text-align: right; }
+.invoice-title { font-size: 26px; font-weight: 700; color: #B8860B; letter-spacing: 0.03em; }
+.invoice-meta { font-size: 10.5px; color: #555555; }
+.invoice-rule { border-top: 2px solid #B8860B; margin: 14px 0 16px; }
+.invoice-billto-label { font-size: 10.5px; font-weight: 700; color: #B8860B; letter-spacing: 0.04em; margin-bottom: 3px; }
+.invoice-billto { font-size: 12.5px; margin-bottom: 18px; line-height: 1.5; }
+
+.invoice-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 12px; }
+.invoice-table thead th {
+  background: #1F1B16; color: #fff; text-align: left; padding: 9px 10px; font-size: 11px;
+}
+.invoice-table thead th:not(:first-child) { text-align: right; }
+.invoice-table tbody td { padding: 9px 10px; border-bottom: 1px solid #dddddd; }
+.invoice-table tbody td:not(:first-child) { text-align: right; }
+
+.invoice-total {
+  text-align: right; font-size: 15px; font-weight: 700; margin-bottom: 14px;
+}
+.invoice-total span { color: #B8860B; font-size: 17px; margin-left: 6px; }
+
+.invoice-status { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.invoice-status.paid { color: #2E7D32; }
+.invoice-status.due { color: #B03A2E; }
+.invoice-notes { font-size: 11px; color: #555555; margin-bottom: 14px; }
+.invoice-footer { font-size: 9.5px; color: #777777; margin-top: 20px; }
+
+/* Printing shows ONLY the invoice — everything else in the app, including
+   the editor panel and the confirm-overlay backdrop, is hidden. */
+@media print {
+  body * { visibility: hidden; }
+  .invoice-print, .invoice-print * { visibility: visible; }
+  .invoice-print {
+    position: fixed; inset: 0; padding: 14mm; box-shadow: none;
+  }
+  .no-print { display: none !important; }
+}

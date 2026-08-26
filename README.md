@@ -280,6 +280,29 @@ syncs whenever you're back online.
 
 ---
 
+## Invoices & Receipts
+
+Every sale in **Sales & Profit** (poultry) and **Harvest & Sales** (bell
+pepper) has an **Invoice** button — tap it and a proper document opens,
+pre-filled from that sale: buyer, item, quantity, price. For anything not
+logged as a sale yet, **Whole Farm → Export → + New Invoice / Receipt**
+starts one blank.
+
+- **Invoice or Receipt** — a toggle at the top switches between "payment
+  due" and "paid in full," each numbered in its own sequence
+  (`INV-2026-004`, `RCT-2026-004`), resetting each year.
+- Everything is editable before you print — buyer name, phone, item
+  description, quantity, price, and a notes line for payment method or
+  delivery details.
+- **Save & Print / Save as PDF** saves the document to your farm's records
+  and opens your phone's own print dialog — Android's has "Save as PDF"
+  built in, so no extra app is needed to get a real PDF you can send.
+- Every invoice and receipt you generate is kept in a running log (visible
+  under Export → Documents) — a full paper trail of what's been billed to
+  whom, exportable as its own CSV alongside everything else.
+
+---
+
 ## Export Center
 
 Under **Whole Farm → Export**, every dataset in the app — Daily Log, Feed,

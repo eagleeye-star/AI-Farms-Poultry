@@ -157,6 +157,7 @@ function freshData() {
     expenses: [],     // whole-farm general costs (labour, transport, utilities) + staff payments
     staff: [],        // farm help roster
     recipes: [],      // saved home-mix feed formulations
+    invoices: [],     // invoices/receipts issued to buyers
     pepper: defaultPepper(),
     updatedAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION,
@@ -178,7 +179,7 @@ function dataRichness(d) {
     (d.dailyLog || []).length + (d.feed || []).length + (d.meds || []).length +
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
-    (d.reminders || []).length + (d.recipes || []).length +
+    (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
     (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
     (p.nurseryBatches || []).length +
@@ -215,6 +216,20 @@ function downloadCSV(filename, csv) {
   URL.revokeObjectURL(url);
 }
 
+/* ---------------- Invoices & receipts ---------------- */
+
+/** Next sequential number for this year and doc type, e.g. INV-2026-004.
+    Counts existing invoices rather than storing a running counter, so it
+    stays correct even after a restore or a sync from another device. */
+function nextInvoiceNumber(invoices, kind, date) {
+  const prefix = kind === 'receipt' ? 'RCT' : 'INV';
+  const year = (date || todayISO()).slice(0, 4);
+  const countThisYear = (invoices || []).filter(
+    (i) => i.kind === kind && (i.docNumber || '').startsWith(`${prefix}-${year}-`)
+  ).length;
+  return `${prefix}-${year}-${String(countThisYear + 1).padStart(3, '0')}`;
+}
+
 /** True if a saved payload was written by a newer app version than this
     build understands. Never guess at upgrading it — just flag it so the
     caller (restore, sync) can decide whether to proceed. */
@@ -242,6 +257,7 @@ function migrate(saved) {
     expenses: saved.expenses || [],
     staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
+    invoices: saved.invoices || [],
     pepper: {
       ...defaultPepper(),
       ...pepper,
@@ -446,6 +462,7 @@ function AppInner() {
   const [tab, setTab] = useState('dashboard');
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
   const [editingLog, setEditingLog] = useState(null); // the Daily Log entry being edited, if any
+  const [invoicePrefill, setInvoicePrefill] = useState(null); // opens InvoiceModal when set
   const [editingLitter, setEditingLitter] = useState(null); // the litter record being edited, if any
   const [editingFeed, setEditingFeed] = useState(null); // the feed purchase record being edited, if any
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
@@ -753,6 +770,26 @@ function AppInner() {
   }
   function deleteStaff(id) {
     setData((d) => touch({ ...d, staff: (d.staff || []).filter((s) => s.id !== id) }));
+  }
+  function addInvoice(entry) {
+    setData((d) => touch({ ...d, invoices: [...(d.invoices || []), entry] }));
+  }
+  function deleteInvoice(id) {
+    setData((d) => touch({ ...d, invoices: (d.invoices || []).filter((i) => i.id !== id) }));
+  }
+  function openInvoiceFromSale(sale) {
+    setInvoicePrefill({
+      kind: 'invoice', date: sale.date, buyerName: sale.buyer || '',
+      item: sale.item || 'Poultry sale', quantity: sale.quantity, unitPrice: sale.unitPrice, amount: sale.amount,
+    });
+  }
+  function openInvoiceFromHarvest(harvest, fieldLabel) {
+    setInvoicePrefill({
+      kind: 'invoice', date: harvest.date, buyerName: harvest.buyer || '',
+      item: `Bell peppers${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
+      quantity: harvest.weightKg, unitPrice: harvest.pricePerKg,
+      amount: (Number(harvest.weightKg) || 0) * (Number(harvest.pricePerKg) || 0),
+    });
   }
   function saveRecipe(entry) {
     setData((d) => touch({ ...d, recipes: [...(d.recipes || []), entry] }));
@@ -1318,6 +1355,7 @@ function AppInner() {
           flockRunning={flockRunning}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
+          onInvoice={openInvoiceFromSale}
         />
       )}
 
@@ -1474,6 +1512,7 @@ function AppInner() {
           onUpdateNurseryBatch={updateNurseryBatch}
           onDeleteNurseryBatch={deleteNurseryBatch}
           onTransplantNurseryBatch={transplantNurseryBatch}
+          onInvoiceHarvest={openInvoiceFromHarvest}
         />
       )}
 
@@ -1485,10 +1524,21 @@ function AppInner() {
           onDeleteExpense={deleteExpense}
           onSaveStaff={saveStaff}
           onDeleteStaff={deleteStaff}
+          onNewInvoice={() => setInvoicePrefill({ kind: 'invoice', date: todayISO(), buyerName: '', item: '', quantity: '', unitPrice: '', amount: '' })}
+          onDeleteInvoice={deleteInvoice}
         />
       )}
 
       {modal === 'sync' && null}
+
+      {invoicePrefill && (
+        <InvoiceModal
+          prefill={invoicePrefill}
+          invoices={data.invoices || []}
+          onSave={addInvoice}
+          onClose={() => setInvoicePrefill(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2563,6 +2613,7 @@ function PepperWorkspace({
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
+  onInvoiceHarvest,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -2815,7 +2866,11 @@ function PepperWorkspace({
       )}
 
       {ptab === 'harvest' && (
-        <HarvestTab rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue} onAdd={() => setModal('harvest')} />
+        <HarvestTab
+          rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue}
+          onAdd={() => setModal('harvest')}
+          onInvoice={(h) => onInvoiceHarvest(h, fieldName(h.fieldId))}
+        />
       )}
 
       {ptab === 'inputs' && (
@@ -3609,7 +3664,7 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
 
 /* ---------------- Harvest & sales ---------------- */
 
-function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd }) {
+function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -3625,7 +3680,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd }) {
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => {
@@ -3640,10 +3695,11 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd }) {
                   <td className="mono">{rev ? `GH₵ ${num(rev, 2)}` : '—'}</td>
                   <td>{r.buyer || '—'}</td>
                   <td className="notes">{r.notes || ''}</td>
+                  <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={8} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={9} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3748,7 +3804,7 @@ function FlockForm({ flock, onClose, onSave }) {
 
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice }) {
   const setup = Number(flock.setupCost) || 0;
   return (
     <>
@@ -3777,7 +3833,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Notes</th></tr>
+            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {sales.map((r) => (
@@ -3789,9 +3845,10 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                 <td className="mono">GH₵ {num(r.amount, 2)}</td>
                 <td>{r.buyer || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
+                <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
               </tr>
             ))}
-            {sales.length === 0 && <tr><td colSpan={7} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
+            {sales.length === 0 && <tr><td colSpan={8} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -4818,13 +4875,23 @@ function buildExportDatasets(data) {
         { key: 'status', label: 'Status' }, { key: 'notes', label: 'Notes' },
       ],
     },
+    {
+      key: 'invoices', label: 'Whole Farm — Invoices & Receipts', rows: data.invoices || [],
+      columns: [
+        { key: 'docNumber', label: 'No.' }, { key: 'kind', label: 'Type' }, { key: 'date', label: 'Date' },
+        { key: 'buyerName', label: 'Buyer' }, { key: 'buyerPhone', label: 'Phone' }, { key: 'item', label: 'Item' },
+        { key: 'quantity', label: 'Qty' }, { key: 'unitPrice', label: 'Unit Price' }, { key: 'amount', label: 'Amount (GH₵)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
   ];
 }
 
-function ExportCenterTab({ data }) {
-  const { showToast } = useToastConfirm();
+function ExportCenterTab({ data, onNewInvoice, onDeleteInvoice }) {
+  const { showToast, askConfirm } = useToastConfirm();
   const datasets = useMemo(() => buildExportDatasets(data), [data]);
   const nonEmpty = datasets.filter((d) => d.rows.length > 0);
+  const invoices = [...(data.invoices || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   function exportOne(ds) {
     const csv = toCSV(ds.rows, ds.columns);
@@ -4842,6 +4909,35 @@ function ExportCenterTab({ data }) {
 
   return (
     <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Documents</h3>
+        <button className="btn btn-green" onClick={onNewInvoice}>+ New Invoice / Receipt</button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
+        Every sale in Sales &amp; Profit and Harvest &amp; Sales has an <strong>Invoice</strong> button that
+        pre-fills one of these from the record — or start a blank one here for anything not logged yet.
+      </p>
+      {invoices.length > 0 && (
+        <div className="table-wrap" style={{ marginBottom: 24 }}>
+          <table className="data">
+            <thead><tr><th>No.</th><th>Type</th><th>Date</th><th>Buyer</th><th>Item</th><th>Amount</th><th></th></tr></thead>
+            <tbody>
+              {invoices.map((i) => (
+                <tr key={i.id}>
+                  <td className="mono">{i.docNumber}</td>
+                  <td><span className={`tag ${i.kind === 'receipt' ? 'green' : 'gold'}`}>{i.kind === 'receipt' ? 'Receipt' : 'Invoice'}</span></td>
+                  <td className="mono">{fmtDate(i.date)}</td>
+                  <td>{i.buyerName}</td>
+                  <td>{i.item}</td>
+                  <td className="mono">GH₵ {num(i.amount, 2)}</td>
+                  <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this record? The buyer keeps any copy already printed.')) onDeleteInvoice(i.id); }}>Delete</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Export Center</h3>
         <button className="btn btn-gold" onClick={exportAll} disabled={!nonEmpty.length}>⤓ Export everything</button>
@@ -4872,7 +4968,126 @@ function ExportCenterTab({ data }) {
   );
 }
 
-function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff }) {
+/* ============================================================= */
+/* ===================== INVOICE / RECEIPT ======================= */
+/* ============================================================= */
+
+/**
+ * A printable invoice or receipt. The preview IS what prints — a
+ * `.invoice-print` wrapper plus a print stylesheet hides everything else on
+ * the page, so "Print / Save as PDF" uses the phone's own print dialog
+ * (Android's has "Save as PDF" built in) rather than a bundled PDF library.
+ */
+function InvoiceModal({ prefill, invoices, onSave, onClose }) {
+  const [kind, setKind] = useState(prefill?.kind || 'invoice'); // 'invoice' | 'receipt'
+  const [f, setF] = useState({
+    date: prefill?.date || todayISO(),
+    buyerName: prefill?.buyerName || '',
+    buyerPhone: prefill?.buyerPhone || '',
+    item: prefill?.item || '',
+    quantity: prefill?.quantity ?? '',
+    unitPrice: prefill?.unitPrice ?? '',
+    amount: prefill?.amount ?? '',
+    notes: prefill?.notes || '',
+  });
+  const [docNumber, setDocNumber] = useState(() => nextInvoiceNumber(invoices, kind, f.date));
+
+  function switchKind(next) {
+    setKind(next);
+    setDocNumber(nextInvoiceNumber(invoices, next, f.date));
+  }
+
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
+  const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  const paid = kind === 'receipt';
+
+  function handlePrint() {
+    if (!f.buyerName || !f.item) return;
+    onSave({
+      id: newId(), kind, docNumber, date: f.date,
+      buyerName: f.buyerName, buyerPhone: f.buyerPhone || null,
+      item: f.item, quantity: f.quantity === '' ? null : Number(f.quantity),
+      unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
+      amount, notes: f.notes || null,
+    });
+    // Let the saved state settle before the browser's print dialog opens.
+    setTimeout(() => window.print(), 50);
+  }
+
+  return (
+    <div className="confirm-overlay" onClick={onClose}>
+      <div className="invoice-shell" onClick={(e) => e.stopPropagation()}>
+        <div className="invoice-editor no-print">
+          <div className="panel-head" style={{ marginBottom: 12 }}>
+            <h3 style={{ fontSize: 16 }}>New {kind === 'receipt' ? 'Receipt' : 'Invoice'}</h3>
+            <button className="link-btn" onClick={onClose}>Close</button>
+          </div>
+          <div className="kind-toggle">
+            <button className={kind === 'invoice' ? 'active' : ''} onClick={() => switchKind('invoice')}>Invoice (payment due)</button>
+            <button className={kind === 'receipt' ? 'active' : ''} onClick={() => switchKind('receipt')}>Receipt (paid)</button>
+          </div>
+          <div className="form-grid">
+            <Field label="Doc number"><input value={docNumber} onChange={(e) => setDocNumber(e.target.value)} /></Field>
+            <Field label="Date"><input type="date" value={f.date} onChange={(e) => { set('date')(e); setDocNumber(nextInvoiceNumber(invoices, kind, e.target.value)); }} /></Field>
+            <Field label="Buyer name"><input value={f.buyerName} onChange={set('buyerName')} /></Field>
+            <Field label="Buyer phone"><input value={f.buyerPhone} onChange={set('buyerPhone')} /></Field>
+            <Field label="Item"><input value={f.item} onChange={set('item')} /></Field>
+            <Field label="Quantity"><input type="number" value={f.quantity} onChange={set('quantity')} /></Field>
+            <Field label="Unit price (GH₵)"><input type="number" step="0.01" value={f.unitPrice} onChange={set('unitPrice')} /></Field>
+            <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
+            <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="payment method, delivery details..." /></Field>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="btn btn-gold" onClick={handlePrint} disabled={!f.buyerName || !f.item}>
+              ⤓ Save &amp; Print / Save as PDF
+            </button>
+          </div>
+        </div>
+
+        <div className="invoice-print">
+          <div className="invoice-head">
+            <div>
+              <div className="invoice-biz-name">AI FARMS</div>
+              <div className="invoice-biz-line">Eikwe, Western Region, Ghana</div>
+              <div className="invoice-biz-line">aifarms101@gmail.com</div>
+              <div className="invoice-biz-line">WhatsApp: 0597147460</div>
+            </div>
+            <div className="invoice-title-block">
+              <div className="invoice-title">{kind === 'receipt' ? 'RECEIPT' : 'INVOICE'}</div>
+              <div className="invoice-meta">No. {docNumber}</div>
+              <div className="invoice-meta">Date: {fmtDate(f.date)}</div>
+            </div>
+          </div>
+          <div className="invoice-rule" />
+          <div className="invoice-billto">
+            <div className="invoice-billto-label">BILLED TO</div>
+            <div>{f.buyerName || '—'}</div>
+            {f.buyerPhone && <div>{f.buyerPhone}</div>}
+          </div>
+          <table className="invoice-table">
+            <thead><tr><th>Item</th><th>Qty</th><th>Unit Price (GH₵)</th><th>Amount (GH₵)</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>{f.item || '—'}</td>
+                <td>{f.quantity !== '' ? num(f.quantity) : '—'}</td>
+                <td>{f.unitPrice !== '' ? num(f.unitPrice, 2) : '—'}</td>
+                <td>{num(amount, 2)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="invoice-total">TOTAL &nbsp; <span>GH₵ {num(amount, 2)}</span></div>
+          <div className={`invoice-status ${paid ? 'paid' : 'due'}`}>{paid ? 'PAID IN FULL' : 'PAYMENT DUE'}</div>
+          {f.notes && <div className="invoice-notes">{f.notes}</div>}
+          <div className="invoice-footer">Thank you for your business — AI Farms, Eikwe, Western Region.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice }) {
   const [modal, setModal] = useState(null);
   const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel'
   const [editingPayment, setEditingPayment] = useState(null);
@@ -5120,7 +5335,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         />
       )}
 
-      {view === 'export' && <ExportCenterTab data={data} />}
+      {view === 'export' && <ExportCenterTab data={data} onNewInvoice={onNewInvoice} onDeleteInvoice={onDeleteInvoice} />}
 
       {(modal === 'expense' || (typeof modal === 'string' && modal.startsWith('expense:'))) && (
         <ExpenseForm
