@@ -5484,6 +5484,7 @@ function GoatWorkspace({
         <button className={gtab === 'growth' ? 'active' : ''} onClick={() => setGtab('growth')}>Growth</button>
         <button className={gtab === 'financials' ? 'active' : ''} onClick={() => setGtab('financials')}>Sales &amp; P&amp;L</button>
         <button className={gtab === 'reminders' ? 'active' : ''} onClick={() => setGtab('reminders')}>Reminders</button>
+        <button className={gtab === 'explore' ? 'active' : ''} onClick={() => setGtab('explore')}>Explore Scenarios</button>
       </div>
 
       {gtab === 'dashboard' && (
@@ -5811,6 +5812,8 @@ function GoatWorkspace({
         />
       )}
 
+      {gtab === 'explore' && <GoatExplorer />}
+
       {modal === 'goat' && (
         <GoatForm
           goat={editingGoat}
@@ -5845,6 +5848,375 @@ function GoatWorkspace({
       {modal === 'reminder' && (
         <ReminderForm scope="goats" onClose={() => setModal(null)} onSave={(e) => { onAddReminder(e); setModal(null); }} />
       )}
+    </>
+  );
+}
+
+/* ============================================================= */
+/* =============== GOAT PROFITABILITY EXPLORER =================== */
+/* ============================================================= */
+
+function GoatSlider({ label, value, min, max, step, onChange, suffix = '', hint }) {
+  return (
+    <div className="field span-2" style={{ marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <label>{label}</label>
+        <span className="mono" style={{ color: 'var(--gold)', fontWeight: 600, fontSize: 13 }}>{value}{suffix}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(Number(e.target.value))} className="goat-range" />
+      {hint && <p className="stat-foot" style={{ margin: '2px 0 0' }}>{hint}</p>}
+    </div>
+  );
+}
+
+function GoatToggle({ label, checked, onChange, onLabel = 'ON', offLabel = 'OFF', hint }) {
+  return (
+    <div className="field span-2" style={{ marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <label style={{ margin: 0 }}>{label}</label>
+        <button type="button" onClick={() => onChange(!checked)}
+          className={`goat-toggle-btn${checked ? ' on' : ''}`}>
+          {checked ? onLabel : offLabel}
+        </button>
+      </div>
+      {hint && <p className="stat-foot" style={{ margin: '2px 0 0' }}>{hint}</p>}
+    </div>
+  );
+}
+
+function GoatEditableCell({ value, computedValue, overridden, onChange, onReset }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      {overridden && (
+        <button type="button" onClick={onReset} title={`Reset to modeled value (${computedValue.toFixed(1)})`}
+          className="link-btn" style={{ padding: 0, fontSize: 12 }}>↺</button>
+      )}
+      <input
+        type="number" step="0.1" value={Number(value.toFixed(2))}
+        onChange={(e) => onChange(e.target.value === '' ? computedValue : Number(e.target.value))}
+        className={`goat-edit-cell${overridden ? ' overridden' : ''}`}
+      />
+    </span>
+  );
+}
+
+function GoatExplorer() {
+  const [initialFemales, setInitialFemales] = useState(5);
+  const [initialMales, setInitialMales] = useState(1);
+
+  const [keepAllFemales, setKeepAllFemales] = useState(false);
+  const [femaleRetentionPct, setFemaleRetentionPct] = useState(30);
+  const [keepAllMales, setKeepAllMales] = useState(false);
+  const [maleRetentionPct, setMaleRetentionPct] = useState(0);
+
+  const [kidsPerDoeYear, setKidsPerDoeYear] = useState(1.9);
+  const [mortalityPct, setMortalityPct] = useState(6);
+
+  const [doePrice, setDoePrice] = useState(450);
+  const [buckPrice, setBuckPrice] = useState(550);
+  const [salePrice, setSalePrice] = useState(400);
+  const [housingCost, setHousingCost] = useState(4500);
+
+  const [feedAdultMonthly, setFeedAdultMonthly] = useState(15);
+  const [feedKidMonthly, setFeedKidMonthly] = useState(6);
+  const [healthAdultYearly, setHealthAdultYearly] = useState(70);
+  const [healthKidYearly, setHealthKidYearly] = useState(35);
+
+  const [years, setYears] = useState(10);
+  const [buckRotationYear, setBuckRotationYear] = useState(3);
+  const [rotateBuck, setRotateBuck] = useState(true);
+
+  const [herdOverrides, setHerdOverrides] = useState({});
+  const setDoesOverride = (year, value) =>
+    setHerdOverrides((prev) => ({ ...prev, [year]: { ...prev[year], does: value } }));
+  const setBucksOverride = (year, value) =>
+    setHerdOverrides((prev) => ({ ...prev, [year]: { ...prev[year], bucks: value } }));
+  const clearOverride = (year, field) =>
+    setHerdOverrides((prev) => {
+      const next = { ...prev, [year]: { ...prev[year] } };
+      delete next[year][field];
+      if (Object.keys(next[year]).length === 0) delete next[year];
+      return next;
+    });
+
+  const [viewYear, setViewYear] = useState(10);
+
+  const femaleRetention = keepAllFemales ? 1 : femaleRetentionPct / 100;
+  const maleRetention = keepAllMales ? 1 : maleRetentionPct / 100;
+  const mortality = mortalityPct / 100;
+
+  const projection = useMemo(() => {
+    const setupCost = doePrice * initialFemales + buckPrice * initialMales + housingCost;
+    const rows = [{
+      year: 0, label: 'Setup', does: initialFemales, bucks: initialMales,
+      kids: 0, sold: 0, revenue: 0, feedCost: 0, healthCost: 0, buckReplaceCost: setupCost,
+      totalCost: setupCost, netCashFlow: -setupCost, cumulative: -setupCost,
+    }];
+
+    let does = initialFemales;
+    let bucks = initialMales;
+    let cumulative = -setupCost;
+
+    for (let y = 1; y <= years; y++) {
+      const kids = does * kidsPerDoeYear;
+      const femaleKids = kids * 0.5;
+      const maleKids = kids * 0.5;
+
+      const retainedDoes = femaleKids * femaleRetention;
+      const soldDoelings = femaleKids - retainedDoes;
+      const retainedBucks = maleKids * maleRetention;
+      const soldBucklings = maleKids - retainedBucks;
+
+      const totalSold = soldDoelings + soldBucklings;
+      const revenue = totalSold * salePrice;
+
+      const feedCost = feedAdultMonthly * 12 * (does + bucks) + feedKidMonthly * 6 * kids;
+      const healthCost = healthAdultYearly * (does + bucks) + healthKidYearly * 0.5 * kids;
+      const buckReplaceCost = (rotateBuck && buckRotationYear > 0 && y % buckRotationYear === 0) ? buckPrice : 0;
+      const totalCost = feedCost + healthCost + buckReplaceCost;
+
+      const netCashFlow = revenue - totalCost;
+      cumulative += netCashFlow;
+
+      const doesEndComputed = does * (1 - mortality) + retainedDoes;
+      const bucksEndComputed = bucks * (1 - mortality) + retainedBucks;
+      const override = herdOverrides[y] || {};
+      const doesEnd = override.does != null ? override.does : doesEndComputed;
+      const bucksEnd = override.bucks != null ? override.bucks : bucksEndComputed;
+
+      rows.push({
+        year: y, label: `Yr ${y}`, does: doesEnd, bucks: bucksEnd,
+        doesComputed: doesEndComputed, bucksComputed: bucksEndComputed,
+        doesOverridden: override.does != null, bucksOverridden: override.bucks != null,
+        kids, soldDoelings, soldBucklings, sold: totalSold, revenue, feedCost, healthCost, buckReplaceCost,
+        totalCost, netCashFlow, cumulative, marginPerGoat: totalSold ? netCashFlow / totalSold : null,
+      });
+
+      does = doesEnd;
+      bucks = bucksEnd;
+    }
+    return { rows, setupCost };
+  }, [
+    initialFemales, initialMales, femaleRetention, maleRetention, kidsPerDoeYear,
+    mortality, doePrice, buckPrice, salePrice, housingCost, feedAdultMonthly,
+    feedKidMonthly, healthAdultYearly, healthKidYearly, years, rotateBuck, buckRotationYear,
+    herdOverrides,
+  ]);
+
+  const last = projection.rows[projection.rows.length - 1];
+  const breakEvenRow = projection.rows.find((r) => r.year > 0 && r.cumulative >= 0);
+  const totalRevenue = projection.rows.reduce((s, r) => s + r.revenue, 0);
+  const totalCost = projection.rows.reduce((s, r) => s + r.totalCost, 0);
+  const totalSold = projection.rows.reduce((s, r) => s + (r.sold || 0), 0);
+
+  const clampedViewYear = Math.min(Math.max(viewYear, 0), years);
+  const viewRow = projection.rows.find((r) => r.year === clampedViewYear) || last;
+  const rowsThroughView = projection.rows.filter((r) => r.year <= clampedViewYear);
+  const soldThroughView = rowsThroughView.reduce((s, r) => s + (r.sold || 0), 0);
+  const revenueThroughView = rowsThroughView.reduce((s, r) => s + r.revenue, 0);
+  const costThroughView = rowsThroughView.reduce((s, r) => s + r.totalCost, 0);
+
+  const resetDefaults = () => {
+    setInitialFemales(5); setInitialMales(1);
+    setKeepAllFemales(false); setFemaleRetentionPct(30);
+    setKeepAllMales(false); setMaleRetentionPct(0);
+    setKidsPerDoeYear(1.9); setMortalityPct(6);
+    setDoePrice(450); setBuckPrice(550); setSalePrice(400); setHousingCost(4500);
+    setFeedAdultMonthly(15); setFeedKidMonthly(6); setHealthAdultYearly(70); setHealthKidYearly(35);
+    setYears(10); setBuckRotationYear(3); setRotateBuck(true);
+    setHerdOverrides({}); setViewYear(10);
+  };
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Goat Profitability Explorer</h3>
+        <button className="link-btn" onClick={resetDefaults}>Reset to defaults</button>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
+        Every number below is an assumption you can change — herd size, sex mix, what you keep vs sell,
+        reproduction, mortality, prices and running costs. The projection recalculates as you move it.
+      </p>
+
+      <div className="goat-explorer-grid">
+        {/* ---------------- Controls ---------------- */}
+        <div className="panel">
+          <div className="form-grid">
+            <p className="section-title">1 · Starting herd</p>
+            <Field label="Females (does) to start with">
+              <input type="number" min={1} value={initialFemales} onChange={(e) => setInitialFemales(Number(e.target.value))} />
+            </Field>
+            <Field label="Males (bucks) to start with">
+              <input type="number" min={1} value={initialMales} onChange={(e) => setInitialMales(Number(e.target.value))} />
+            </Field>
+
+            <p className="section-title">2 · Keep or sell strategy</p>
+            <GoatToggle label="Keep all female kids" checked={keepAllFemales} onChange={setKeepAllFemales}
+              onLabel="KEEP ALL" offLabel="PARTIAL"
+              hint="On = maximise herd growth, nothing female is sold." />
+            {!keepAllFemales && (
+              <GoatSlider label="Female kids retained" value={femaleRetentionPct} min={0} max={100} step={5}
+                onChange={setFemaleRetentionPct} suffix="%" hint="Rest are sold as young does." />
+            )}
+            <GoatToggle label="Keep all male kids" checked={keepAllMales} onChange={setKeepAllMales}
+              onLabel="KEEP ALL" offLabel="PARTIAL" hint="Off = sell every buckling as meat, the usual approach." />
+            {!keepAllMales && (
+              <GoatSlider label="Male kids retained" value={maleRetentionPct} min={0} max={100} step={5}
+                onChange={setMaleRetentionPct} suffix="%" />
+            )}
+
+            <p className="section-title">3 · Reproduction &amp; survival</p>
+            <GoatSlider label="Kids weaned per doe / year" value={kidsPerDoeYear} min={0.8} max={3} step={0.1}
+              onChange={setKidsPerDoeYear} hint="Kiddings/yr × litter size × survival to weaning, combined." />
+            <GoatSlider label="Annual mortality / culling" value={mortalityPct} min={0} max={25} step={1}
+              onChange={setMortalityPct} suffix="%" />
+
+            <p className="section-title">4 · Prices (GH₵)</p>
+            <Field label="Price per breeding doe"><input type="number" step={10} value={doePrice} onChange={(e) => setDoePrice(Number(e.target.value))} /></Field>
+            <Field label="Price per buck"><input type="number" step={10} value={buckPrice} onChange={(e) => setBuckPrice(Number(e.target.value))} /></Field>
+            <Field label="Average sale price per goat"><input type="number" step={10} value={salePrice} onChange={(e) => setSalePrice(Number(e.target.value))} /></Field>
+            <Field label="Housing / pen setup"><input type="number" step={100} value={housingCost} onChange={(e) => setHousingCost(Number(e.target.value))} /></Field>
+
+            <p className="section-title">5 · Running costs (GH₵)</p>
+            <Field label="Feed/mineral — per adult / month"><input type="number" value={feedAdultMonthly} onChange={(e) => setFeedAdultMonthly(Number(e.target.value))} /></Field>
+            <Field label="Feed/mineral — per kid / month"><input type="number" value={feedKidMonthly} onChange={(e) => setFeedKidMonthly(Number(e.target.value))} /></Field>
+            <Field label="Health — per adult / year"><input type="number" step={5} value={healthAdultYearly} onChange={(e) => setHealthAdultYearly(Number(e.target.value))} /></Field>
+            <Field label="Health — per kid / year"><input type="number" step={5} value={healthKidYearly} onChange={(e) => setHealthKidYearly(Number(e.target.value))} /></Field>
+
+            <p className="section-title">6 · Time horizon</p>
+            <GoatSlider label="Years to project" value={years} min={1} max={20} step={1} onChange={setYears}
+              hint="No cap — push this out as far as you want to see the herd compound." />
+            <GoatToggle label="Buck rotation (new bloodline)" checked={rotateBuck} onChange={setRotateBuck}
+              hint="Recommended every 2-3 years on a small herd to avoid inbreeding." />
+            {rotateBuck && (
+              <GoatSlider label="Rotate buck every N years" value={buckRotationYear} min={1} max={10} step={1}
+                onChange={setBuckRotationYear} hint="Recurring for the whole projection." />
+            )}
+          </div>
+        </div>
+
+        {/* ---------------- Results ---------------- */}
+        <div>
+          <div className="grid grid-4" style={{ marginBottom: 18 }}>
+            <StatCard title="Setup cost" value={`GH₵ ${num(projection.setupCost, 0)}`} tone="rust" foot="does + bucks + housing" />
+            <StatCard title={`Herd after Yr ${years}`} value={`${num(last.does, 1)} does`} tone="gold" foot={`${num(last.bucks, 1)} bucks`} />
+            <StatCard title="Total sold" value={num(totalSold, 1)} foot="goats, all years" />
+            <StatCard title="Total revenue" value={`GH₵ ${num(totalRevenue, 0)}`} tone="green" />
+            <StatCard title="Total cost" value={`GH₵ ${num(totalCost, 0)}`} tone="rust" foot="setup + running" />
+            <StatCard title={`Cumulative profit — Yr ${years}`} value={`GH₵ ${num(last.cumulative, 0)}`} tone={last.cumulative >= 0 ? 'green' : 'rust'} />
+            <StatCard title="Break-even year" value={breakEvenRow ? `Year ${breakEvenRow.year}` : `> Yr ${years}`} tone={breakEvenRow ? 'green' : 'rust'} />
+            <StatCard title={`Yearly profit — Yr ${years}`} value={`GH₵ ${num(last.netCashFlow, 0)}`} tone={last.netCashFlow >= 0 ? 'green' : 'rust'} foot="that year alone" />
+          </div>
+
+          {/* ---- Jump-to-year snapshot ---- */}
+          <div className="panel" style={{ marginBottom: 18 }}>
+            <div className="panel-head" style={{ marginBottom: 12 }}>
+              <h3>Snapshot for a specific year</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input type="number" min={0} max={years} value={clampedViewYear}
+                  onChange={(e) => setViewYear(Number(e.target.value))}
+                  style={{ width: 60, textAlign: 'center' }} />
+                <input type="range" min={0} max={years} step={1} value={clampedViewYear}
+                  onChange={(e) => setViewYear(Number(e.target.value))} className="goat-range" style={{ width: 140 }} />
+              </div>
+            </div>
+            <div className="grid grid-2">
+              <div>
+                <p className="section-title">Year {clampedViewYear} only {clampedViewYear === 0 && '(setup)'}</p>
+                <div className="kv"><span className="k">Kids weaned</span><span className="v">{viewRow.kids ? num(viewRow.kids, 1) : '—'}</span></div>
+                <div className="kv"><span className="k">Goats sold</span><span className="v">{viewRow.sold ? num(viewRow.sold, 1) : '—'}</span></div>
+                <div className="kv"><span className="k">Revenue</span><span className="v">GH₵ {num(viewRow.revenue, 0)}</span></div>
+                <div className="kv"><span className="k">Total cost</span><span className="v">GH₵ {num(viewRow.totalCost, 0)}</span></div>
+                <div className="kv"><span className="k">Net cash flow</span>
+                  <span className="v" style={{ color: viewRow.netCashFlow >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(viewRow.netCashFlow, 0)}</span>
+                </div>
+              </div>
+              <div>
+                <p className="section-title">Cumulative through Year {clampedViewYear}</p>
+                <div className="kv"><span className="k">Herd on hand</span><span className="v">{num(viewRow.does, 1)} does · {num(viewRow.bucks, 1)} bucks</span></div>
+                <div className="kv"><span className="k">Total goats sold</span><span className="v">{num(soldThroughView, 1)}</span></div>
+                <div className="kv"><span className="k">Total revenue</span><span className="v">GH₵ {num(revenueThroughView, 0)}</span></div>
+                <div className="kv"><span className="k">Total cost</span><span className="v">GH₵ {num(costThroughView, 0)}</span></div>
+                <div className="kv"><span className="k">Cumulative profit</span>
+                  <span className="v" style={{ color: viewRow.cumulative >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(viewRow.cumulative, 0)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ---- Chart ---- */}
+          <div className="panel" style={{ marginBottom: 18 }}>
+            <div className="panel-head"><h3>Yearly profit vs cumulative profit</h3></div>
+            <p className="stat-foot" style={{ marginTop: 0 }}>
+              Bars = that year's revenue and cost. Gold line = cumulative profit. Blue line = that year's
+              net profit alone — watch it climb as the herd compounds past break-even.
+            </p>
+            <div className="chart-card">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={projection.rows} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                  <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                  <YAxis tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                    formatter={(v, name) => [`GH₵ ${num(v, 0)}`, name]} />
+                  <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                  <Bar dataKey="revenue" name="Revenue" fill="#7A9A66" barSize={14} radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="totalCost" name="Cost" fill="#C15F41" barSize={14} radius={[3, 3, 0, 0]} />
+                  <Line dataKey="netCashFlow" name="Yearly net profit" stroke="#5B9BD9" strokeWidth={2} dot={{ r: 2.5 }} />
+                  <Line dataKey="cumulative" name="Cumulative profit" stroke="#D4A537" strokeWidth={2.5} dot={{ r: 3 }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* ---- Table ---- */}
+          <div className="table-wrap">
+            <p className="stat-foot" style={{ margin: '0 0 8px' }}>
+              <strong style={{ color: 'var(--gold)' }}>Does and Bucks are editable</strong> — type your actual
+              headcount for any year and every later year recalculates from that real number instead of the model.
+            </p>
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Year</th><th>Does</th><th>Bucks</th><th>Kids</th><th>Sold</th>
+                  <th>Revenue</th><th>Cost</th><th>Net cash flow</th><th>Cumulative</th>
+                </tr>
+              </thead>
+              <tbody>
+                {projection.rows.map((r) => (
+                  <tr key={r.year}>
+                    <td>{r.label}</td>
+                    <td className="mono">
+                      {r.year === 0 ? num(r.does, 1) : (
+                        <GoatEditableCell value={r.does} computedValue={r.doesComputed} overridden={r.doesOverridden}
+                          onChange={(v) => setDoesOverride(r.year, v)} onReset={() => clearOverride(r.year, 'does')} />
+                      )}
+                    </td>
+                    <td className="mono">
+                      {r.year === 0 ? num(r.bucks, 1) : (
+                        <GoatEditableCell value={r.bucks} computedValue={r.bucksComputed} overridden={r.bucksOverridden}
+                          onChange={(v) => setBucksOverride(r.year, v)} onReset={() => clearOverride(r.year, 'bucks')} />
+                      )}
+                    </td>
+                    <td className="mono">{r.kids ? num(r.kids, 1) : '—'}</td>
+                    <td className="mono">{r.sold ? num(r.sold, 1) : '—'}</td>
+                    <td className="mono">GH₵ {num(r.revenue, 0)}</td>
+                    <td className="mono">GH₵ {num(r.totalCost, 0)}</td>
+                    <td className="mono" style={{ color: r.netCashFlow >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(r.netCashFlow, 0)}</td>
+                    <td className="mono" style={{ color: r.cumulative >= 0 ? 'var(--green)' : 'var(--rust)', fontWeight: 600 }}>GH₵ {num(r.cumulative, 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="stat-foot" style={{ marginTop: 14 }}>
+            Modeled averages — actual births and sales land on whole animals. Feed assumes browse is
+            mostly free; the feed figures cover mineral licks and dry-season supplement only.
+          </p>
+        </div>
+      </div>
     </>
   );
 }

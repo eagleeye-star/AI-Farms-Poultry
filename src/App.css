@@ -413,6 +413,47 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
 .ws-btn.active.pepper { color: var(--green); }
 .ws-btn.active.goats { color: #C79A4B; }
 
+/* ---------- Goat Profitability Explorer ---------- */
+.goat-explorer-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .goat-explorer-grid { grid-template-columns: 1fr; }
+}
+.goat-range {
+  width: 100%;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+.goat-toggle-btn {
+  background: var(--border);
+  color: var(--text-dim);
+  border: none;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.goat-toggle-btn.on { background: var(--green); color: #16210F; }
+.goat-edit-cell {
+  width: 62px;
+  text-align: right;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 2px 2px;
+}
+.goat-edit-cell:focus { outline: none; border-bottom-color: var(--gold); }
+.goat-edit-cell.overridden { border-bottom: 1px solid var(--gold); color: var(--gold); font-weight: 600; }
+
 /* ---------- Pepper accents ---------- */
 .brand-eyebrow.pepper { color: var(--green); }
 .day-stamp .num.pepper { color: var(--green); }
