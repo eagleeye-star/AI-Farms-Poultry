@@ -61,12 +61,31 @@ Two-field operation with a Field A / Field B / Both selector filtering every vie
 
 ---
 
+## Goats
+
+Herd registry (tag, name, sex, breed, DOB, sire/dam pedigree, bloodline,
+status incl. quarantine), heat observation logging with an ~20-day next-heat
+estimate, mating log that runs a pedigree check for inbreeding risk before
+saving (blocks direct/full-sibling pairs, warns on half-siblings or shared
+ancestry within 3 generations, with an override + log-anyway path), kidding
+records linked to a mating, a kid mortality log by cause and pre/post-weaning
+stage, a unified health log (deworming, vaccination, FAMACHA, BCS, general
+treatment), weight tracking with a monthly average-weight chart, goat sales
+with one-click invoicing, and auto-reminders for deworming due (~90 days),
+expected heat, and expected kidding (~150 days gestation). Revenue, purchase
+cost, and health cost roll into a goat-specific margin, and everything flows
+into the Whole Farm P&L and Export Center alongside poultry and pepper.
+
+---
+
 ## Whole Farm
 
-Combined profit and loss: poultry margin + pepper margin + a general expense
-log (labour, transport, utilities, repairs), plus manure recycled from the
-poultry house to the fields. Feed, litter, spray and setup costs are pulled
-in automatically — add only what those don't already capture.
+Combined profit and loss: poultry margin + pepper margin + goat margin + a
+general expense log (labour, transport, utilities, repairs), plus manure
+recycled from the poultry house to the fields. Feed, litter, spray, goat
+purchase/health, and setup costs are pulled in automatically — add only what
+those don't already capture (enterprise = "Goats" for goat-specific running
+costs like housing or mineral licks).
 
 ---
 

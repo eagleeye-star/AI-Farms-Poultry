@@ -411,6 +411,7 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
 }
 
 .ws-btn.active.pepper { color: var(--green); }
+.ws-btn.active.goats { color: #C79A4B; }
 
 /* ---------- Pepper accents ---------- */
 .brand-eyebrow.pepper { color: var(--green); }

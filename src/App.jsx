@@ -121,6 +121,19 @@ function defaultPepper() {
   };
 }
 
+function defaultGoats() {
+  return {
+    animals: [],        // herd registry — does, bucks, wethers, kids once tagged
+    heats: [],           // heat/estrus observations per doe
+    matings: [],         // buck x doe pairings, with inbreeding check result
+    kiddings: [],        // birth records linked to a mating
+    kidMortality: [],    // deaths of kids, pre/post weaning, with cause
+    health: [],          // dewormings, vaccinations, FAMACHA, BCS, treatments — one shared log, filtered by `type`
+    weights: [],         // periodic weight samples per animal
+    sales: [],           // goat sales
+  };
+}
+
 function tagEntries(arr, flockId) {
   // Every record needs BOTH a flock link and a stable id — older entries
   // (and a few record types before this fix) may be missing either, so
@@ -159,6 +172,7 @@ function freshData() {
     recipes: [],      // saved home-mix feed formulations
     invoices: [],     // invoices/receipts issued to buyers
     pepper: defaultPepper(),
+    goats: defaultGoats(),
     updatedAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION,
   };
@@ -175,6 +189,7 @@ function freshData() {
 function dataRichness(d) {
   if (!d) return 0;
   const p = d.pepper || {};
+  const g = d.goats || {};
   return (
     (d.dailyLog || []).length + (d.feed || []).length + (d.meds || []).length +
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
@@ -183,7 +198,10 @@ function dataRichness(d) {
     (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
     (p.nurseryBatches || []).length +
-    (p.inputs || []).length
+    (p.inputs || []).length +
+    (g.animals || []).length + (g.heats || []).length + (g.matings || []).length +
+    (g.kiddings || []).length + (g.kidMortality || []).length + (g.health || []).length +
+    (g.weights || []).length + (g.sales || []).length
   );
 }
 
@@ -269,6 +287,7 @@ function migrate(saved) {
       batches: pepper.batches || [],
       nurseryBatches: pepper.nurseryBatches || [],
     },
+    goats: { ...defaultGoats(), ...(saved.goats || {}) },
     updatedAt: saved.updatedAt || new Date().toISOString(),
     // Always stamped with what THIS build produced, not what was read in —
     // once migrate() has run, the in-memory shape matches the current
@@ -791,6 +810,14 @@ function AppInner() {
       amount: (Number(harvest.weightKg) || 0) * (Number(harvest.pricePerKg) || 0),
     });
   }
+  function openInvoiceFromGoatSale(sale, goatLabel) {
+    setInvoicePrefill({
+      kind: 'invoice', date: sale.date, buyerName: sale.buyer || '',
+      item: `Goat sale${goatLabel ? ` — ${goatLabel}` : ''}`,
+      quantity: sale.weightKg || 1, unitPrice: sale.weightKg ? sale.price / (sale.weightKg || 1) : sale.price,
+      amount: Number(sale.price) || 0,
+    });
+  }
   function saveRecipe(entry) {
     setData((d) => touch({ ...d, recipes: [...(d.recipes || []), entry] }));
   }
@@ -1135,6 +1162,60 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
   }
 
+  /* ---- Goats ---- */
+  function addGoat(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, animals: [...(d.goats.animals || []), entry] } }));
+  }
+  function updateGoat(id, patch) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, animals: (d.goats.animals || []).map((a) => (a.id === id ? { ...a, ...patch } : a)) } }));
+  }
+  function deleteGoat(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, animals: (d.goats.animals || []).filter((a) => a.id !== id) } }));
+  }
+  function addHeat(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, heats: [...(d.goats.heats || []), entry] } }));
+  }
+  function deleteHeat(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, heats: (d.goats.heats || []).filter((r) => r.id !== id) } }));
+  }
+  function addMating(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, matings: [...(d.goats.matings || []), entry] } }));
+  }
+  function deleteMating(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, matings: (d.goats.matings || []).filter((r) => r.id !== id) } }));
+  }
+  function addKidding(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, kiddings: [...(d.goats.kiddings || []), entry] } }));
+  }
+  function deleteKidding(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, kiddings: (d.goats.kiddings || []).filter((r) => r.id !== id) } }));
+  }
+  function addKidMortality(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, kidMortality: [...(d.goats.kidMortality || []), entry] } }));
+  }
+  function deleteKidMortality(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, kidMortality: (d.goats.kidMortality || []).filter((r) => r.id !== id) } }));
+  }
+  function addGoatHealth(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, health: [...(d.goats.health || []), entry] } }));
+  }
+  function deleteGoatHealth(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, health: (d.goats.health || []).filter((r) => r.id !== id) } }));
+  }
+  function addGoatWeight(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, weights: [...(d.goats.weights || []), entry] } }));
+  }
+  function deleteGoatWeight(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, weights: (d.goats.weights || []).filter((r) => r.id !== id) } }));
+  }
+  function addGoatSale(entry) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: [...(d.goats.sales || []), entry] } }));
+    if (entry.animalId) updateGoat(entry.animalId, { status: 'sold' });
+  }
+  function deleteGoatSale(id) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).filter((r) => r.id !== id) } }));
+  }
+
   if (showCloudSetup) {
     return (
       <CloudSetupScreen
@@ -1161,6 +1242,10 @@ function AppInner() {
           className={`ws-btn${workspace === 'pepper' ? ' active pepper' : ''}`}
           onClick={() => { setWorkspace('pepper'); setModal(null); }}
         >Bell Pepper Fields</button>
+        <button
+          className={`ws-btn${workspace === 'goats' ? ' active goats' : ''}`}
+          onClick={() => { setWorkspace('goats'); setModal(null); }}
+        >Goats</button>
         <button
           className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
           onClick={() => { setWorkspace('farm'); setModal(null); }}
@@ -1513,6 +1598,35 @@ function AppInner() {
           onDeleteNurseryBatch={deleteNurseryBatch}
           onTransplantNurseryBatch={transplantNurseryBatch}
           onInvoiceHarvest={openInvoiceFromHarvest}
+        />
+      )}
+
+      {workspace === 'goats' && (
+        <GoatWorkspace
+          goats={data.goats}
+          reminders={data.reminders || []}
+          expenses={data.expenses || []}
+          onAddGoat={addGoat}
+          onUpdateGoat={updateGoat}
+          onDeleteGoat={deleteGoat}
+          onAddHeat={addHeat}
+          onDeleteHeat={deleteHeat}
+          onAddMating={addMating}
+          onDeleteMating={deleteMating}
+          onAddKidding={addKidding}
+          onDeleteKidding={deleteKidding}
+          onAddKidMortality={addKidMortality}
+          onDeleteKidMortality={deleteKidMortality}
+          onAddHealth={addGoatHealth}
+          onDeleteHealth={deleteGoatHealth}
+          onAddWeight={addGoatWeight}
+          onDeleteWeight={deleteGoatWeight}
+          onAddSale={addGoatSale}
+          onDeleteSale={deleteGoatSale}
+          onAddReminder={addReminder}
+          onToggleReminder={toggleReminder}
+          onDeleteReminder={deleteReminder}
+          onInvoiceSale={openInvoiceFromGoatSale}
         />
       )}
 
@@ -4003,6 +4117,7 @@ function ReminderForm({ scope, onClose, onSave }) {
           <select value={f.scope} onChange={set('scope')}>
             <option value="poultry">Poultry</option>
             <option value="pepper">Bell pepper</option>
+            <option value="goats">Goats</option>
             <option value="general">General / whole farm</option>
           </select>
         </Field>
@@ -4716,9 +4831,11 @@ function annualCharge(item) {
 
 function buildExportDatasets(data) {
   const p = data.pepper || {};
+  const g = data.goats || {};
   const flockName = (id) => (data.flocks || []).find((f) => f.id === id)?.flockName || id || '—';
   const fieldName = (id) => (p.fields || []).find((f) => f.id === id)?.name || id || '—';
   const staffName = (id) => (data.staff || []).find((s) => s.id === id)?.name || '—';
+  const goatName = (id) => { const a = (g.animals || []).find((x) => x.id === id); return a ? (a.name || a.tag) : '—'; };
 
   return [
     {
@@ -4881,6 +4998,73 @@ function buildExportDatasets(data) {
         { key: 'docNumber', label: 'No.' }, { key: 'kind', label: 'Type' }, { key: 'date', label: 'Date' },
         { key: 'buyerName', label: 'Buyer' }, { key: 'buyerPhone', label: 'Phone' }, { key: 'item', label: 'Item' },
         { key: 'quantity', label: 'Qty' }, { key: 'unitPrice', label: 'Unit Price' }, { key: 'amount', label: 'Amount (GH₵)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatAnimals', label: 'Goats — Herd Registry', rows: g.animals || [],
+      columns: [
+        { key: 'tag', label: 'Tag' }, { key: 'name', label: 'Name' }, { key: 'sex', label: 'Sex' },
+        { key: 'breed', label: 'Breed' }, { key: 'dob', label: 'DOB' }, { key: 'source', label: 'Source' },
+        { key: 'acquiredDate', label: 'Acquired' }, { key: 'cost', label: 'Cost (GH₵)' },
+        { key: 'sireId', label: 'Sire', get: (r) => (r.sireId ? goatName(r.sireId) : '') },
+        { key: 'damId', label: 'Dam', get: (r) => (r.damId ? goatName(r.damId) : '') },
+        { key: 'bloodline', label: 'Bloodline' }, { key: 'status', label: 'Status' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatHeats', label: 'Goats — Heat Observations', rows: g.heats || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'doeId', label: 'Doe', get: (r) => goatName(r.doeId) },
+        { key: 'intensity', label: 'Intensity' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatMatings', label: 'Goats — Matings', rows: g.matings || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'doeId', label: 'Doe', get: (r) => goatName(r.doeId) },
+        { key: 'buckId', label: 'Buck', get: (r) => goatName(r.buckId) },
+        { key: 'inbreedingLevel', label: 'Pedigree Check' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatKiddings', label: 'Goats — Kiddings', rows: g.kiddings || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'doeId', label: 'Doe', get: (r) => goatName(r.doeId) },
+        { key: 'liveKids', label: 'Live Kids' }, { key: 'stillborn', label: 'Stillborn' },
+        { key: 'males', label: 'Males' }, { key: 'females', label: 'Females' },
+        { key: 'avgBirthWeightKg', label: 'Avg Birth Weight (kg)' }, { key: 'complications', label: 'Complications' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatKidMortality', label: 'Goats — Kid Mortality', rows: g.kidMortality || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'doeId', label: 'Dam', get: (r) => goatName(r.doeId) },
+        { key: 'cause', label: 'Cause' }, { key: 'stage', label: 'Stage' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatHealth', label: 'Goats — Health Log', rows: g.health || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'animalId', label: 'Animal', get: (r) => goatName(r.animalId) },
+        { key: 'type', label: 'Type' }, { key: 'product', label: 'Product' }, { key: 'dosage', label: 'Dosage' },
+        { key: 'score', label: 'Score' }, { key: 'diagnosis', label: 'Diagnosis' }, { key: 'cost', label: 'Cost (GH₵)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatWeights', label: 'Goats — Weight Samples', rows: g.weights || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'animalId', label: 'Animal', get: (r) => goatName(r.animalId) },
+        { key: 'weightKg', label: 'Weight (kg)' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'goatSales', label: 'Goats — Sales', rows: g.sales || [],
+      columns: [
+        { key: 'date', label: 'Date' }, { key: 'animalId', label: 'Animal', get: (r) => goatName(r.animalId) },
+        { key: 'buyer', label: 'Buyer' }, { key: 'weightKg', label: 'Weight (kg)' }, { key: 'price', label: 'Price (GH₵)' },
         { key: 'notes', label: 'Notes' },
       ],
     },
@@ -5087,6 +5271,831 @@ function InvoiceModal({ prefill, invoices, onSave, onClose }) {
   );
 }
 
+/* ============================================================= */
+/* ============================ GOATS ============================ */
+/* ============================================================= */
+
+const GOAT_BREEDS = ['West African Dwarf', 'Sahel / Sudan', 'Boer cross', 'Nubian cross', 'Mixed / local', 'Other'];
+const GOAT_STATUSES = ['active', 'quarantine', 'sold', 'deceased', 'culled'];
+const HEALTH_TYPES = ['Deworming', 'Vaccination', 'FAMACHA', 'BCS', 'Treatment'];
+const KID_MORT_CAUSES = ['Stillbirth', 'Crushed by dam', 'Disease', 'Weak birth / chill', 'Predator', 'Unknown', 'Other'];
+
+function ageLabel(dob) {
+  if (!dob) return '—';
+  const days = daysBetween(dob, todayISO());
+  if (days < 0) return '—';
+  if (days < 60) return `${days}d`;
+  const months = Math.floor(days / 30.44);
+  if (months < 24) return `${months}mo`;
+  return `${(days / 365.25).toFixed(1)}yr`;
+}
+
+function goatAncestors(animals, id, depth, maxDepth, acc) {
+  if (!id || depth > maxDepth) return;
+  const a = animals.find((x) => x.id === id);
+  if (!a) return;
+  if (!acc.has(id) || acc.get(id) > depth) acc.set(id, depth);
+  if (a.sireId) goatAncestors(animals, a.sireId, depth + 1, maxDepth, acc);
+  if (a.damId) goatAncestors(animals, a.damId, depth + 1, maxDepth, acc);
+}
+
+/** Traces both pedigrees up to 3 generations and flags shared ancestry.
+    'block' = direct parent/offspring or full siblings; 'caution' = half
+    siblings or a shared ancestor further back; 'clear' = nothing found in
+    the recorded pedigree (which may simply mean the pedigree isn't known). */
+function checkInbreeding(animals, doeId, buckId) {
+  const doe = animals.find((a) => a.id === doeId);
+  const buck = animals.find((a) => a.id === buckId);
+  if (!doe || !buck || doeId === buckId) return { level: 'block', reason: 'Same animal or missing record' };
+  if (doe.sireId === buckId || doe.damId === buckId || buck.sireId === doeId || buck.damId === doeId) {
+    return { level: 'block', reason: 'Direct parent / offspring pair' };
+  }
+  const sameSire = doe.sireId && buck.sireId && doe.sireId === buck.sireId;
+  const sameDam = doe.damId && buck.damId && doe.damId === buck.damId;
+  if (sameSire && sameDam) return { level: 'block', reason: 'Full siblings — same sire and dam' };
+  if (sameSire || sameDam) return { level: 'caution', reason: 'Half-siblings — share one parent' };
+  const doeAnc = new Map();
+  goatAncestors(animals, doe.sireId, 1, 3, doeAnc);
+  goatAncestors(animals, doe.damId, 1, 3, doeAnc);
+  const buckAnc = new Map();
+  goatAncestors(animals, buck.sireId, 1, 3, buckAnc);
+  goatAncestors(animals, buck.damId, 1, 3, buckAnc);
+  for (const [id] of doeAnc) {
+    if (buckAnc.has(id)) return { level: 'caution', reason: 'Shared ancestor within 3 generations' };
+  }
+  if (!doe.sireId && !doe.damId && !buck.sireId && !buck.damId) {
+    return { level: 'clear', reason: 'No pedigree on file for either animal yet' };
+  }
+  return { level: 'clear', reason: 'No shared ancestry found in recorded pedigree' };
+}
+
+function inbreedingBadge(level) {
+  if (level === 'block') return <span className="tag rust">🔴 Blocked — close relatives</span>;
+  if (level === 'caution') return <span className="tag gold">🟡 Caution — related line</span>;
+  return <span className="tag green">🟢 Clear</span>;
+}
+
+function GoatWorkspace({
+  goats, reminders, expenses,
+  onAddGoat, onUpdateGoat, onDeleteGoat,
+  onAddHeat, onDeleteHeat,
+  onAddMating, onDeleteMating,
+  onAddKidding, onDeleteKidding,
+  onAddKidMortality, onDeleteKidMortality,
+  onAddHealth, onDeleteHealth,
+  onAddWeight, onDeleteWeight,
+  onAddSale, onDeleteSale,
+  onAddReminder, onToggleReminder, onDeleteReminder,
+  onInvoiceSale,
+}) {
+  const { showToast, askConfirm } = useToastConfirm();
+  const [gtab, setGtab] = useState('dashboard');
+  const [modal, setModal] = useState(null);
+  const [editingGoat, setEditingGoat] = useState(null);
+  const [matingPrefillDoe, setMatingPrefillDoe] = useState(null);
+  const [kiddingPrefill, setKiddingPrefill] = useState(null);
+  const [mortalityPrefill, setMortalityPrefill] = useState(null);
+
+  const animals = goats.animals || [];
+  const heats = goats.heats || [];
+  const matings = goats.matings || [];
+  const kiddings = goats.kiddings || [];
+  const kidMortality = goats.kidMortality || [];
+  const health = goats.health || [];
+  const weights = goats.weights || [];
+  const sales = goats.sales || [];
+
+  const activeAnimals = animals.filter((a) => a.status === 'active' || a.status === 'quarantine');
+  const does = activeAnimals.filter((a) => a.sex === 'doe');
+  const bucks = activeAnimals.filter((a) => a.sex === 'buck');
+  const goatLabel = (id) => { const a = animals.find((x) => x.id === id); return a ? `${a.name || a.tag}${a.tag && a.name ? ` (${a.tag})` : ''}` : '—'; };
+
+  const now = todayISO();
+
+  /* ---- auto reminders: deworm cycle, expected heat, expected kidding ---- */
+  const autoItems = useMemo(() => {
+    const items = [];
+    activeAnimals.forEach((a) => {
+      const lastDeworm = [...health].filter((h) => h.animalId === a.id && h.type === 'Deworming')
+        .sort((x, y) => new Date(y.date) - new Date(x.date))[0];
+      const base = lastDeworm ? lastDeworm.date : (a.acquiredDate || a.dob);
+      if (base) {
+        const due = addDaysISO(base, 90);
+        const daysLeft = daysBetween(now, due);
+        if (daysLeft <= 14) items.push({ id: `deworm-${a.id}`, title: `Deworm — ${a.name || a.tag}`, dueDate: due, daysLeft, source: 'goats · deworm cycle' });
+      }
+      if (a.sex === 'doe') {
+        const pregnant = matings.some((m) => m.doeId === a.id && !kiddings.some((k) => k.matingId === m.id) && daysBetween(m.date, now) < 155);
+        if (!pregnant) {
+          const lastHeat = [...heats].filter((h) => h.doeId === a.id).sort((x, y) => new Date(y.date) - new Date(x.date))[0];
+          if (lastHeat) {
+            const due = addDaysISO(lastHeat.date, 20);
+            const daysLeft = daysBetween(now, due);
+            if (daysLeft <= 5) items.push({ id: `heat-${a.id}`, title: `Expect heat — ${a.name || a.tag}`, dueDate: due, daysLeft, source: 'goats · heat cycle (~20d)' });
+          }
+        }
+      }
+    });
+    matings.forEach((m) => {
+      if (!kiddings.some((k) => k.matingId === m.id)) {
+        const due = addDaysISO(m.date, 150);
+        const daysLeft = daysBetween(now, due);
+        if (daysLeft <= 14) items.push({ id: `kid-${m.id}`, title: `Expect kidding — ${goatLabel(m.doeId)}`, dueDate: due, daysLeft, source: 'goats · gestation (~150d)' });
+      }
+    });
+    return items;
+  }, [activeAnimals, health, heats, matings, kiddings, now]);
+
+  /* ---- dashboard stats ---- */
+  const totalHerd = activeAnimals.length;
+  const soldCount = animals.filter((a) => a.status === 'sold').length;
+  const deceasedCount = animals.filter((a) => a.status === 'deceased' || a.status === 'culled').length;
+  const totalBornLive = kiddings.reduce((s, k) => s + (Number(k.liveKids) || 0), 0);
+  const totalStillborn = kiddings.reduce((s, k) => s + (Number(k.stillborn) || 0), 0);
+  const kidDeaths = kidMortality.length;
+  const kidSurvivalRate = totalBornLive ? Math.round(((totalBornLive - kidDeaths) / totalBornLive) * 1000) / 10 : null;
+  const avgKidsPerKidding = kiddings.length ? Math.round((totalBornLive / kiddings.length) * 10) / 10 : null;
+  const revenue = sales.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const purchaseCost = animals.filter((a) => a.source === 'Purchased').reduce((s, a) => s + (Number(a.cost) || 0), 0);
+  const healthCost = health.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const goatExpenses = (expenses || []).filter((e) => e.scope === 'goats').reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalCost = purchaseCost + healthCost + goatExpenses;
+  const margin = revenue - totalCost;
+  const blockedCount = matings.filter((m) => m.inbreedingLevel === 'block').length;
+  const overdueDeworm = autoItems.filter((i) => i.id.startsWith('deworm-') && i.daysLeft < 0).length;
+  const preWeaningDeaths = kidMortality.filter((k) => k.stage === 'pre-weaning').length;
+  const postWeaningDeaths = kidMortality.filter((k) => k.stage === 'post-weaning').length;
+  const mortByCause = {};
+  kidMortality.forEach((k) => { mortByCause[k.cause] = (mortByCause[k.cause] || 0) + 1; });
+
+  const weightChart = useMemo(() => {
+    const byMonth = {};
+    weights.forEach((w) => {
+      const key = (w.date || '').slice(0, 7);
+      if (!key) return;
+      if (!byMonth[key]) byMonth[key] = { total: 0, n: 0 };
+      byMonth[key].total += Number(w.weightKg) || 0;
+      byMonth[key].n += 1;
+    });
+    return Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, v]) => ({ month, avgKg: Math.round((v.total / v.n) * 10) / 10 }));
+  }, [weights]);
+
+  function submitGoat(entry) {
+    if (editingGoat) onUpdateGoat(editingGoat.id, entry); else onAddGoat({ ...entry, id: newId() });
+    setModal(null); setEditingGoat(null);
+  }
+
+  async function submitMating(entry) {
+    const check = checkInbreeding(animals, entry.doeId, entry.buckId);
+    if (check.level === 'block' && !(await askConfirm(
+      `🔴 ${check.reason}. This pairing is flagged as inbreeding. Proceed anyway? It will be logged as an overridden mating.`
+    ))) return;
+    if (check.level === 'caution' && !(await askConfirm(
+      `🟡 ${check.reason}. Proceed with this pairing?`
+    ))) return;
+    onAddMating({ ...entry, id: newId(), inbreedingLevel: check.level, overridden: check.level !== 'clear' });
+    setModal(null); setMatingPrefillDoe(null);
+    showToast(check.level === 'clear' ? 'Mating logged.' : 'Mating logged with a flagged pairing.', check.level === 'block' ? 'rust' : 'green');
+  }
+
+  return (
+    <>
+      <header className="header">
+        <div>
+          <p className="brand-eyebrow">AI Farms · Goats</p>
+          <h1 className="brand-title">Goat Herd</h1>
+          <p className="brand-sub">{totalHerd} active · {does.length} does · {bucks.length} bucks · Eikwe, Western Region</p>
+        </div>
+        <div className="day-stamp">
+          <DayRing pct={margin >= 0 ? 1 : 0} color={margin >= 0 ? '#7A9A66' : '#C15F41'} />
+          <div>
+            <div className={`num ${margin >= 0 ? 'pepper' : ''}`}>GH₵ {num(margin, 2)}</div>
+            <div className="label">goat margin to date</div>
+          </div>
+        </div>
+      </header>
+
+      <div className="field-seg" style={{ marginBottom: 20 }}>
+        <button className={gtab === 'dashboard' ? 'active' : ''} onClick={() => setGtab('dashboard')}>Dashboard</button>
+        <button className={gtab === 'herd' ? 'active' : ''} onClick={() => setGtab('herd')}>Herd</button>
+        <button className={gtab === 'breeding' ? 'active' : ''} onClick={() => setGtab('breeding')}>Breeding</button>
+        <button className={gtab === 'health' ? 'active' : ''} onClick={() => setGtab('health')}>Health</button>
+        <button className={gtab === 'growth' ? 'active' : ''} onClick={() => setGtab('growth')}>Growth</button>
+        <button className={gtab === 'financials' ? 'active' : ''} onClick={() => setGtab('financials')}>Sales &amp; P&amp;L</button>
+        <button className={gtab === 'reminders' ? 'active' : ''} onClick={() => setGtab('reminders')}>Reminders</button>
+      </div>
+
+      {gtab === 'dashboard' && (
+        <>
+          <div className="grid grid-4">
+            <StatCard title="Active Herd" value={num(totalHerd)} tone="green" foot={`${does.length} does · ${bucks.length} bucks`} />
+            <StatCard title="Kid Survival Rate" value={kidSurvivalRate != null ? `${kidSurvivalRate}%` : '—'} tone={kidSurvivalRate == null ? undefined : kidSurvivalRate >= 85 ? 'green' : 'gold'} foot={`${kidDeaths} kid death(s) of ${totalBornLive} born live`} />
+            <StatCard title="Avg Kids / Kidding" value={avgKidsPerKidding != null ? num(avgKidsPerKidding, 1) : '—'} tone="gold" foot={`${kiddings.length} kidding(s) recorded`} />
+            <StatCard title="Sold / Culled" value={`${soldCount} / ${deceasedCount}`} tone="rust" foot="lifetime herd movement" />
+          </div>
+          <div className="grid grid-4" style={{ marginTop: 14 }}>
+            <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
+            <StatCard title="Cost" value={`GH₵ ${num(totalCost, 2)}`} tone="rust" foot="purchase + health + running" />
+            <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot={margin >= 0 ? 'in profit' : 'below break-even'} />
+            <StatCard title="Matings Flagged" value={num(blockedCount)} tone={blockedCount ? 'rust' : 'green'} foot="blocked for inbreeding risk" />
+          </div>
+
+          {(overdueDeworm > 0 || preWeaningDeaths + postWeaningDeaths > 0) && (
+            <div className="stale-banner" style={{ marginTop: 18 }}>
+              ⚠️ <span>
+                {overdueDeworm > 0 && <>{overdueDeworm} animal(s) overdue for deworming. </>}
+                {preWeaningDeaths + postWeaningDeaths > 0 && <>{preWeaningDeaths} pre-weaning and {postWeaningDeaths} post-weaning kid death(s) logged — check the Breeding tab for cause patterns.</>}
+              </span>
+            </div>
+          )}
+
+          {Object.keys(mortByCause).length > 0 && (
+            <div className="panel" style={{ marginTop: 18 }}>
+              <div className="panel-head"><h3>Kid mortality by cause</h3></div>
+              <div style={{ padding: '4px 0 10px' }}>
+                {Object.entries(mortByCause).sort((a, b) => b[1] - a[1]).map(([cause, n]) => (
+                  <div className="kv" key={cause}><span className="k">{cause}</span><span className="v">{n}</span></div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {gtab === 'herd' && (
+        <>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Herd Registry</h3>
+            <button className="btn btn-green" onClick={() => { setEditingGoat(null); setModal('goat'); }}>+ Add goat</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Tag / Name</th><th>Sex</th><th>Breed</th><th>Age</th><th>Sire / Dam</th><th>Bloodline</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {animals.map((a) => (
+                  <tr key={a.id}>
+                    <td>{a.name || a.tag}{a.name && a.tag ? <span className="stat-foot" style={{ margin: 0 }}> {a.tag}</span> : null}</td>
+                    <td style={{ textTransform: 'capitalize' }}>{a.sex}</td>
+                    <td>{a.breed || '—'}</td>
+                    <td className="mono">{ageLabel(a.dob)}</td>
+                    <td>{goatLabel(a.sireId)} / {goatLabel(a.damId)}</td>
+                    <td>{a.bloodline || '—'}</td>
+                    <td><span className={`tag ${a.status === 'active' ? 'green' : a.status === 'quarantine' ? 'gold' : 'rust'}`}>{a.status}</span></td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn" onClick={() => { setEditingGoat(a); setModal('goat'); }}>Edit</button>
+                        <button className="link-btn rust" onClick={async () => { if (await askConfirm(`Delete ${a.name || a.tag}? This does not delete linked breeding/health records.`)) onDeleteGoat(a.id); }}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {animals.length === 0 && <tr><td colSpan={8} className="empty">No goats yet — add your first doe or buck.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {gtab === 'breeding' && (
+        <>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Heat Observations</h3>
+            <button className="btn btn-gold" onClick={() => setModal('heat')} disabled={!does.length}>+ Log heat</button>
+          </div>
+          <div className="table-wrap" style={{ marginBottom: 24 }}>
+            <table className="data">
+              <thead><tr><th>Date</th><th>Doe</th><th>Intensity</th><th>Next expected</th><th>Notes</th><th></th></tr></thead>
+              <tbody>
+                {[...heats].sort((a, b) => new Date(b.date) - new Date(a.date)).map((h) => (
+                  <tr key={h.id}>
+                    <td className="mono">{fmtDate(h.date)}</td>
+                    <td>{goatLabel(h.doeId)}</td>
+                    <td>{h.intensity || '—'}</td>
+                    <td className="mono">{fmtDate(addDaysISO(h.date, 20))}</td>
+                    <td>{h.notes || '—'}</td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn" onClick={() => { setMatingPrefillDoe(h.doeId); setModal('mating'); }}>Log mating</button>
+                        <button className="link-btn rust" onClick={() => onDeleteHeat(h.id)}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {heats.length === 0 && <tr><td colSpan={6} className="empty">No heat observations logged yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Matings</h3>
+            <button className="btn btn-gold" onClick={() => setModal('mating')} disabled={!does.length || !bucks.length}>+ Log mating</button>
+          </div>
+          <div className="table-wrap" style={{ marginBottom: 24 }}>
+            <table className="data">
+              <thead><tr><th>Date</th><th>Doe × Buck</th><th>Pedigree check</th><th>Expected kidding</th><th></th></tr></thead>
+              <tbody>
+                {[...matings].sort((a, b) => new Date(b.date) - new Date(a.date)).map((m) => {
+                  const kidded = kiddings.find((k) => k.matingId === m.id);
+                  const returnedToHeat = heats.some((h) => h.doeId === m.doeId && !kidded && daysBetween(m.date, h.date) >= 16 && daysBetween(m.date, h.date) <= 26);
+                  return (
+                    <tr key={m.id}>
+                      <td className="mono">{fmtDate(m.date)}</td>
+                      <td>{goatLabel(m.doeId)} × {goatLabel(m.buckId)}</td>
+                      <td>{inbreedingBadge(m.inbreedingLevel || 'clear')}</td>
+                      <td className="mono">
+                        {fmtDate(addDaysISO(m.date, 150))}
+                        {kidded && <span className="tag green" style={{ marginLeft: 6 }}>Kidded</span>}
+                        {!kidded && returnedToHeat && <span className="tag rust" style={{ marginLeft: 6 }}>⚠ Returned to heat</span>}
+                      </td>
+                      <td>
+                        <span style={{ display: 'flex', gap: 8 }}>
+                          {!kidded && (
+                            <button className="link-btn" onClick={() => { setKiddingPrefill({ matingId: m.id, doeId: m.doeId }); setModal('kidding'); }}>Record kidding</button>
+                          )}
+                          <button className="link-btn rust" onClick={() => onDeleteMating(m.id)}>Delete</button>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {matings.length === 0 && <tr><td colSpan={5} className="empty">No matings logged yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Kiddings</h3>
+            <button className="btn btn-green" onClick={() => { setKiddingPrefill(null); setModal('kidding'); }} disabled={!does.length}>+ Record kidding</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Doe</th><th>Live / Stillborn</th><th>Complications</th><th></th></tr></thead>
+              <tbody>
+                {[...kiddings].sort((a, b) => new Date(b.date) - new Date(a.date)).map((k) => (
+                  <tr key={k.id}>
+                    <td className="mono">{fmtDate(k.date)}</td>
+                    <td>{goatLabel(k.doeId)}</td>
+                    <td className="mono">{k.liveKids || 0} / {k.stillborn || 0}</td>
+                    <td>{k.complications || '—'}</td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn rust" onClick={() => { setMortalityPrefill({ kiddingId: k.id, doeId: k.doeId }); setModal('kidmort'); }}>+ Kid death</button>
+                        <button className="link-btn rust" onClick={() => onDeleteKidding(k.id)}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {kiddings.length === 0 && <tr><td colSpan={5} className="empty">No kiddings recorded yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          {kidMortality.length > 0 && (
+            <>
+              <p className="section-title" style={{ marginTop: 22 }}>Kid Mortality Log</p>
+              <div className="table-wrap">
+                <table className="data">
+                  <thead><tr><th>Date</th><th>Dam</th><th>Cause</th><th>Stage</th><th>Notes</th><th></th></tr></thead>
+                  <tbody>
+                    {[...kidMortality].sort((a, b) => new Date(b.date) - new Date(a.date)).map((k) => (
+                      <tr key={k.id}>
+                        <td className="mono">{fmtDate(k.date)}</td>
+                        <td>{goatLabel(k.doeId)}</td>
+                        <td>{k.cause}</td>
+                        <td style={{ textTransform: 'capitalize' }}>{k.stage}</td>
+                        <td>{k.notes || '—'}</td>
+                        <td><button className="link-btn rust" onClick={() => onDeleteKidMortality(k.id)}>Delete</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {gtab === 'health' && (
+        <>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Health Log</h3>
+            <button className="btn btn-gold" onClick={() => setModal('health')} disabled={!animals.length}>+ Add record</button>
+          </div>
+          <p className="stat-foot" style={{ marginTop: 0 }}>
+            Deworm every ~3 months (parasites, especially barber-pole worm, are the top killer of goats in humid
+            climates) and check FAMACHA (eyelid colour) between full dewormings to avoid over-treating and
+            building resistance. Vaccinate against PPR annually.
+          </p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Animal</th><th>Type</th><th>Detail</th><th>Cost</th><th></th></tr></thead>
+              <tbody>
+                {[...health].sort((a, b) => new Date(b.date) - new Date(a.date)).map((h) => (
+                  <tr key={h.id}>
+                    <td className="mono">{fmtDate(h.date)}</td>
+                    <td>{goatLabel(h.animalId)}</td>
+                    <td><span className="tag gold">{h.type}</span></td>
+                    <td>
+                      {h.type === 'Deworming' && `${h.product || ''} ${h.dosage || ''}`}
+                      {h.type === 'Vaccination' && (h.product || 'PPR')}
+                      {h.type === 'FAMACHA' && `Score ${h.score}/5`}
+                      {h.type === 'BCS' && `Score ${h.score}/5`}
+                      {h.type === 'Treatment' && (h.diagnosis || h.notes || '—')}
+                    </td>
+                    <td className="mono">{h.cost ? `GH₵ ${num(h.cost, 2)}` : '—'}</td>
+                    <td><button className="link-btn rust" onClick={() => onDeleteHealth(h.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                {health.length === 0 && <tr><td colSpan={6} className="empty">No health records yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {gtab === 'growth' && (
+        <>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Weight Tracking</h3>
+            <button className="btn btn-gold" onClick={() => setModal('weight')} disabled={!animals.length}>+ Log weight</button>
+          </div>
+          {weightChart.length > 1 && (
+            <div className="panel" style={{ marginBottom: 18 }}>
+              <div className="panel-head"><h3>Average herd weight by month</h3></div>
+              <div className="chart-card">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={weightChart} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="month" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                    <YAxis tickLine={false} axisLine={false} />
+                    <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="avgKg" name="Avg weight (kg)" stroke="#7A9A66" strokeWidth={2} dot={{ r: 3 }} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Animal</th><th>Weight (kg)</th><th>Notes</th><th></th></tr></thead>
+              <tbody>
+                {[...weights].sort((a, b) => new Date(b.date) - new Date(a.date)).map((w) => (
+                  <tr key={w.id}>
+                    <td className="mono">{fmtDate(w.date)}</td>
+                    <td>{goatLabel(w.animalId)}</td>
+                    <td className="mono">{num(w.weightKg, 1)}</td>
+                    <td>{w.notes || '—'}</td>
+                    <td><button className="link-btn rust" onClick={() => onDeleteWeight(w.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                {weights.length === 0 && <tr><td colSpan={5} className="empty">No weight samples yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {gtab === 'financials' && (
+        <>
+          <div className="grid grid-4" style={{ marginBottom: 18 }}>
+            <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
+            <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
+            <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
+            <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
+          </div>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 18 }}>Sales</h3>
+            <button className="btn btn-green" onClick={() => setModal('sale')} disabled={!activeAnimals.length}>+ Record sale</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th></th></tr></thead>
+              <tbody>
+                {[...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map((s) => (
+                  <tr key={s.id}>
+                    <td className="mono">{fmtDate(s.date)}</td>
+                    <td>{goatLabel(s.animalId)}</td>
+                    <td>{s.buyer || '—'}</td>
+                    <td className="mono">{s.weightKg ? num(s.weightKg, 1) : '—'}</td>
+                    <td className="mono">GH₵ {num(s.price, 2)}</td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 8 }}>
+                        <button className="link-btn" onClick={() => onInvoiceSale(s, goatLabel(s.animalId))}>Invoice</button>
+                        <button className="link-btn rust" onClick={() => onDeleteSale(s.id)}>Delete</button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {sales.length === 0 && <tr><td colSpan={6} className="empty">No goat sales yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="stat-foot" style={{ marginTop: 14 }}>
+            Running goat costs (housing, mineral licks, general vet visits) are logged as expenses in
+            <strong> Whole Farm → Profit &amp; loss</strong> with enterprise set to "Goats" — they flow into this
+            margin automatically. Full CSV export for every goat dataset is in <strong>Whole Farm → Export</strong>.
+          </p>
+        </>
+      )}
+
+      {gtab === 'reminders' && (
+        <RemindersTab
+          reminders={reminders}
+          scope="goats"
+          autoItems={autoItems}
+          onAdd={() => setModal('reminder')}
+          onToggle={onToggleReminder}
+          onDelete={onDeleteReminder}
+          accent="green"
+        />
+      )}
+
+      {modal === 'goat' && (
+        <GoatForm
+          goat={editingGoat}
+          animals={animals}
+          onClose={() => { setModal(null); setEditingGoat(null); }}
+          onSave={submitGoat}
+        />
+      )}
+      {modal === 'heat' && (
+        <HeatForm does={does} onClose={() => setModal(null)} onSave={(e) => { onAddHeat({ ...e, id: newId() }); setModal(null); }} />
+      )}
+      {modal === 'mating' && (
+        <MatingForm does={does} bucks={bucks} defaultDoe={matingPrefillDoe} onClose={() => { setModal(null); setMatingPrefillDoe(null); }} onSave={submitMating} />
+      )}
+      {modal === 'kidding' && (
+        <KiddingForm does={does} prefill={kiddingPrefill} onClose={() => { setModal(null); setKiddingPrefill(null); }}
+          onSave={(e) => { onAddKidding({ ...e, id: newId() }); setModal(null); setKiddingPrefill(null); }} />
+      )}
+      {modal === 'kidmort' && (
+        <KidMortalityForm does={does} prefill={mortalityPrefill} onClose={() => { setModal(null); setMortalityPrefill(null); }}
+          onSave={(e) => { onAddKidMortality({ ...e, id: newId() }); setModal(null); setMortalityPrefill(null); }} />
+      )}
+      {modal === 'health' && (
+        <GoatHealthForm animals={animals} onClose={() => setModal(null)} onSave={(e) => { onAddHealth({ ...e, id: newId() }); setModal(null); }} />
+      )}
+      {modal === 'weight' && (
+        <GoatWeightForm animals={animals} onClose={() => setModal(null)} onSave={(e) => { onAddWeight({ ...e, id: newId() }); setModal(null); }} />
+      )}
+      {modal === 'sale' && (
+        <GoatSaleForm animals={activeAnimals} onClose={() => setModal(null)} onSave={(e) => { onAddSale({ ...e, id: newId() }); setModal(null); }} />
+      )}
+      {modal === 'reminder' && (
+        <ReminderForm scope="goats" onClose={() => setModal(null)} onSave={(e) => { onAddReminder(e); setModal(null); }} />
+      )}
+    </>
+  );
+}
+
+function GoatForm({ goat, animals, onClose, onSave }) {
+  const [f, setF] = useState({
+    tag: goat?.tag || '', name: goat?.name || '', sex: goat?.sex || 'doe', breed: goat?.breed || GOAT_BREEDS[0],
+    dob: goat?.dob || '', source: goat?.source || 'Born on farm', acquiredDate: goat?.acquiredDate || todayISO(),
+    cost: goat?.cost ?? '', sireId: goat?.sireId || '', damId: goat?.damId || '',
+    bloodline: goat?.bloodline || '', status: goat?.status || 'active', notes: goat?.notes || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const possibleSires = animals.filter((a) => a.sex === 'buck' && a.id !== goat?.id);
+  const possibleDams = animals.filter((a) => a.sex === 'doe' && a.id !== goat?.id);
+  function submit() {
+    if (!f.tag && !f.name) return;
+    onSave({
+      ...f, cost: f.cost === '' ? null : Number(f.cost),
+      sireId: f.sireId || null, damId: f.damId || null,
+    });
+  }
+  return (
+    <Modal title={goat ? 'Edit goat' : 'Add goat'} sub="Tag or name, sex, and pedigree — pedigree powers the inbreeding check." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Tag / ID"><input value={f.tag} onChange={set('tag')} placeholder="e.g. G-014" /></Field>
+        <Field label="Name"><input value={f.name} onChange={set('name')} /></Field>
+        <Field label="Sex">
+          <select value={f.sex} onChange={set('sex')}><option value="doe">Doe (female)</option><option value="buck">Buck (male)</option><option value="wether">Wether (castrated)</option></select>
+        </Field>
+        <Field label="Breed">
+          <select value={f.breed} onChange={set('breed')}>{GOAT_BREEDS.map((b) => <option key={b}>{b}</option>)}</select>
+        </Field>
+        <Field label="Date of birth"><input type="date" value={f.dob} onChange={set('dob')} /></Field>
+        <Field label="Source">
+          <select value={f.source} onChange={set('source')}><option>Born on farm</option><option>Purchased</option></select>
+        </Field>
+        <Field label="Acquired / born date"><input type="date" value={f.acquiredDate} onChange={set('acquiredDate')} /></Field>
+        {f.source === 'Purchased' && <Field label="Purchase cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>}
+        <Field label="Sire (buck)">
+          <select value={f.sireId} onChange={set('sireId')}>
+            <option value="">Unknown / none</option>
+            {possibleSires.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}
+          </select>
+        </Field>
+        <Field label="Dam (doe)">
+          <select value={f.damId} onChange={set('damId')}>
+            <option value="">Unknown / none</option>
+            {possibleDams.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}
+          </select>
+        </Field>
+        <Field label="Bloodline / group"><input value={f.bloodline} onChange={set('bloodline')} placeholder="e.g. Founding stock A" /></Field>
+        <Field label="Status">
+          <select value={f.status} onChange={set('status')}>{GOAT_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save goat</button>
+      </div>
+    </Modal>
+  );
+}
+
+function HeatForm({ does, onClose, onSave }) {
+  const [f, setF] = useState({ doeId: does[0]?.id || '', date: todayISO(), intensity: 'Normal', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() { if (!f.doeId) return; onSave(f); }
+  return (
+    <Modal title="Log heat observation" sub="Tail wagging, mounting behaviour, swelling/reddening, bleating, reduced appetite." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Doe"><select value={f.doeId} onChange={set('doeId')}>{does.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Intensity">
+          <select value={f.intensity} onChange={set('intensity')}><option>Low</option><option>Normal</option><option>Strong</option></select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function MatingForm({ does, bucks, defaultDoe, onClose, onSave }) {
+  const [f, setF] = useState({ doeId: defaultDoe || does[0]?.id || '', buckId: bucks[0]?.id || '', date: todayISO(), notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() { if (!f.doeId || !f.buckId) return; onSave(f); }
+  return (
+    <Modal title="Log mating" sub="Checked against recorded pedigree for inbreeding risk before it saves." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Doe"><select value={f.doeId} onChange={set('doeId')}>{does.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Buck"><select value={f.buckId} onChange={set('buckId')}>{bucks.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save mating</button>
+      </div>
+    </Modal>
+  );
+}
+
+function KiddingForm({ does, prefill, onClose, onSave }) {
+  const [f, setF] = useState({
+    matingId: prefill?.matingId || null, doeId: prefill?.doeId || does[0]?.id || '', date: todayISO(),
+    liveKids: '', stillborn: '', males: '', females: '', avgBirthWeightKg: '', complications: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.doeId) return;
+    onSave({
+      ...f, liveKids: Number(f.liveKids) || 0, stillborn: Number(f.stillborn) || 0,
+      males: Number(f.males) || 0, females: Number(f.females) || 0,
+      avgBirthWeightKg: f.avgBirthWeightKg === '' ? null : Number(f.avgBirthWeightKg),
+    });
+  }
+  return (
+    <Modal title="Record kidding" sub="Gestation is ~150 days from mating." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Doe"><select value={f.doeId} onChange={set('doeId')}>{does.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Live kids"><input type="number" value={f.liveKids} onChange={set('liveKids')} /></Field>
+        <Field label="Stillborn"><input type="number" value={f.stillborn} onChange={set('stillborn')} /></Field>
+        <Field label="Males"><input type="number" value={f.males} onChange={set('males')} /></Field>
+        <Field label="Females"><input type="number" value={f.females} onChange={set('females')} /></Field>
+        <Field label="Avg birth weight (kg)"><input type="number" step="0.1" value={f.avgBirthWeightKg} onChange={set('avgBirthWeightKg')} /></Field>
+        <Field label="Complications"><input value={f.complications} onChange={set('complications')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save kidding</button>
+      </div>
+    </Modal>
+  );
+}
+
+function KidMortalityForm({ does, prefill, onClose, onSave }) {
+  const [f, setF] = useState({
+    kiddingId: prefill?.kiddingId || null, doeId: prefill?.doeId || does[0]?.id || '',
+    date: todayISO(), cause: KID_MORT_CAUSES[0], stage: 'pre-weaning', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() { if (!f.doeId) return; onSave(f); }
+  return (
+    <Modal title="Log kid death" sub="Cause and stage help you see where to intervene — bedding, supervision, or the dam herself." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Dam"><select value={f.doeId} onChange={set('doeId')}>{does.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Cause"><select value={f.cause} onChange={set('cause')}>{KID_MORT_CAUSES.map((c) => <option key={c}>{c}</option>)}</select></Field>
+        <Field label="Stage">
+          <select value={f.stage} onChange={set('stage')}><option value="pre-weaning">Pre-weaning</option><option value="post-weaning">Post-weaning</option></select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function GoatHealthForm({ animals, onClose, onSave }) {
+  const [f, setF] = useState({
+    animalId: animals[0]?.id || '', date: todayISO(), type: 'Deworming', product: '', dosage: '',
+    score: '3', diagnosis: '', cost: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.animalId) return;
+    onSave({ ...f, cost: f.cost === '' ? null : Number(f.cost), score: (f.type === 'FAMACHA' || f.type === 'BCS') ? Number(f.score) : null });
+  }
+  return (
+    <Modal title="Add health record" onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Animal"><select value={f.animalId} onChange={set('animalId')}>{animals.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Type"><select value={f.type} onChange={set('type')}>{HEALTH_TYPES.map((t) => <option key={t}>{t}</option>)}</select></Field>
+        {(f.type === 'Deworming' || f.type === 'Vaccination') && (
+          <>
+            <Field label={f.type === 'Deworming' ? 'Dewormer product' : 'Vaccine (e.g. PPR)'}><input value={f.product} onChange={set('product')} /></Field>
+            {f.type === 'Deworming' && <Field label="Dosage"><input value={f.dosage} onChange={set('dosage')} /></Field>}
+          </>
+        )}
+        {(f.type === 'FAMACHA' || f.type === 'BCS') && (
+          <Field label={f.type === 'FAMACHA' ? 'FAMACHA score (1 red = healthy, 5 white = severe anaemia)' : 'Body Condition Score (1 thin – 5 fat, 3 ideal)'}>
+            <select value={f.score} onChange={set('score')}>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+          </Field>
+        )}
+        {f.type === 'Treatment' && <Field label="Diagnosis / treatment" span2><input value={f.diagnosis} onChange={set('diagnosis')} /></Field>}
+        <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save record</button>
+      </div>
+    </Modal>
+  );
+}
+
+function GoatWeightForm({ animals, onClose, onSave }) {
+  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), weightKg: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() { if (!f.animalId || f.weightKg === '') return; onSave({ ...f, weightKg: Number(f.weightKg) }); }
+  return (
+    <Modal title="Log weight" onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Animal"><select value={f.animalId} onChange={set('animalId')}>{animals.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function GoatSaleForm({ animals, onClose, onSave }) {
+  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.animalId || f.price === '') return;
+    onSave({ ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price: Number(f.price) });
+  }
+  return (
+    <Modal title="Record goat sale" sub="Ghana goat prices spike around Christmas, Easter, funerals, and Eid — this builds your own seasonal price history." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Animal"><select value={f.animalId} onChange={set('animalId')}>{animals.map((a) => <option key={a.id} value={a.id}>{a.name || a.tag}</option>)}</select></Field>
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
+        <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
+        <Field label="Price (GH₵)"><input type="number" step="0.01" value={f.price} onChange={set('price')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+      </div>
+    </Modal>
+  );
+}
+
 function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice }) {
   const [modal, setModal] = useState(null);
   const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel'
@@ -5105,7 +6114,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   const flocks = data.flocks || [];
   const labelFor = (e) => {
     if (e.target === 'shared' || !e.target) {
-      return e.scope === 'pepper' ? 'Both fields' : e.scope === 'poultry' ? 'All flocks' : 'Whole farm';
+      return e.scope === 'pepper' ? 'Both fields' : e.scope === 'poultry' ? 'All flocks' : e.scope === 'goats' ? 'Whole herd' : 'Whole farm';
     }
     const f = fields.find((x) => x.id === e.target);
     if (f) return f.name;
@@ -5138,11 +6147,20 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   const pepperCost = sprayCost + fieldSetup + runningCost('pepper') + capexCharge('pepper');
   const pepperMargin = pepperRevenue - pepperCost;
 
+  // ---- Goats ----
+  const g = data.goats || {};
+  const goatAnimals = g.animals || [];
+  const goatRevenue = (g.sales || []).reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const goatPurchaseCost = goatAnimals.filter((a) => a.source === 'Purchased').reduce((s, a) => s + (Number(a.cost) || 0), 0);
+  const goatHealthCost = (g.health || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const goatCost = goatPurchaseCost + goatHealthCost + runningCost('goats') + capexCharge('goats');
+  const goatMargin = goatRevenue - goatCost;
+
   // ---- General ----
   const generalCost = runningCost('general') + capexCharge('general');
 
-  const totalRevenue = poultryRevenue + pepperRevenue;
-  const totalCost = poultryCost + pepperCost + generalCost;
+  const totalRevenue = poultryRevenue + pepperRevenue + goatRevenue;
+  const totalCost = poultryCost + pepperCost + goatCost + generalCost;
   const netProfit = totalRevenue - totalCost;
 
   const totalInvested = capital.reduce((s, e) => s + (Number(e.amount) || 0), 0);
@@ -5155,6 +6173,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   const enterpriseChart = [
     { name: 'Poultry', revenue: Math.round(poultryRevenue), cost: Math.round(poultryCost) },
     { name: 'Bell pepper', revenue: Math.round(pepperRevenue), cost: Math.round(pepperCost) },
+    { name: 'Goats', revenue: Math.round(goatRevenue), cost: Math.round(goatCost) },
     { name: 'General', revenue: 0, cost: Math.round(generalCost) },
   ];
 
@@ -5227,6 +6246,12 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
               <div className="kv">
                 <span className="k">Pepper margin</span>
                 <span className="v" style={{ color: pepperMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(pepperMargin, 2)}</span>
+              </div>
+              <div className="kv"><span className="k">Goat revenue</span><span className="v">GH₵ {num(goatRevenue, 2)}</span></div>
+              <div className="kv"><span className="k">Goat cost</span><span className="v">GH₵ {num(goatCost, 2)}</span></div>
+              <div className="kv">
+                <span className="k">Goat margin</span>
+                <span className="v" style={{ color: goatMargin >= 0 ? 'var(--green)' : 'var(--rust)' }}>GH₵ {num(goatMargin, 2)}</span>
               </div>
               <div className="kv"><span className="k">General costs</span><span className="v">GH₵ {num(generalCost, 2)}</span></div>
               <div className="kv">
@@ -5431,7 +6456,9 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
     ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
-      : [['shared', 'Whole farm']];
+      : f.scope === 'goats'
+        ? [['shared', 'Whole herd']]
+        : [['shared', 'Whole farm']];
 
   const amount = Number(f.amount) || 0;
   const life = Number(f.usefulLifeYears) || 1;
@@ -5455,7 +6482,7 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
       title={isEdit ? 'Edit entry' : (isCapital ? 'Add structure or equipment' : 'Add farm expense')}
       sub={isCapital
         ? 'Something that lasts several seasons — a net house, coop, or borehole.'
-        : "Running costs the poultry and pepper logs don't already capture."}
+        : "Running costs the poultry, pepper, and goat logs don't already capture."}
       onClose={onClose}
     >
       <div className="kind-toggle">
@@ -5491,6 +6518,7 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
             <option value="general">Whole farm</option>
             <option value="poultry">Poultry</option>
             <option value="pepper">Bell pepper</option>
+            <option value="goats">Goats</option>
           </select>
         </Field>
 
@@ -5803,7 +6831,9 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
     ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
-      : [['shared', 'Whole farm']];
+      : f.scope === 'goats'
+        ? [['shared', 'Whole herd']]
+        : [['shared', 'Whole farm']];
 
   function submit() {
     if (!f.staffId || !f.date || f.amount === '') return;
@@ -5860,6 +6890,7 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
             <option value="general">Whole farm</option>
             <option value="poultry">Poultry</option>
             <option value="pepper">Bell pepper</option>
+            <option value="goats">Goats</option>
           </select>
         </Field>
         <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock?' : 'Applies to'}>
@@ -5993,7 +7024,9 @@ function FuelForm({ entry, fields, flocks, onClose, onSave }) {
     ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
-      : [['shared', 'Whole farm']];
+      : f.scope === 'goats'
+        ? [['shared', 'Whole herd']]
+        : [['shared', 'Whole farm']];
 
   function submit() {
     if (!f.date || (f.liters === '' && f.amount === '')) return;
@@ -6036,6 +7069,7 @@ function FuelForm({ entry, fields, flocks, onClose, onSave }) {
             <option value="general">Whole farm</option>
             <option value="poultry">Poultry</option>
             <option value="pepper">Bell pepper</option>
+            <option value="goats">Goats</option>
           </select>
         </Field>
         <Field label={f.scope === 'pepper' ? 'Which field?' : f.scope === 'poultry' ? 'Which flock?' : 'Applies to'}>
