@@ -24,10 +24,35 @@ standard, sales, litter and vaccinations.
 - **Litter & Manure** — litter laid, topped up, turned, changed, and
   **removed to field** as manure, with condition tracking.
 - **Growth** — weight samples charted against the flock's breed standard.
+- **Laying & Eggs** (layer flocks only) — see below.
 - **Sales & Profit** — egg/bird sales, with cost broken into feed, litter and setup.
 - **Health** — medications and vaccinations, plus one-click loading of the
   standard Hy-Line or Ross 308 vaccination programme.
 - **Reminders** — vaccinations due, feed reorder, litter change, plus your own tasks.
+
+### Laying & Eggs
+
+Under a layer flock's **Laying & Eggs** tab:
+
+- **Real point of lay** — the flock's actual first-egg date, taken straight
+  from the day eggs first appear in Daily Log, not guessed from a breed
+  standard.
+- **Laying rate** — today's hen-day %, a 7-day average, a 30-day average,
+  and a trend chart plotting your actual rate against a typical Hy-Line
+  Brown production curve.
+- **Egg cash flow** — today's, this week's, and this month's egg revenue,
+  pulled specifically from egg sales.
+- **Cost per egg** — feed cost ÷ eggs collected, next to your average sale
+  price, so you see the real margin per egg.
+- **Egg stock** — a running balance of eggs collected minus cracked minus
+  sold, the same ledger approach used for feed. Crate sales assume 30 eggs
+  per crate.
+- **Cracked eggs as cash** — shown as GH₵ lost, not just a count.
+
+Two things get flagged automatically, in Reminders as well as on this tab: a
+**laying rate drop** (a real week-over-week fall, only once the rate has
+settled past the noisy early ramp-up), and a **grower/layer feed mismatch**
+— eggs already coming in while the flock's feed schedule still shows Grower.
 
 ### Feed Mix calculator
 Enter your ingredient prices and blend; it returns finished **protein,
