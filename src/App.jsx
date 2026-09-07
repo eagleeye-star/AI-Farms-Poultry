@@ -1417,7 +1417,10 @@ function AppInner() {
         <div>
           <p className="brand-eyebrow">AI Farms · Poultry Operations</p>
           <h1 className="brand-title">{activeFlock.flockName}</h1>
-          <p className="brand-sub">{activeFlock.breed} · started {fmtDate(activeFlock.startDate)} · {activeFlock.location}</p>
+          <p className="brand-sub">
+            {activeFlock.breed} · started {fmtDate(activeFlock.startDate)} · {activeFlock.location}
+            {' '}<button className="link-btn" onClick={() => setModal(`flock:${activeFlock.id}`)}>Edit flock</button>
+          </p>
         </div>
         <div className="day-stamp">
           <DayRing pct={survivalRate ? survivalRate / 100 : 1} />
@@ -1427,6 +1430,19 @@ function AppInner() {
           </div>
         </div>
       </header>
+
+      {currentBirds === 0 && activeFlock.status !== 'completed' && (
+        <div className="stale-banner" style={{ marginBottom: 18, borderColor: 'rgba(122, 154, 102, 0.5)' }}>
+          ✓ <span>
+            <strong>{activeFlock.flockName}</strong> shows 0 birds — fully sold, culled, or moved on?
+            Its Daily Log, Sales &amp; Profit, and every record stay exactly as they are either way; marking
+            it Completed just clears it from your everyday flock switcher.
+          </span>
+          <button className="btn btn-green" style={{ marginLeft: 12 }} onClick={() => saveFlock({ ...activeFlock, status: 'completed' })}>
+            Mark Completed
+          </button>
+        </div>
+      )}
 
       <div className="seg-row">
         <div className="flock-seg">

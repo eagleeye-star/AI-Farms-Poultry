@@ -13,15 +13,22 @@ standard, sales, litter and vaccinations.
 
 ### Finishing a batch
 
-When you've sold everything from a batch and are starting a new one, add a
-**new flock** ("+ Flock") rather than editing the old one's start date —
+Applies the same way whether you've sold the last broiler or culled the last
+spent layer at end of lay: when you're starting a new batch, add a **new
+flock** ("+ Flock") rather than editing the old one's start date —
 otherwise the old and new batch's numbers blend together in the same log.
 
-Once a flock is done, edit it and set **Status → Completed**. It moves out
-of the everyday flock switcher so the list doesn't fill up with finished
-batches — nothing is deleted. Its full Daily Log, Sales & Profit, and
-history stay exactly as they were, still switchable to anytime via **Show
-completed**, and still included in Export and Backup.
+**Edit flock** sits right under the flock name at the top of the Poultry
+workspace — that's also where the point-of-lay override and Completed
+status live. Once a flock's bird count reaches zero, a banner appears there
+automatically with a one-tap **Mark Completed** button, so you don't have
+to remember to go looking for it.
+
+Marking a flock Completed just moves it out of the everyday flock switcher
+so the list doesn't fill up with finished batches — nothing is deleted. Its
+full Daily Log, Sales & Profit, and history stay exactly as they were, still
+switchable to anytime via **Show completed**, and still included in Export
+and Backup.
 
 - **Dashboard** — birds, mortality, survival, hen-day % (layers) or **FCR**
   against a Ross 308 target (broilers), revenue / cost / margin, **feed
