@@ -11,6 +11,18 @@ Multi-flock: switch between your Ross 308 broilers and Hy-Line layers, or add a
 new batch. Each flock keeps its own daily log, feed, growth curve, breed
 standard, sales, litter and vaccinations.
 
+### Finishing a batch
+
+When you've sold everything from a batch and are starting a new one, add a
+**new flock** ("+ Flock") rather than editing the old one's start date —
+otherwise the old and new batch's numbers blend together in the same log.
+
+Once a flock is done, edit it and set **Status → Completed**. It moves out
+of the everyday flock switcher so the list doesn't fill up with finished
+batches — nothing is deleted. Its full Daily Log, Sales & Profit, and
+history stay exactly as they were, still switchable to anytime via **Show
+completed**, and still included in Export and Backup.
+
 - **Dashboard** — birds, mortality, survival, hen-day % (layers) or **FCR**
   against a Ross 308 target (broilers), revenue / cost / margin, **feed
   run-out projection**, litter age and condition, manure banked.
@@ -36,7 +48,10 @@ Under a layer flock's **Laying & Eggs** tab:
 
 - **Real point of lay** — the flock's actual first-egg date, taken straight
   from the day eggs first appear in Daily Log, not guessed from a breed
-  standard.
+  standard. If your birds consistently start laying earlier or later than
+  the generic Hy-Line week-21 figure, set **Expected point of lay (week)**
+  when editing the flock — the pre-lay countdown then uses your own farm's
+  real experience instead of the textbook number.
 - **Laying rate** — today's hen-day %, a 7-day average, a 30-day average,
   and a trend chart plotting your actual rate against a typical Hy-Line
   Brown production curve.
@@ -49,10 +64,14 @@ Under a layer flock's **Laying & Eggs** tab:
   per crate.
 - **Cracked eggs as cash** — shown as GH₵ lost, not just a count.
 
-Two things get flagged automatically, in Reminders as well as on this tab: a
-**laying rate drop** (a real week-over-week fall, only once the rate has
-settled past the noisy early ramp-up), and a **grower/layer feed mismatch**
-— eggs already coming in while the flock's feed schedule still shows Grower.
+The moment real eggs show up in Daily Log, the app's own feed-phase
+recommendation switches to Layer immediately — it no longer waits for the
+generic breed-standard week, since real birds don't always match it. A
+**laying rate drop** still gets flagged automatically (a real week-over-week
+fall, only once the rate has settled past the noisy early ramp-up), and for
+the first two weeks after laying starts, a reminder nudges you to confirm
+the feeder actually has Layer feed in it — since fixing the app's own
+assumption doesn't switch what's physically in the trough.
 
 ### Feed Mix calculator
 Enter your ingredient prices and blend; it returns finished **protein,

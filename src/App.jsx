@@ -261,6 +261,7 @@ function migrate(saved) {
     // Old single-flock save: the existing flock becomes the layer flock.
     flocks = [makeLayerFlock(saved.flock), makeBroilerFlock()];
   }
+  flocks = flocks.map((f) => ({ status: 'active', ...f }));
   const pepper = saved.pepper || defaultPepper();
   return {
     flocks,
@@ -305,6 +306,84 @@ function loadData() {
 }
 
 const FEED_STANDARD = SEED.feedStandard;
+
+/* ---------------- Laying rate & egg tracking ---------------- */
+
+const CRATE_SIZE = 30; // eggs per crate — the common Ghanaian standard; adjust your own count if yours differs
+const LAY_DROP_ALERT_PTS = 10; // a week-over-week fall of this many percentage points is worth flagging
+const LAY_DROP_MIN_BASELINE = 15; // don't fire the alert during the noisy early ramp-up before a real rate is established
+
+/* A typical commercial Hy-Line Brown production curve, week of age -> hen-day
+   %. Published husbandry figures, not a guarantee — every flock's actual
+   curve depends on nutrition, health, heat, and light programme. Used only
+   as a reference line to compare against, the same way broiler weight is
+   already compared to the Ross 308 standard. */
+const HYLINE_LAY_STANDARD = [
+  { week: 18, layPct: 5 }, { week: 19, layPct: 20 }, { week: 20, layPct: 45 },
+  { week: 21, layPct: 65 }, { week: 22, layPct: 78 }, { week: 23, layPct: 85 },
+  { week: 24, layPct: 89 }, { week: 25, layPct: 91 }, { week: 26, layPct: 92 },
+  { week: 30, layPct: 93 }, { week: 40, layPct: 92 }, { week: 50, layPct: 90 },
+  { week: 60, layPct: 87 }, { week: 70, layPct: 83 }, { week: 80, layPct: 78 },
+  { week: 90, layPct: 72 },
+];
+
+function hylineLayStandardForWeek(week) {
+  const rows = HYLINE_LAY_STANDARD;
+  if (week < rows[0].week) return null;
+  if (week >= rows[rows.length - 1].week) return rows[rows.length - 1].layPct;
+  for (let i = 0; i < rows.length - 1; i++) {
+    const a = rows[i], b = rows[i + 1];
+    if (week >= a.week && week < b.week) {
+      // straight-line interpolation between the two nearest reference points
+      const t = (week - a.week) / (b.week - a.week);
+      return Math.round((a.layPct + t * (b.layPct - a.layPct)) * 10) / 10;
+    }
+  }
+  return null;
+}
+
+/** The date of the earliest daily-log entry with any eggs recorded — the
+    flock's real point-of-lay, not a breed-standard guess. Derived from the
+    log itself so it can never drift out of sync with what was actually
+    recorded. */
+function firstEggDate(dailyLog) {
+  const withEggs = dailyLog.filter((r) => (Number(r.eggs) || 0) > 0).sort((a, b) => new Date(a.date) - new Date(b.date));
+  return withEggs.length ? withEggs[0].date : null;
+}
+
+/** Hen-day % over a date range, weighted by actual eggs and bird-days rather
+    than averaging each day's percentage — robust to gaps in logging, where
+    a simple average of daily percentages would be skewed by missing days. */
+function weightedLayPct(dailyLog, fromDate, toDate) {
+  const rows = dailyLog.filter((r) => r.date >= fromDate && r.date <= toDate && r.closing);
+  if (!rows.length) return null;
+  const eggs = rows.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+  const birdDays = rows.reduce((s, r) => s + r.closing, 0);
+  return birdDays ? (eggs / birdDays) * 100 : null;
+}
+
+/** Eggs collected (+), cracked (-), and sold (-) merged chronologically into
+    one running stock balance — same "ledger" approach already used for feed,
+    just for eggs. Sales logged by the crate are converted to pieces using
+    CRATE_SIZE so the balance is always in a single, comparable unit. */
+function buildEggLedger(dailyLog, sales) {
+  const events = [
+    ...dailyLog.filter((r) => (Number(r.eggs) || 0) > 0).map((r) => ({ date: r.date, delta: Number(r.eggs), kind: 'collected', ref: r })),
+    ...dailyLog.filter((r) => (Number(r.eggsCracked) || 0) > 0).map((r) => ({ date: r.date, delta: -Number(r.eggsCracked), kind: 'cracked', ref: r })),
+    ...sales.filter((s) => s.item === 'Eggs (crates)' || s.item === 'Eggs (pieces)').map((s) => {
+      const pieces = s.item === 'Eggs (crates)' ? (Number(s.quantity) || 0) * CRATE_SIZE : (Number(s.quantity) || 0);
+      return { date: s.date, delta: -pieces, kind: 'sold', ref: s };
+    }),
+  ].sort((a, b) => {
+    const d = new Date(a.date) - new Date(b.date);
+    if (d !== 0) return d;
+    // same day: eggs collected before any leave as cracked/sold, so the
+    // balance never dips negative purely from same-day ordering
+    return a.kind === 'collected' ? -1 : (b.kind === 'collected' ? 1 : 0);
+  });
+  let running = 0;
+  return events.map((e) => { running += e.delta; return { ...e, balance: running }; });
+}
 
 const LITTER_CHANGE_DAYS = 42;      // typical deep-litter interval before a full change
 const LITTER_MATERIALS = ['Sawdust', 'Wood shavings', 'Rice husk', 'Groundnut shell', 'Other'];
@@ -482,6 +561,7 @@ function AppInner() {
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
   const [editingLog, setEditingLog] = useState(null); // the Daily Log entry being edited, if any
   const [invoicePrefill, setInvoicePrefill] = useState(null); // opens InvoiceModal when set
+  const [showCompletedFlocks, setShowCompletedFlocks] = useState(false);
   const [editingLitter, setEditingLitter] = useState(null); // the litter record being edited, if any
   const [editingFeed, setEditingFeed] = useState(null); // the feed purchase record being edited, if any
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
@@ -506,7 +586,10 @@ function AppInner() {
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
   const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
-  const POL_WEEK = polWeek(flockStandard);
+  // A farm's own birds can consistently start laying earlier or later than
+  // the generic breed-standard week — once you've seen that a few times,
+  // your own figure (set per flock) is worth more than the textbook one.
+  const POL_WEEK = activeFlock.polWeekOverride || polWeek(flockStandard);
 
   const dailyLog = useMemo(
     () => data.dailyLog.filter((r) => r.flockId === activeFlock.id).sort((a, b) => new Date(a.date) - new Date(b.date)),
@@ -588,9 +671,66 @@ function AppInner() {
     ? ((Number(latest.eggs) || 0) / latest.closing) * 100
     : null;
   const weeksToPOL = POL_WEEK - weekNumber;
-  const currentFeedPhase = feedPhaseForWeek(weekNumber, flockStandard);
+  // Once real eggs are on record, the feed recommendation should follow
+  // what's actually happening, not a generic breed-standard week that may
+  // not match this flock — some lines and conditions start laying earlier
+  // (or later) than the textbook figure, and the app shouldn't keep
+  // recommending Grower feed to a flock that's already laying.
+  const standardFeedPhase = feedPhaseForWeek(weekNumber, flockStandard);
+  const layerPhaseName = (flockStandard.find((r) => (r.feedType || '').toLowerCase().includes('layer')) || {}).feedType;
+  const currentFeedPhase = (activeFlock.type === 'layer' && totalEggs > 0 && layerPhaseName)
+    ? layerPhaseName
+    : standardFeedPhase;
   const standardWeight = standardWeightForWeek(weekNumber, flockStandard);
   const latestSample = weightSamples[weightSamples.length - 1];
+
+  /* ---- Laying rate, egg cash flow, and egg stock (layer flocks) ---- */
+  const actualFirstEggDate = useMemo(() => firstEggDate(dailyLog), [dailyLog]);
+  const daysSinceFirstEgg = actualFirstEggDate ? daysBetween(actualFirstEggDate, todayISO()) : null;
+  const weeklyLayPct = weightedLayPct(dailyLog, addDaysISO(todayISO(), -6), todayISO());
+  const monthlyLayPct = weightedLayPct(dailyLog, addDaysISO(todayISO(), -29), todayISO());
+  const standardLayPct = hylineLayStandardForWeek(weekNumber);
+
+  const eggLedger = useMemo(() => buildEggLedger(dailyLog, sales), [dailyLog, sales]);
+  const eggsInStock = eggLedger.length ? eggLedger[eggLedger.length - 1].balance : 0;
+
+  const eggSales = sales.filter((s) => s.item === 'Eggs (crates)' || s.item === 'Eggs (pieces)');
+  const eggRevenue = eggSales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const eggsSoldPieces = eggSales.reduce((s, r) => s + ((r.item === 'Eggs (crates)' ? (Number(r.quantity) || 0) * CRATE_SIZE : (Number(r.quantity) || 0))), 0);
+  const avgEggPrice = eggsSoldPieces ? eggRevenue / eggsSoldPieces : null;
+  const eggRevenueToday = eggSales.filter((r) => r.date === todayISO()).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const eggRevenueWeek = eggSales.filter((r) => r.date >= addDaysISO(todayISO(), -6)).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const eggRevenueMonth = eggSales.filter((r) => r.date >= addDaysISO(todayISO(), -29)).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  const costPerEgg = totalEggs ? totalFeedCost / totalEggs : null;
+  const eggMarginPerEgg = costPerEgg != null && avgEggPrice != null ? avgEggPrice - costPerEgg : null;
+  const crackedValueLost = avgEggPrice != null ? totalCracked * avgEggPrice : null;
+
+  // A meaningful week-over-week fall, once the rate has actually established
+  // itself past the noisy early ramp-up — not during it.
+  const layPrevWeekPct = weightedLayPct(dailyLog, addDaysISO(todayISO(), -13), addDaysISO(todayISO(), -7));
+  const layDropAlert = (
+    daysSinceFirstEgg != null && daysSinceFirstEgg >= 21 &&
+    layPrevWeekPct != null && layPrevWeekPct >= LAY_DROP_MIN_BASELINE &&
+    weeklyLayPct != null && (layPrevWeekPct - weeklyLayPct) >= LAY_DROP_ALERT_PTS
+  );
+
+  // The app's own feed-phase recommendation now follows real eggs, not the
+  // breed-standard week — but that doesn't mean the trough has actually
+  // been switched to Layer feed yet. Nudge for the first couple of weeks
+  // after laying starts, when it matters most (shell calcium) and is most
+  // likely to still be genuinely unresolved.
+  const growerLayerMismatch = activeFlock.type === 'layer'
+    && daysSinceFirstEgg != null && daysSinceFirstEgg <= 14;
+
+  const layTrendData = useMemo(() => dailyLog.map((r) => {
+    const wk = Math.ceil((daysBetween(activeFlock.startDate, r.date) + 1) / 7);
+    return {
+      date: fmtDate(r.date).slice(0, 6),
+      actual: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
+      standard: hylineLayStandardForWeek(wk),
+    };
+  }), [dailyLog, activeFlock.startDate]);
 
   // Feed conversion ratio — meaningful for broilers: kg feed per kg liveweight to date.
   const fcr = (activeFlock.type === 'broiler' && latestSample && latestSample.avgWeightG && currentBirds && totalFeed)
@@ -1290,12 +1430,19 @@ function AppInner() {
 
       <div className="seg-row">
         <div className="flock-seg">
-          {data.flocks.map((f) => (
-            <button key={f.id} className={activeFlockId === f.id ? 'active' : ''} onClick={() => { setActiveFlockId(f.id); setModal(null); }}>
-              {f.flockName}
-            </button>
-          ))}
+          {data.flocks
+            .filter((f) => f.status !== 'completed' || showCompletedFlocks || f.id === activeFlockId)
+            .map((f) => (
+              <button key={f.id} className={activeFlockId === f.id ? 'active' : ''} onClick={() => { setActiveFlockId(f.id); setModal(null); }}>
+                {f.flockName}{f.status === 'completed' ? ' ✓' : ''}
+              </button>
+            ))}
           <button className="seg-add" onClick={() => setModal('flock:new')} title="Add a flock / new batch">+ Flock</button>
+          {data.flocks.some((f) => f.status === 'completed') && (
+            <button className="seg-add" onClick={() => setShowCompletedFlocks((v) => !v)}>
+              {showCompletedFlocks ? 'Hide completed' : 'Show completed'}
+            </button>
+          )}
         </div>
         <div className="data-tools">
           <button className="btn" onClick={backupData} title="Download all data as a backup file">⤓ Backup</button>
@@ -1321,6 +1468,7 @@ function AppInner() {
           ['mix', 'Feed Mix'],
           ['litter', 'Litter & Manure'],
           ['growth', 'Growth'],
+          ...(activeFlock.type === 'layer' ? [['laying', 'Laying & Eggs']] : []),
           ['sales', 'Sales & Profit'],
           ['health', 'Health'],
           ['reminders', 'Reminders'],
@@ -1426,6 +1574,34 @@ function AppInner() {
         />
       )}
 
+      {tab === 'laying' && (
+        <LayingEggsTab
+          actualFirstEggDate={actualFirstEggDate}
+          daysSinceFirstEgg={daysSinceFirstEgg}
+          weeksToPOL={weeksToPOL}
+          polWeek={POL_WEEK}
+          henDayPct={henDayPct}
+          weeklyLayPct={weeklyLayPct}
+          monthlyLayPct={monthlyLayPct}
+          standardLayPct={standardLayPct}
+          layTrendData={layTrendData}
+          eggLedger={[...eggLedger].reverse()}
+          eggsInStock={eggsInStock}
+          totalEggs={totalEggs}
+          totalCracked={totalCracked}
+          eggRevenue={eggRevenue}
+          eggRevenueToday={eggRevenueToday}
+          eggRevenueWeek={eggRevenueWeek}
+          eggRevenueMonth={eggRevenueMonth}
+          avgEggPrice={avgEggPrice}
+          costPerEgg={costPerEgg}
+          eggMarginPerEgg={eggMarginPerEgg}
+          crackedValueLost={crackedValueLost}
+          layDropAlert={layDropAlert}
+          growerLayerMismatch={growerLayerMismatch}
+        />
+      )}
+
       {tab === 'sales' && (
         <SalesTab
           sales={[...sales].reverse()}
@@ -1483,6 +1659,18 @@ function AppInner() {
                 dueDate: todayISO(),
                 source: activeFlock.flockName,
               })),
+            ...(layDropAlert ? [{
+              id: 'lay-drop',
+              title: `Laying rate has dropped this week — now averaging ${num(weeklyLayPct, 1)}%`,
+              dueDate: todayISO(),
+              source: activeFlock.flockName,
+            }] : []),
+            ...(growerLayerMismatch ? [{
+              id: 'grower-layer-mismatch',
+              title: 'Eggs have started — confirm the feeder actually has Layer feed in it',
+              dueDate: todayISO(),
+              source: activeFlock.flockName,
+            }] : []),
           ]}
           onAdd={() => setModal('reminder')}
           onToggle={toggleReminder}
@@ -2550,6 +2738,161 @@ function GrowthTab({ weightSamples, growthChartData, feedStandard, flockType, on
           </tbody>
         </table>
       </div>
+    </>
+  );
+}
+
+/* ---------------- Laying rate, egg cash flow & stock ---------------- */
+
+function LayingEggsTab({
+  actualFirstEggDate, daysSinceFirstEgg, weeksToPOL, polWeek,
+  henDayPct, weeklyLayPct, monthlyLayPct, standardLayPct, layTrendData,
+  eggLedger, eggsInStock, totalEggs, totalCracked,
+  eggRevenue, eggRevenueToday, eggRevenueWeek, eggRevenueMonth,
+  avgEggPrice, costPerEgg, eggMarginPerEgg, crackedValueLost,
+  layDropAlert, growerLayerMismatch,
+}) {
+  const [chartWindow, setChartWindow] = useState(90);
+  const windowed = chartWindow === 0 ? layTrendData : layTrendData.slice(-chartWindow);
+  const vsStandard = standardLayPct != null && henDayPct != null ? henDayPct - standardLayPct : null;
+
+  return (
+    <>
+      {!actualFirstEggDate ? (
+        <>
+          <p className="section-title" style={{ marginTop: 0 }}>Point of lay</p>
+          <p className="empty" style={{ padding: '18px 0' }}>
+            No eggs logged yet. {weeksToPOL > 0
+              ? `The Hy-Line standard puts point of lay around week ${polWeek} — about ${weeksToPOL} week(s) away at the current pace.`
+              : `This flock is past the standard week-${polWeek} point of lay with nothing logged yet — worth a closer look if that continues.`}
+          </p>
+        </>
+      ) : (
+        <div className="stale-banner" style={{ marginBottom: 18, borderColor: 'rgba(122, 154, 102, 0.5)' }}>
+          🥚 <span>
+            <strong>First egg: {fmtDate(actualFirstEggDate)}</strong> ({daysSinceFirstEgg} day{daysSinceFirstEgg === 1 ? '' : 's'} ago) —
+            this flock's real point of lay, recorded from the day eggs actually started, not a breed-standard guess.
+          </span>
+        </div>
+      )}
+
+      {growerLayerMismatch && (
+        <div className="stale-banner" style={{ marginBottom: 18 }}>
+          ⚠ <span>
+            Eggs have started — make sure the feeder actually has <strong>Layer feed</strong> in it, not
+            Grower. Layer feed carries the calcium (3.4–4.2%) a laying hen needs for shell strength —
+            grower feed alone runs closer to 1%. This nudge only shows for the first two weeks of lay.
+          </span>
+        </div>
+      )}
+
+      {layDropAlert && (
+        <div className="stale-banner" style={{ marginBottom: 18 }}>
+          ⚠ <span>
+            Laying rate has fallen this week (7-day average now {num(weeklyLayPct, 1)}%) compared to the
+            week before — worth checking feed, water, heat, and light hours, and watching for any early
+            signs of illness. A real drop like this is often the first sign of a problem, before birds
+            look sick.
+          </span>
+        </div>
+      )}
+
+      <p className="section-title" style={{ marginTop: 0 }}>Laying rate</p>
+      <div className="grid grid-4">
+        <StatCard title="Today" value={henDayPct != null ? `${num(henDayPct, 1)}%` : '—'} tone="green" foot="hen-day %" />
+        <StatCard title="7-Day Average" value={weeklyLayPct != null ? `${num(weeklyLayPct, 1)}%` : '—'} tone="gold" />
+        <StatCard title="30-Day Average" value={monthlyLayPct != null ? `${num(monthlyLayPct, 1)}%` : '—'} />
+        <StatCard
+          title="vs. Hy-Line Standard"
+          value={vsStandard != null ? `${vsStandard >= 0 ? '+' : ''}${num(vsStandard, 1)} pts` : '—'}
+          tone={vsStandard != null ? (vsStandard >= -3 ? 'green' : 'rust') : undefined}
+          foot={standardLayPct != null ? `standard ~${num(standardLayPct, 1)}% this week` : 'outside reference range'}
+        />
+      </div>
+
+      <div className="panel-head" style={{ marginTop: 18, marginBottom: 0 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Trend</h3>
+        <div className="field-seg" style={{ marginBottom: 0 }}>
+          {[[30, '30d'], [90, '90d'], [180, '180d'], [0, 'All']].map(([d, label]) => (
+            <button key={d} className={chartWindow === d ? 'active' : ''} onClick={() => setChartWindow(d)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="panel">
+        <div className="panel-head"><h3>Hen-day % — actual vs. Hy-Line standard</h3></div>
+        <div className="chart-card">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={windowed} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
+              <YAxis domain={[0, 100]} tickLine={false} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+              <Line type="monotone" dataKey="actual" name="Actual %" stroke="#D4A537" strokeWidth={2} dot={false} connectNulls />
+              <Line type="monotone" dataKey="standard" name="Hy-Line standard %" stroke="#7A9A66" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <p className="section-title">Egg cash flow</p>
+      <div className="grid grid-4">
+        <StatCard title="Today" value={`GH₵ ${num(eggRevenueToday, 2)}`} tone="green" />
+        <StatCard title="This Week" value={`GH₵ ${num(eggRevenueWeek, 2)}`} tone="gold" />
+        <StatCard title="This Month" value={`GH₵ ${num(eggRevenueMonth, 2)}`} />
+        <StatCard title="All Time" value={`GH₵ ${num(eggRevenue, 2)}`} foot={avgEggPrice != null ? `avg GH₵ ${num(avgEggPrice, 2)}/egg` : ''} />
+      </div>
+
+      <p className="section-title">Cost per egg</p>
+      <div className="grid grid-4">
+        <StatCard title="Feed Cost / Egg" value={costPerEgg != null ? `GH₵ ${num(costPerEgg, 2)}` : '—'} tone="rust" foot="lifetime, this flock" />
+        <StatCard title="Avg Sale Price" value={avgEggPrice != null ? `GH₵ ${num(avgEggPrice, 2)}` : '—'} tone="green" />
+        <StatCard
+          title="Margin / Egg"
+          value={eggMarginPerEgg != null ? `GH₵ ${num(eggMarginPerEgg, 2)}` : '—'}
+          tone={eggMarginPerEgg != null ? (eggMarginPerEgg >= 0 ? 'green' : 'rust') : undefined}
+          foot="feed cost only, not full overhead"
+        />
+        <StatCard
+          title="Lost to Cracked"
+          value={crackedValueLost != null ? `GH₵ ${num(crackedValueLost, 2)}` : '—'}
+          tone="rust"
+          foot={`${num(totalCracked)} cracked, lifetime`}
+        />
+      </div>
+
+      <p className="section-title">Egg stock</p>
+      <div className="grid grid-4" style={{ marginBottom: 14 }}>
+        <StatCard title="In Stock" value={`${num(eggsInStock)} pieces`} tone={eggsInStock < 0 ? 'rust' : 'green'} foot={`≈ ${num(eggsInStock / CRATE_SIZE, 1)} crates`} />
+        <StatCard title="Collected" value={num(totalEggs)} tone="gold" foot="lifetime" />
+        <StatCard title="Cracked" value={num(totalCracked)} tone="rust" />
+        <StatCard title="Sold" value={num(totalEggs - totalCracked - eggsInStock)} foot="pieces, lifetime" />
+      </div>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Date</th><th>Event</th><th>Change</th><th>Balance after</th></tr></thead>
+          <tbody>
+            {eggLedger.map((e, i) => (
+              <tr key={i}>
+                <td className="mono">{fmtDate(e.date)}</td>
+                <td>
+                  {e.kind === 'collected' && <span className="tag green">Collected</span>}
+                  {e.kind === 'cracked' && <span className="tag rust">Cracked</span>}
+                  {e.kind === 'sold' && <span className="tag gold">Sold{e.ref.item === 'Eggs (crates)' ? ` (${num(e.ref.quantity)} crate${e.ref.quantity === 1 ? '' : 's'})` : ''}</span>}
+                </td>
+                <td className="mono">{e.delta > 0 ? '+' : ''}{num(e.delta)}</td>
+                <td className="mono"><strong>{num(e.balance)}</strong></td>
+              </tr>
+            ))}
+            {eggLedger.length === 0 && <tr><td colSpan={4} className="empty">Nothing logged yet — the stock balance builds as you log eggs collected in Daily Log and eggs sold in Sales &amp; Profit.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot">
+        Sold-by-crate assumes {CRATE_SIZE} eggs per crate — adjust in your own head if your crates run a
+        different size. The Hy-Line standard line is a typical published curve, not a target: real flocks
+        vary with nutrition, heat, and light.
+      </p>
     </>
   );
 }
@@ -3874,6 +4217,7 @@ function FlockForm({ flock, onClose, onSave }) {
     breed: flock?.breed || '', startDate: flock?.startDate || todayISO(),
     initialBirds: flock?.initialBirds ?? '', location: flock?.location || 'Eikwe, Western Region',
     setupCost: flock?.setupCost ?? '', notes: flock?.notes || '',
+    polWeekOverride: flock?.polWeekOverride ?? '', status: flock?.status || 'active',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
@@ -3889,6 +4233,8 @@ function FlockForm({ flock, onClose, onSave }) {
       standardKey: f.type === 'broiler' ? 'ross308_broiler' : 'hyline_layer',
       setupCost: f.setupCost === '' ? null : Number(f.setupCost),
       notes: f.notes || '',
+      polWeekOverride: f.polWeekOverride === '' ? null : Number(f.polWeekOverride),
+      status: isNew ? 'active' : f.status,
     });
   }
   return (
@@ -3906,8 +4252,28 @@ function FlockForm({ flock, onClose, onSave }) {
         <Field label="Birds placed"><input type="number" value={f.initialBirds} onChange={set('initialBirds')} /></Field>
         <Field label="Location"><input value={f.location} onChange={set('location')} /></Field>
         <Field label="Setup cost (GH₵)"><input type="number" step="0.01" value={f.setupCost} onChange={set('setupCost')} placeholder="chicks, brooding, etc." /></Field>
+        {f.type === 'layer' && (
+          <Field label="Expected point of lay (week)">
+            <input type="number" value={f.polWeekOverride} onChange={set('polWeekOverride')} placeholder="21 (Hy-Line standard) — set your own if different" />
+          </Field>
+        )}
+        {!isNew && (
+          <Field label="Status">
+            <select value={f.status} onChange={set('status')}>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+            </select>
+          </Field>
+        )}
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {!isNew && f.status === 'completed' && (
+        <p className="stat-foot" style={{ marginTop: 0 }}>
+          Marking this flock Completed just moves it out of the everyday flock switcher — nothing is
+          deleted, and its full Daily Log, Sales &amp; Profit, and history stay exactly as they are.
+          You can switch it back to Active anytime, or find it under "Show completed" in the switcher.
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>{isNew ? 'Create flock' : 'Save flock'}</button>
@@ -5356,19 +5722,22 @@ function GoatWorkspace({
   const [kiddingPrefill, setKiddingPrefill] = useState(null);
   const [mortalityPrefill, setMortalityPrefill] = useState(null);
 
-  const animals = goats.animals || [];
-  const heats = goats.heats || [];
-  const matings = goats.matings || [];
-  const kiddings = goats.kiddings || [];
-  const kidMortality = goats.kidMortality || [];
-  const health = goats.health || [];
-  const weights = goats.weights || [];
-  const sales = goats.sales || [];
+  // Memoized (not just `|| []`) so hooks further down that depend on these
+  // — the reminders list, the explorer's scenario calcs — actually get to
+  // skip recomputation instead of seeing a "new" array every render.
+  const animals = useMemo(() => goats.animals || [], [goats.animals]);
+  const heats = useMemo(() => goats.heats || [], [goats.heats]);
+  const matings = useMemo(() => goats.matings || [], [goats.matings]);
+  const kiddings = useMemo(() => goats.kiddings || [], [goats.kiddings]);
+  const kidMortality = useMemo(() => goats.kidMortality || [], [goats.kidMortality]);
+  const health = useMemo(() => goats.health || [], [goats.health]);
+  const weights = useMemo(() => goats.weights || [], [goats.weights]);
+  const sales = useMemo(() => goats.sales || [], [goats.sales]);
 
   const activeAnimals = animals.filter((a) => a.status === 'active' || a.status === 'quarantine');
   const does = activeAnimals.filter((a) => a.sex === 'doe');
   const bucks = activeAnimals.filter((a) => a.sex === 'buck');
-  const goatLabel = (id) => { const a = animals.find((x) => x.id === id); return a ? `${a.name || a.tag}${a.tag && a.name ? ` (${a.tag})` : ''}` : '—'; };
+  const goatLabel = useCallback((id) => { const a = animals.find((x) => x.id === id); return a ? `${a.name || a.tag}${a.tag && a.name ? ` (${a.tag})` : ''}` : '—'; }, [animals]);
 
   const now = todayISO();
 
@@ -5404,7 +5773,7 @@ function GoatWorkspace({
       }
     });
     return items;
-  }, [activeAnimals, health, heats, matings, kiddings, now]);
+  }, [activeAnimals, health, heats, matings, kiddings, now, goatLabel]);
 
   /* ---- dashboard stats ---- */
   const totalHerd = activeAnimals.length;
@@ -5491,7 +5860,7 @@ function GoatWorkspace({
         <>
           <div className="grid grid-4">
             <StatCard title="Active Herd" value={num(totalHerd)} tone="green" foot={`${does.length} does · ${bucks.length} bucks`} />
-            <StatCard title="Kid Survival Rate" value={kidSurvivalRate != null ? `${kidSurvivalRate}%` : '—'} tone={kidSurvivalRate == null ? undefined : kidSurvivalRate >= 85 ? 'green' : 'gold'} foot={`${kidDeaths} kid death(s) of ${totalBornLive} born live`} />
+            <StatCard title="Kid Survival Rate" value={kidSurvivalRate != null ? `${kidSurvivalRate}%` : '—'} tone={kidSurvivalRate == null ? undefined : kidSurvivalRate >= 85 ? 'green' : 'gold'} foot={`${kidDeaths} death(s) of ${totalBornLive} born live · ${totalStillborn} stillborn`} />
             <StatCard title="Avg Kids / Kidding" value={avgKidsPerKidding != null ? num(avgKidsPerKidding, 1) : '—'} tone="gold" foot={`${kiddings.length} kidding(s) recorded`} />
             <StatCard title="Sold / Culled" value={`${soldCount} / ${deceasedCount}`} tone="rust" foot="lifetime herd movement" />
           </div>
@@ -5980,7 +6349,10 @@ function GoatExplorer() {
       cumulative += netCashFlow;
 
       const doesEndComputed = does * (1 - mortality) + retainedDoes;
-      const bucksEndComputed = bucks * (1 - mortality) + retainedBucks;
+      // A bought replacement buck should actually join the herd count, not
+      // just show up as a cost while the buck population keeps decaying —
+      // otherwise the model charges you for a buck it never adds back.
+      const bucksEndComputed = bucks * (1 - mortality) + retainedBucks + (buckReplaceCost > 0 ? 1 : 0);
       const override = herdOverrides[y] || {};
       const doesEnd = override.does != null ? override.does : doesEndComputed;
       const bucksEnd = override.bucks != null ? override.bucks : bucksEndComputed;
