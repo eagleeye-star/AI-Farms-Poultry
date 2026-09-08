@@ -5,6 +5,34 @@ Three workspaces under one roof, switched from the toggle at the top:
 
 ---
 
+## Farm Profile — using this for more than one farm
+
+Tap **Farm Profile** in the top bar (visible from every workspace) to set
+your farm's name, location, and contact details. This is what shows up in
+every header, the weekly report, and on every invoice and receipt you
+generate — so the app reflects *your* farm, not a copy of someone else's.
+
+**If you're sharing this app with others** (friends each signing in with
+their own account on the same deployment): every brand-new sign-up starts
+completely empty — no inherited flock names, no borrowed history, no
+pre-filled farm name. Each person sets their own Farm Profile once, and from
+then on their data, their headers, and their documents are entirely their
+own. Row-level security on the cloud database means no account can see
+another's data, regardless of how many people share the same deployment.
+
+**Two things worth knowing if several people use one deployment:**
+- The installed app's icon and name on someone's home screen come from the
+  build itself, not the Farm Profile — everyone who installs this same
+  deployment gets the same icon/name, even with different farm names set
+  inside the app.
+- Whoever owns the Supabase project this is connected to is the de facto
+  administrator of everyone's data on it — their storage and bandwidth
+  limits apply across every account, and they're the one who'd need to act
+  on any account-level issue (password resets outside the app's own flow,
+  etc.).
+
+---
+
 ## Poultry
 
 Multi-flock: switch between your Ross 308 broilers and Hy-Line layers, or add a
@@ -31,7 +59,8 @@ switchable to anytime via **Show completed**, and still included in Export
 and Backup.
 
 - **Dashboard** — birds, mortality, survival, hen-day % (layers) or **FCR**
-  against a Ross 308 target (broilers), revenue / cost / margin, **feed
+  against a Ross 308 target (broilers), **egg crates today and this week**
+  (Ghana's 30-eggs-per-crate standard), revenue / cost / margin, **feed
   run-out projection**, litter age and condition, manure banked.
 - **Feed & Inventory** — log purchases here; the running balance updates
   automatically from those purchases *and* from the "feed given" you log

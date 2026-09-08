@@ -156,14 +156,35 @@ function makeBroilerFlock() {
   };
 }
 
+/** The farm identity shown in headers, invoices, and backups. This is the
+    MIGRATION fallback only — it fills in the field for an account that
+    already has real farm data saved from before this field existed. A
+    brand-new account never hits this default; see freshData() below. */
+function defaultFarmProfile() {
+  return {
+    farmName: 'AI Farms',
+    location: 'Eikwe, Western Region',
+    email: 'aifarms101@gmail.com',
+    phone: '0597147460',
+  };
+}
+
+/** Genuinely empty starter flocks for a brand-new account — no name, no
+    history, no borrowed dates or bird counts. Distinct from makeLayerFlock()
+    /makeBroilerFlock() above, which intentionally keep their real defaults
+    since those two are also used to recover an existing pre-multi-flock
+    save's actual data during migration. */
+function starterFlocks() {
+  return [
+    { id: 'layers', flockName: 'Layer Flock', type: 'layer', standardKey: 'hyline_layer', breed: 'Hy-Line', startDate: todayISO(), initialBirds: 0, location: '', setupCost: null },
+    { id: 'broilers', flockName: 'Broiler Batch', type: 'broiler', standardKey: 'ross308_broiler', breed: 'Ross 308', startDate: todayISO(), initialBirds: 0, location: '', setupCost: null },
+  ];
+}
+
 function freshData() {
   return {
-    flocks: [makeLayerFlock(), makeBroilerFlock()],
-    dailyLog: tagEntries(SEED.dailyLog, 'layers'),
-    meds: tagEntries(SEED.meds, 'layers'),
-    vax: tagEntries(SEED.vax, 'layers'),
-    feed: tagEntries(SEED.feed, 'layers'),
-    weightSamples: tagEntries(SEED.weightSamples, 'layers'),
+    flocks: starterFlocks(),
+    dailyLog: [], meds: [], vax: [], feed: [], weightSamples: [],
     sales: [],
     reminders: [],
     litter: [],       // litter laid / topped up / changed / harvested as manure
@@ -173,6 +194,7 @@ function freshData() {
     invoices: [],     // invoices/receipts issued to buyers
     pepper: defaultPepper(),
     goats: defaultGoats(),
+    farmProfile: { farmName: '', location: '', email: '', phone: '' },
     updatedAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION,
   };
@@ -277,6 +299,7 @@ function migrate(saved) {
     staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
     invoices: saved.invoices || [],
+    farmProfile: saved.farmProfile || defaultFarmProfile(),
     pepper: {
       ...defaultPepper(),
       ...pepper,
@@ -570,6 +593,7 @@ function AppInner() {
   const [user, setUser] = useState(getUser);
   const [cloudReady, setCloudReady] = useState(isCloudConfigured);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
+  const [showProfileForm, setShowProfileForm] = useState(false);
 
   useEffect(() => {
     // Kept synchronous and un-debounced on purpose: this app's core promise
@@ -667,6 +691,11 @@ function AppInner() {
 
   const totalEggs = dailyLog.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
   const totalCracked = dailyLog.reduce((s, r) => s + (Number(r.eggsCracked) || 0), 0);
+  // Raw egg counts (not the %) for the crates-today/this-week dashboard
+  // cards — Ghana packs eggs 30 to a crate, so this is what a farmer
+  // actually walks out to the market with.
+  const eggsToday = dailyLog.filter((r) => r.date === todayISO()).reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+  const eggsThisWeek = dailyLog.filter((r) => r.date >= addDaysISO(todayISO(), -6)).reduce((s, r) => s + (Number(r.eggs) || 0), 0);
   const henDayPct = latest && latest.closing
     ? ((Number(latest.eggs) || 0) / latest.closing) * 100
     : null;
@@ -1008,6 +1037,9 @@ function AppInner() {
     });
     setActiveFlockId(flock.id);
   }
+  function updateFarmProfile(profile) {
+    setData((d) => touch({ ...d, farmProfile: profile }));
+  }
   function addReminder(entry) {
     setData((d) => touch({ ...d, reminders: [...(d.reminders || []), entry] }));
   }
@@ -1205,7 +1237,7 @@ function AppInner() {
     const weekFeed = recent.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
     const weekEggs = recent.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
     const lines = [
-      `AI FARMS — ${activeFlock.flockName} — Weekly Report`,
+      `${data.farmProfile.farmName || 'Farm'} — ${activeFlock.flockName} — Weekly Report`,
       `Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}`,
       '',
       `Current flock: ${num(currentBirds)} birds (${num(survivalRate, 1)}% survival)`,
@@ -1400,6 +1432,7 @@ function AppInner() {
         onSync={() => syncNow('auto')}
         onPull={() => syncNow('pull')}
         onSignOut={handleSignOut}
+        onEditProfile={() => setShowProfileForm(true)}
       />
 
       {sync.message && sync.message.includes('restored automatically') && (
@@ -1415,7 +1448,7 @@ function AppInner() {
       {workspace === 'poultry' && (<>
       <header className="header">
         <div>
-          <p className="brand-eyebrow">AI Farms · Poultry Operations</p>
+          <p className="brand-eyebrow">{data.farmProfile.farmName || 'My Farm'} · Poultry Operations</p>
           <h1 className="brand-title">{activeFlock.flockName}</h1>
           <p className="brand-sub">
             {activeFlock.breed} · started {fmtDate(activeFlock.startDate)} · {activeFlock.location}
@@ -1507,6 +1540,8 @@ function AppInner() {
           henDayPct={henDayPct}
           totalEggs={totalEggs}
           totalCracked={totalCracked}
+          eggsToday={eggsToday}
+          eggsThisWeek={eggsThisWeek}
           weeksToPOL={weeksToPOL}
           polWeek={POL_WEEK}
           currentFeedPhase={currentFeedPhase}
@@ -1779,6 +1814,7 @@ function AppInner() {
       {workspace === 'pepper' && (
         <PepperWorkspace
           pepper={data.pepper}
+          farmProfile={data.farmProfile}
           reminders={data.reminders || []}
           expenses={data.expenses || []}
           onUpdateField={updateField}
@@ -1808,6 +1844,7 @@ function AppInner() {
       {workspace === 'goats' && (
         <GoatWorkspace
           goats={data.goats}
+          farmProfile={data.farmProfile}
           reminders={data.reminders || []}
           expenses={data.expenses || []}
           onAddGoat={addGoat}
@@ -1853,8 +1890,17 @@ function AppInner() {
         <InvoiceModal
           prefill={invoicePrefill}
           invoices={data.invoices || []}
+          farmProfile={data.farmProfile}
           onSave={addInvoice}
           onClose={() => setInvoicePrefill(null)}
+        />
+      )}
+
+      {showProfileForm && (
+        <FarmProfileForm
+          profile={data.farmProfile}
+          onSave={(p) => { updateFarmProfile(p); setShowProfileForm(false); }}
+          onClose={() => setShowProfileForm(false)}
         />
       )}
     </div>
@@ -1865,7 +1911,7 @@ function AppInner() {
 
 function DashboardTab({
   currentBirds, totalMortality, survivalRate, totalFeed, feedBalance,
-  totalFeedCost, feedCostPerBird, henDayPct, totalEggs, totalCracked,
+  totalFeedCost, feedCostPerBird, henDayPct, totalEggs, totalCracked, eggsToday, eggsThisWeek,
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
@@ -1944,6 +1990,23 @@ function DashboardTab({
           />
         )}
       </div>
+
+      {!isBroiler && (
+        <div className="grid grid-4" style={{ marginTop: 16 }}>
+          <StatCard
+            title="Crates Today"
+            value={num(eggsToday / CRATE_SIZE, 1)}
+            tone="green"
+            foot={`${num(eggsToday)} egg${eggsToday === 1 ? '' : 's'} · ${CRATE_SIZE}/crate`}
+          />
+          <StatCard
+            title="Crates This Week"
+            value={num(eggsThisWeek / CRATE_SIZE, 1)}
+            tone="gold"
+            foot={`${num(eggsThisWeek)} eggs, last 7 days`}
+          />
+        </div>
+      )}
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="sales logged for this flock" />
@@ -3081,7 +3144,7 @@ function nurseryStatus(batch, asOf = todayISO()) {
 }
 
 function PepperWorkspace({
-  pepper, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
+  pepper, farmProfile, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
@@ -3219,10 +3282,10 @@ function PepperWorkspace({
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow pepper">AI Farms · Bell Pepper</p>
+          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · Bell Pepper</p>
           <h1 className="brand-title">Bell Pepper Fields</h1>
           <p className="brand-sub">
-            Eikwe, Western Region · {fields.length} fields
+            {farmProfile.location || 'Location not set'} · {fields.length} fields
             {activeField ? ` · viewing ${activeField.name}` : ' · all fields combined'}
           </p>
         </div>
@@ -4226,6 +4289,36 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
 
 const SALE_ITEMS = ['Eggs (crates)', 'Eggs (pieces)', 'Spent hens', 'Broilers', 'Cockerels', 'Other'];
 
+function FarmProfileForm({ profile, onClose, onSave }) {
+  const [f, setF] = useState({
+    farmName: profile?.farmName || '', location: profile?.location || '',
+    email: profile?.email || '', phone: profile?.phone || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.farmName) return;
+    onSave({ farmName: f.farmName, location: f.location || '', email: f.email || '', phone: f.phone || '' });
+  }
+  return (
+    <Modal
+      title="Farm Profile"
+      sub="Shown across the app's headers, invoices, and backups — this is what makes it your farm, not a copy of someone else's."
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Farm name" span2><input value={f.farmName} onChange={set('farmName')} placeholder="e.g. Green Valley Farms" /></Field>
+        <Field label="Location"><input value={f.location} onChange={set('location')} placeholder="e.g. Kasoa, Central Region" /></Field>
+        <Field label="Contact email"><input type="email" value={f.email} onChange={set('email')} /></Field>
+        <Field label="Contact phone / WhatsApp" span2><input value={f.phone} onChange={set('phone')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit} disabled={!f.farmName}>Save profile</button>
+      </div>
+    </Modal>
+  );
+}
+
 function FlockForm({ flock, onClose, onSave }) {
   const isNew = !flock;
   const [f, setF] = useState({
@@ -4517,7 +4610,7 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut }) {
+function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut, onEditProfile }) {
   const configured = cloudReady;
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
@@ -4535,6 +4628,7 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
         {user && <span className="sync-user"> · {user.email}</span>}
       </span>
       <span className="sync-actions">
+        <button className="link-btn" onClick={onEditProfile}>Farm Profile</button>
         {!configured && (
           <button className="link-btn" onClick={onSetupCloud}>Set up cloud sync</button>
         )}
@@ -5544,7 +5638,7 @@ function ExportCenterTab({ data, onNewInvoice, onDeleteInvoice }) {
  * the page, so "Print / Save as PDF" uses the phone's own print dialog
  * (Android's has "Save as PDF" built in) rather than a bundled PDF library.
  */
-function InvoiceModal({ prefill, invoices, onSave, onClose }) {
+function InvoiceModal({ prefill, invoices, farmProfile, onSave, onClose }) {
   const [kind, setKind] = useState(prefill?.kind || 'invoice'); // 'invoice' | 'receipt'
   const [f, setF] = useState({
     date: prefill?.date || todayISO(),
@@ -5615,10 +5709,10 @@ function InvoiceModal({ prefill, invoices, onSave, onClose }) {
         <div className="invoice-print">
           <div className="invoice-head">
             <div>
-              <div className="invoice-biz-name">AI FARMS</div>
-              <div className="invoice-biz-line">Eikwe, Western Region, Ghana</div>
-              <div className="invoice-biz-line">aifarms101@gmail.com</div>
-              <div className="invoice-biz-line">WhatsApp: 0597147460</div>
+              <div className="invoice-biz-name">{(farmProfile.farmName || 'MY FARM').toUpperCase()}</div>
+              {farmProfile.location && <div className="invoice-biz-line">{farmProfile.location}</div>}
+              {farmProfile.email && <div className="invoice-biz-line">{farmProfile.email}</div>}
+              {farmProfile.phone && <div className="invoice-biz-line">WhatsApp: {farmProfile.phone}</div>}
             </div>
             <div className="invoice-title-block">
               <div className="invoice-title">{kind === 'receipt' ? 'RECEIPT' : 'INVOICE'}</div>
@@ -5646,7 +5740,7 @@ function InvoiceModal({ prefill, invoices, onSave, onClose }) {
           <div className="invoice-total">TOTAL &nbsp; <span>GH₵ {num(amount, 2)}</span></div>
           <div className={`invoice-status ${paid ? 'paid' : 'due'}`}>{paid ? 'PAID IN FULL' : 'PAYMENT DUE'}</div>
           {f.notes && <div className="invoice-notes">{f.notes}</div>}
-          <div className="invoice-footer">Thank you for your business — AI Farms, Eikwe, Western Region.</div>
+          <div className="invoice-footer">Thank you for your business — {farmProfile.farmName || 'us'}{farmProfile.location ? `, ${farmProfile.location}` : ''}.</div>
         </div>
       </div>
     </div>
@@ -5718,7 +5812,7 @@ function inbreedingBadge(level) {
 }
 
 function GoatWorkspace({
-  goats, reminders, expenses,
+  goats, farmProfile, reminders, expenses,
   onAddGoat, onUpdateGoat, onDeleteGoat,
   onAddHeat, onDeleteHeat,
   onAddMating, onDeleteMating,
@@ -5848,9 +5942,9 @@ function GoatWorkspace({
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow">AI Farms · Goats</p>
+          <p className="brand-eyebrow">{farmProfile.farmName || 'My Farm'} · Goats</p>
           <h1 className="brand-title">Goat Herd</h1>
-          <p className="brand-sub">{totalHerd} active · {does.length} does · {bucks.length} bucks · Eikwe, Western Region</p>
+          <p className="brand-sub">{totalHerd} active · {does.length} does · {bucks.length} bucks · {farmProfile.location || 'location not set'}</p>
         </div>
         <div className="day-stamp">
           <DayRing pct={margin >= 0 ? 1 : 0} color={margin >= 0 ? '#7A9A66' : '#C15F41'} />
@@ -6945,9 +7039,9 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow">AI Farms · Whole Farm</p>
+          <p className="brand-eyebrow">{data.farmProfile.farmName || 'My Farm'} · Whole Farm</p>
           <h1 className="brand-title">Farm Profit &amp; Loss</h1>
-          <p className="brand-sub">Eikwe, Western Region · poultry + bell pepper combined</p>
+          <p className="brand-sub">{data.farmProfile.location || 'Location not set'} · poultry + bell pepper combined</p>
         </div>
         <div className="day-stamp">
           <DayRing pct={totalRevenue ? Math.max(0, Math.min(1, netProfit / Math.max(totalRevenue, 1))) : 0} color={netProfit >= 0 ? '#7A9A66' : '#C15F41'} />
