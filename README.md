@@ -90,7 +90,12 @@ Under a layer flock's **Laying & Eggs** tab:
   real experience instead of the textbook number.
 - **Laying rate** — today's hen-day %, a 7-day average, a 30-day average,
   and a trend chart plotting your actual rate against a typical Hy-Line
-  Brown production curve.
+  Brown production curve. A **Peak So Far** card shows the flock's best
+  7-day average to date, and that same peak is marked directly on the
+  chart — based on a smoothed week rather than a single stand-out day, so
+  one unusually good (or under-logged) day can't wrongly claim the title.
+  If the peak falls outside the chart's current 30/90/180-day window, a
+  note tells you to switch to a longer range to see it marked.
 - **Egg cash flow** — today's, this week's, and this month's egg revenue,
   pulled specifically from egg sales.
 - **Cost per egg** — feed cost ÷ eggs collected, next to your average sale
@@ -271,6 +276,29 @@ into the Whole Farm P&L and the relevant field/flock margin automatically.
 Edit and Delete a purchase from the Fuel tab — editing from the general
 Whole Farm expenses list is disabled for fuel records, since that form
 doesn't know about liters or price per liter and would drop them.
+
+---
+
+## Black Soldier Fly Larvae
+
+Under **Whole Farm → BSF Larvae**, track turning manure and farm waste into
+a home-grown protein supplement for poultry feed:
+
+- **Start a batch** — date, substrate (poultry manure, goat manure, kitchen
+  scraps, or mixed), and how much you fed in.
+- **Log the harvest** whenever it's ready — larvae harvested (fresh weight),
+  dried weight if you're storing it, and what it was used for (fed fresh,
+  dried and stored, or sold).
+- Active batches show a **Nearing harvest** flag once they're likely getting
+  close (roughly 3–6 weeks in) — a loose guide, not a guarantee, since heat
+  and substrate change how fast larvae mature.
+- **Totals** — larvae harvested lifetime, dried and stored, and substrate
+  used, so you can see the actual output of the whole operation over time.
+
+This isn't linked into Feed Mix or feed cost calculations yet — it's a
+production log for now. If you want your feed cost and FCR numbers to
+reflect BSF larvae once you're producing them regularly, that's a natural
+next step to add.
 
 ---
 

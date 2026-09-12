@@ -1,8 +1,4 @@
-node_modules/
-dist/
-release/
-.env
-.env.local
-.env.*.local
-*.log
+node_modules
+dist
 .DS_Store
+*.local
