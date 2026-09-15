@@ -302,6 +302,31 @@ next step to add.
 
 ---
 
+## Owner Loans
+
+Under **Whole Farm → Owner Loans**, for putting your own money into the
+business as a real, interest-bearing loan rather than an informal top-up —
+the same discipline a real lender would apply:
+
+- **Log a loan** — principal, an actual annual interest rate (0% is fine,
+  for an interest-free advance), which enterprise it's for, and a label.
+- **Interest accrues daily** on whatever principal is still outstanding —
+  simple interest, not compounding.
+- **Log a repayment** whenever the business pays some back. Each repayment
+  clears whatever interest has accrued first, then whatever's left reduces
+  the principal — the standard order a real lender applies it in.
+- Each loan shows its own running **principal outstanding**, **interest
+  accrued**, and **total owed**, and moves to a **Repaid in full** history
+  once the balance hits zero.
+- Multiple loans to different parts of the farm are tracked completely
+  independently — a repayment on one never touches another's balance.
+
+This doesn't touch your tax treatment of the interest — that's genuinely
+worth a conversation with an accountant, not something the app can advise
+on.
+
+---
+
 ## Farm Team & Payroll
 
 Under **Whole Farm → Farm Team**, track your farm help and what you pay them.
