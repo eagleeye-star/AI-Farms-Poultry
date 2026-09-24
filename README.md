@@ -327,6 +327,45 @@ on.
 
 ---
 
+## My Farms — any crop or livestock beyond the built-in modules
+
+A new top-level workspace, **My Farms**, for anything not already covered
+by Poultry, Bell Pepper, or Goats — a different crop, or a different kind
+of livestock entirely. Tap **+ Add farm**, name it, and pick a category:
+
+- **Crop farms** get their own **fields** (name, size, planting date) and
+  the exact same spray programme engine Bell Pepper uses — see below.
+- **Livestock farms** get a general-purpose tracker: headcount, a health
+  log, a feed log, and a sales log. This is deliberately simpler than the
+  Poultry or Goats modules, which are built around the specific biology of
+  those animals (laying rate, breed feed standards, kidding records) —
+  for a genuinely new species, this covers the real basics without
+  pretending to have bespoke knowledge it doesn't.
+
+### The unified spray programme engine
+
+Every crop field — Bell Pepper included — now shares one spray programme
+system, built four ways:
+
+- **Add events by hand**, one at a time — either a fixed calendar date, or
+  a number of days from the field's planting date (so the whole schedule
+  shifts automatically if that date changes).
+- **Generate a repeating pattern** — "every 14 days, spray fungicide, 5
+  times" — and the individual dated events are created for you.
+- **Upload a CSV** — columns `day_offset` (or `date`), `title`, `category`,
+  `rate`, `phi`, `notes`. Either `day_offset` or `date` is required per
+  row; the rest are optional. Rows with problems are skipped with a clear
+  reason, not silently dropped.
+- **Load the Bell Pepper template** — the same 14-week, 42-event
+  nutrition/pest/disease programme that used to be hardcoded, now just the
+  first of what can be several starting points, on any crop field.
+
+Once loaded, a programme is fully yours to edit — delete events you don't
+need, add ones you do, regardless of how it started. **Generate reminders**
+turns the remaining events into dated reminders in one tap, same as before.
+
+---
+
 ## Farm Team & Payroll
 
 Under **Whole Farm → Farm Team**, track your farm help and what you pay them.

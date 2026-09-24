@@ -4,6 +4,7 @@ import {
   CartesianGrid, Tooltip, Legend, AreaChart, ReferenceDot,
 } from 'recharts';
 import { SEED } from './data/seed';
+import Papa from 'papaparse';
 import ROSS308 from './data/ross308_standard.json';
 import {
   pullRemote, pushRemote, isCloudConfigured, getCloudConfig,
@@ -107,8 +108,8 @@ function fieldSoilDefaults() {
 function defaultPepper() {
   return {
     fields: [
-      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', ...fieldSoilDefaults() },
-      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', ...fieldSoilDefaults() },
+      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
+      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
     ],
     scouting: [],
     sprays: [],
@@ -194,6 +195,7 @@ function freshData() {
     invoices: [],     // invoices/receipts issued to buyers
     bsf: { batches: [] }, // black soldier fly larvae production — manure/waste to poultry protein
     ownerLoans: { loans: [], repayments: [] }, // owner-as-banker: real loans to the business, with interest
+    customFarms: [], // user-defined farms beyond poultry/pepper/goats — any crop or livestock type
     pepper: defaultPepper(),
     goats: defaultGoats(),
     farmProfile: { farmName: '', location: '', email: '', phone: '' },
@@ -221,6 +223,8 @@ function dataRichness(d) {
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
+    (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
+      (f.harvests || []).length + (f.healthLog || []).length + (f.feedLog || []).length + (f.salesLog || []).length, 0) +
     (p.scouting || []).length + (p.sprays || []).length + (p.harvests || []).length +
     (p.manureReadings || []).length + (p.soilReadings || []).length + (p.batches || []).length +
     (p.nurseryBatches || []).length +
@@ -289,6 +293,15 @@ function migrate(saved) {
   }
   flocks = flocks.map((f) => ({ status: 'active', ...f }));
   const pepper = saved.pepper || defaultPepper();
+  // Existing fields from before the unified spray programme system predate
+  // stored events entirely — their programme used to be computed live from
+  // the hardcoded template. Backfill it once here so an in-use field (one
+  // with a transplant date already set) doesn't suddenly look empty; a
+  // field nobody has started yet just gets a clean, empty programme.
+  pepper.fields = (pepper.fields || []).map((f) => {
+    if (f.sprayProgramme && f.sprayProgramme.events) return f;
+    return { ...f, sprayProgramme: { events: f.transplantDate ? loadBellPepperTemplate() : [] } };
+  });
   return {
     flocks,
     dailyLog: tagEntries(saved.dailyLog || SEED.dailyLog, 'layers'),
@@ -308,6 +321,13 @@ function migrate(saved) {
       loans: (saved.ownerLoans && saved.ownerLoans.loans) || [],
       repayments: (saved.ownerLoans && saved.ownerLoans.repayments) || [],
     },
+    customFarms: (saved.customFarms || []).map((f) => ({
+      ...f,
+      fields: (f.fields || []).map((fl) => ({
+        ...fl,
+        sprayProgramme: (fl.sprayProgramme && fl.sprayProgramme.events) ? fl.sprayProgramme : { events: [] },
+      })),
+    })),
     farmProfile: saved.farmProfile || defaultFarmProfile(),
     pepper: {
       ...defaultPepper(),
@@ -1028,6 +1048,50 @@ function AppInner() {
       ownerLoans: { ...d.ownerLoans, repayments: (d.ownerLoans?.repayments || []).filter((r) => r.id !== id) },
     }));
   }
+
+  // ---- Generic custom farms (any crop or livestock type Gilbert adds) ----
+  function patchCustomFarm(farmId, updater) {
+    setData((d) => touch({
+      ...d,
+      customFarms: (d.customFarms || []).map((f) => (f.id === farmId ? updater(f) : f)),
+    }));
+  }
+  function addCustomFarm(farm) {
+    setData((d) => touch({ ...d, customFarms: [...(d.customFarms || []), farm] }));
+  }
+  function updateCustomFarm(farmId, patch) {
+    patchCustomFarm(farmId, (f) => ({ ...f, ...patch }));
+  }
+  function deleteCustomFarm(farmId) {
+    setData((d) => touch({ ...d, customFarms: (d.customFarms || []).filter((f) => f.id !== farmId) }));
+  }
+  function addCustomFarmField(farmId, field) {
+    patchCustomFarm(farmId, (f) => ({ ...f, fields: [...(f.fields || []), field] }));
+  }
+  function updateCustomFarmField(farmId, fieldId, patch) {
+    patchCustomFarm(farmId, (f) => ({
+      ...f, fields: (f.fields || []).map((fl) => (fl.id === fieldId ? { ...fl, ...patch } : fl)),
+    }));
+  }
+  function deleteCustomFarmField(farmId, fieldId) {
+    patchCustomFarm(farmId, (f) => ({ ...f, fields: (f.fields || []).filter((fl) => fl.id !== fieldId) }));
+  }
+  // One factory for the simple list-of-records sub-collections shared by
+  // crop farms (scouting, harvests) and livestock farms (healthLog,
+  // feedLog, salesLog) — same add/delete shape for all five, so this
+  // avoids five nearly-identical handler pairs.
+  function customFarmListHandlers(key) {
+    return {
+      add: (farmId, entry) => patchCustomFarm(farmId, (f) => ({ ...f, [key]: [...(f[key] || []), entry] })),
+      delete: (farmId, entryId) => patchCustomFarm(farmId, (f) => ({ ...f, [key]: (f[key] || []).filter((e) => e.id !== entryId) })),
+    };
+  }
+  const customScoutingH = customFarmListHandlers('scouting');
+  const customHarvestH = customFarmListHandlers('harvests');
+  const customHealthH = customFarmListHandlers('healthLog');
+  const customFeedH = customFarmListHandlers('feedLog');
+  const customSalesH = customFarmListHandlers('salesLog');
+
   function openInvoiceFromSale(sale) {
     setInvoicePrefill({
       kind: 'invoice', date: sale.date, buyerName: sale.buyer || '',
@@ -1482,6 +1546,10 @@ function AppInner() {
           onClick={() => { setWorkspace('goats'); setModal(null); }}
         >Goats</button>
         <button
+          className={`ws-btn${workspace === 'custom' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('custom'); setModal(null); }}
+        >My Farms</button>
+        <button
           className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
           onClick={() => { setWorkspace('farm'); setModal(null); }}
         >Whole Farm</button>
@@ -1932,6 +2000,30 @@ function AppInner() {
           onToggleReminder={toggleReminder}
           onDeleteReminder={deleteReminder}
           onInvoiceSale={openInvoiceFromGoatSale}
+        />
+      )}
+
+      {workspace === 'custom' && (
+        <FarmsWorkspace
+          farms={data.customFarms || []}
+          reminders={data.reminders || []}
+          onAddFarm={addCustomFarm}
+          onUpdateFarm={updateCustomFarm}
+          onDeleteFarm={deleteCustomFarm}
+          onAddField={addCustomFarmField}
+          onUpdateField={updateCustomFarmField}
+          onDeleteField={deleteCustomFarmField}
+          onAddReminder={addReminder}
+          onAddScouting={customScoutingH.add}
+          onDeleteScouting={customScoutingH.delete}
+          onAddHarvest={customHarvestH.add}
+          onDeleteHarvest={customHarvestH.delete}
+          onAddHealthLog={customHealthH.add}
+          onDeleteHealthLog={customHealthH.delete}
+          onAddFeedLog={customFeedH.add}
+          onDeleteFeedLog={customFeedH.delete}
+          onAddSale={customSalesH.add}
+          onDeleteSale={customSalesH.delete}
         />
       )}
 
@@ -3465,11 +3557,31 @@ function PepperWorkspace({
 
       {ptab === 'programme' && (
         <SprayProgrammeTab
-          activeField={activeField}
-          fields={fields}
+          field={activeField || fields[0]}
           reminders={reminders}
           onAddReminder={onAddReminder}
           onLogNow={(prefill) => { setSprayPrefill(prefill); setModal('spray'); }}
+          showPepperRules
+          onAddEvent={(ev) => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ev] } });
+          }}
+          onAddPattern={(events) => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
+          }}
+          onLoadTemplate={() => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: loadBellPepperTemplate() } });
+          }}
+          onUploadCsv={(events) => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
+          }}
+          onDeleteEvent={(eventId) => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: ((fld.sprayProgramme && fld.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } });
+          }}
         />
       )}
 
@@ -3853,10 +3965,9 @@ const PEPPER_STAGES = [
   { weeks: [13, 14], label: 'Harvest Approach' },
 ];
 
-const PEPPER_CAT_TONE = {
-  transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
-  neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
-};
+function pepperStageForWeek(week) {
+  return (PEPPER_STAGES.find((s) => s.weeks.includes(week)) || PEPPER_STAGES[0]).label;
+}
 
 const PEPPER_CAT_LABEL = {
   transplant: 'Transplant', nutrition: 'Nutrition', pesticide: 'Pesticide', fungicide: 'Fungicide',
@@ -3881,156 +3992,403 @@ const PEPPER_RATES = {
   harvest: 'OFA drip only: 30ml/1000L · NO foliar spray · Monitor fruit colour — harvest at 70–80% colour change · Early morning 5–8am',
 };
 
-function pepperStageForWeek(week) {
-  return (PEPPER_STAGES.find((s) => s.weeks.includes(week)) || PEPPER_STAGES[0]).label;
+/* ============================================================= */
+/* ================= UNIFIED SPRAY PROGRAMME ENGINE ============= */
+/* Works identically whether the field is Bell Pepper or a custom */
+/* crop farm — one stored events array, three ways to populate it */
+/* (manual, repeating pattern, CSV) plus the Bell Pepper template. */
+/* ============================================================= */
+
+const SPRAY_CAT_TONE = {
+  transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
+  neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
+};
+
+/** Turns stored events (each carrying either a dayOffset from an anchor, or
+    its own absolute date) into a chronologically sorted list with real
+    dates resolved. Absolute-date events pass straight through, so manual
+    and CSV entries never need an anchor at all. */
+function materializeSprayEvents(events, anchorDate) {
+  return (events || [])
+    .map((ev) => ({
+      ...ev,
+      resolvedDate: (ev.dayOffset != null && anchorDate) ? addDaysISO(anchorDate, ev.dayOffset) : ev.date,
+    }))
+    .filter((ev) => ev.resolvedDate)
+    .sort((a, b) => new Date(a.resolvedDate) - new Date(b.resolvedDate));
 }
 
-const PEPPER_PROGRAMME_CATS = ['transplant', 'nutrition', 'pesticide', 'fungicide', 'neem', 'transition', 'flowering', 'fruiting', 'harvest'];
+/** Repeating-pattern generator: "every N days, do X, repeated Y times." */
+function generateSprayPattern({ startOffset, intervalDays, repeatCount, title, cat, rate, phi, notes }) {
+  const events = [];
+  for (let i = 0; i < repeatCount; i++) {
+    events.push({
+      id: newId(), dayOffset: Number(startOffset) + i * Number(intervalDays),
+      title, cat: cat || 'other', rate: rate || null, phi: phi === '' || phi == null ? null : Number(phi),
+      notes: notes || null,
+    });
+  }
+  return events;
+}
 
-function SprayProgrammeTab({ activeField, fields, reminders, onAddReminder, onLogNow }) {
-  const { showToast } = useToastConfirm();
+/** Converts the built-in Bell Pepper 14-week template into the unified
+    event format, baking each event's dosage/rate text directly onto it —
+    so the loaded events are fully self-contained, same as any manual or
+    CSV entry, with no separate category-keyed lookup table required. */
+function loadBellPepperTemplate() {
+  return PEPPER_PROGRAMME.map((ev) => ({
+    id: newId(), dayOffset: ev.day, title: ev.title, cat: ev.cat,
+    rate: PEPPER_RATES[ev.cat] || null, phi: null, notes: null,
+  }));
+}
+
+/** Parses an uploaded CSV into spray events. Expected columns (header row
+    required, case-insensitive): day_offset OR date, title, category, rate,
+    phi, notes. Exactly one of day_offset/date must be present per row. */
+function parseSprayCsv(rows) {
+  const errors = [];
+  const events = [];
+  rows.forEach((row, i) => {
+    const get = (key) => {
+      const k = Object.keys(row).find((rk) => rk.trim().toLowerCase() === key);
+      return k ? String(row[k]).trim() : '';
+    };
+    const rowNum = i + 2; // header is row 1
+    const dayOffsetRaw = get('day_offset') || get('dayoffset') || get('day');
+    const dateRaw = get('date');
+    const title = get('title') || get('event') || get('task');
+    if (!title) { errors.push(`Row ${rowNum}: missing title`); return; }
+    if (!dayOffsetRaw && !dateRaw) { errors.push(`Row ${rowNum}: needs either day_offset or date`); return; }
+    let dayOffset = null, date = null;
+    if (dayOffsetRaw) {
+      const n = Number(dayOffsetRaw);
+      if (Number.isNaN(n)) { errors.push(`Row ${rowNum}: day_offset "${dayOffsetRaw}" isn't a number`); return; }
+      dayOffset = n;
+    } else {
+      if (Number.isNaN(new Date(dateRaw).getTime())) { errors.push(`Row ${rowNum}: date "${dateRaw}" isn't valid — use YYYY-MM-DD`); return; }
+      date = dateRaw;
+    }
+    const phiRaw = get('phi');
+    events.push({
+      id: newId(), dayOffset, date, title,
+      cat: get('category') || get('cat') || 'other',
+      rate: get('rate') || get('dosage') || null,
+      phi: phiRaw ? Number(phiRaw) : null,
+      notes: get('notes') || null,
+    });
+  });
+  return { events, errors };
+}
+
+function SprayProgrammeTab({
+  field, reminders, onAddReminder, onLogNow, showPepperRules,
+  onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent,
+}) {
+  const { showToast, askConfirm } = useToastConfirm();
   const [filter, setFilter] = useState('all');
   const [openId, setOpenId] = useState(null);
+  const [modal, setModal] = useState(null); // 'event' | 'pattern' | null
+  const fileRef = useRef(null);
 
-  const field = activeField || fields[0];
-  const hasTransplant = Boolean(field && field.transplantDate);
+  if (!field) {
+    return <p className="empty" style={{ padding: '18px 0' }}>Add a field first to plan its spray programme.</p>;
+  }
 
-  const events = PEPPER_PROGRAMME.map((ev) => ({
+  const anchor = field.transplantDate || null;
+  const rawEvents = (field.sprayProgramme && field.sprayProgramme.events) || [];
+  const resolved = materializeSprayEvents(rawEvents, anchor).map((ev) => ({
     ...ev,
-    date: hasTransplant ? addDaysISO(field.transplantDate, ev.day) : null,
-    daysLeft: hasTransplant ? daysBetween(todayISO(), addDaysISO(field.transplantDate, ev.day)) : null,
+    daysLeft: daysBetween(todayISO(), ev.resolvedDate),
+    week: ev.dayOffset != null ? Math.ceil((ev.dayOffset + 1) / 7) : null,
   }));
-  const filtered = filter === 'all' ? events : events.filter((e) => e.cat === filter);
-  const weeks = [...new Set(events.map((e) => e.week))];
+
+  const cats = [...new Set(resolved.map((e) => e.cat || 'other'))];
+  const filtered = filter === 'all' ? resolved : resolved.filter((e) => (e.cat || 'other') === filter);
+  const weeks = [...new Set(resolved.map((e) => e.week).filter((w) => w != null))];
+  const undated = filtered.filter((e) => e.week == null);
 
   const counts = {};
-  PEPPER_PROGRAMME.forEach((e) => { counts[e.cat] = (counts[e.cat] || 0) + 1; });
-
-  const harvestEvent = events.find((e) => e.day === 98);
+  resolved.forEach((e) => { const c = e.cat || 'other'; counts[c] = (counts[c] || 0) + 1; });
+  const topCats = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
   function generateReminders() {
-    if (!hasTransplant) return;
+    if (!anchor) { showToast('Set a start/transplant date for this field first.', 'rust'); return; }
     const existingIds = new Set((reminders || []).map((r) => r.id));
     let added = 0;
-    events.forEach((ev) => {
-      if (ev.daysLeft < 0) return; // don't clutter reminders with the past
-      const id = `prog-${field.id}-${ev.day}`;
+    resolved.forEach((ev) => {
+      if (ev.daysLeft < 0) return;
+      const id = `prog-${field.id}-${ev.id}`;
       if (existingIds.has(id)) return;
       onAddReminder({
-        id, title: `${field.name}: ${ev.title}`, dueDate: ev.date,
-        repeatDays: null, scope: 'pepper', notes: PEPPER_RATES[ev.cat] || null, done: false,
+        id, title: `${field.name}: ${ev.title}`, dueDate: ev.resolvedDate,
+        repeatDays: null, scope: 'pepper', notes: ev.rate || null, done: false,
       });
       added += 1;
     });
     showToast(added ? `Added ${added} reminder(s) for ${field.name}'s remaining programme.` : 'All upcoming events already have reminders.', added ? 'green' : 'default');
   }
 
-  if (!field) {
-    return <p className="empty" style={{ padding: '18px 0' }}>Add a field first to plan its spray programme.</p>;
+  function handleCsvFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: (results) => {
+        const { events, errors } = parseSprayCsv(results.data);
+        if (events.length) onUploadCsv(events);
+        if (errors.length) {
+          showToast(`Imported ${events.length} event(s), skipped ${errors.length}: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, events.length ? 'gold' : 'rust');
+        } else {
+          showToast(`Imported ${events.length} event(s) from CSV.`, 'green');
+        }
+      },
+      error: () => showToast('Could not read that CSV file.', 'rust'),
+    });
+    e.target.value = '';
   }
+
+  const renderEvent = (ev) => {
+    const isOpen = openId === ev.id;
+    const overdue = ev.daysLeft != null && ev.daysLeft < 0;
+    return (
+      <div className="panel" key={ev.id} style={{ marginBottom: 0, cursor: 'pointer' }} onClick={() => setOpenId(isOpen ? null : ev.id)}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <span className={`tag ${SPRAY_CAT_TONE[ev.cat] || ''}`} style={{ flexShrink: 0 }}>
+            {PEPPER_CAT_LABEL[ev.cat] || ev.cat || 'Event'}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{ev.title}</div>
+            <div className="stat-foot" style={{ margin: '3px 0 0' }}>
+              {ev.week != null && `Week ${ev.week} · `}
+              {ev.resolvedDate && fmtDate(ev.resolvedDate)}
+              {ev.daysLeft != null && (
+                overdue ? ` · ${Math.abs(ev.daysLeft)}d ago` : ev.daysLeft === 0 ? ' · today' : ` · in ${ev.daysLeft}d`
+              )}
+              {ev.phi != null && ` · PHI ${ev.phi}d`}
+            </div>
+            {isOpen && (
+              <>
+                <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
+                  {ev.rate || ev.notes || 'No rate/notes recorded for this event.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-green"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onLogNow({
+                        fieldId: field.id, product: ev.title, rate: ev.rate || '',
+                        type: PEPPER_CAT_SPRAY_TYPE[ev.cat] || 'Other',
+                        notes: `From spray programme${ev.week != null ? ` — Week ${ev.week}` : ''}`,
+                      });
+                    }}
+                  >
+                    ⤓ Log this spray now
+                  </button>
+                  <button
+                    className="link-btn rust"
+                    onClick={async (e) => { e.stopPropagation(); if (await askConfirm('Remove this event from the programme?')) onDeleteEvent(ev.id); }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 6 }}>
-        <h3 style={{ fontSize: 18 }}>{field.name} — 14-week Spray &amp; Nutrition Programme</h3>
-        <button className="btn btn-green" onClick={generateReminders} disabled={!hasTransplant}>
-          ⤓ Generate reminders
-        </button>
+        <h3 style={{ fontSize: 18 }}>{field.name} — Spray Programme</h3>
+        <button className="btn btn-green" onClick={generateReminders}>⤓ Generate reminders</button>
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
-        {hasTransplant
-          ? <>Transplant {fmtDate(field.transplantDate)} · estimated harvest {fmtDate(harvestEvent.date)} (Day 98). Dates below are computed from this field&apos;s transplant date — switch fields above to see another field&apos;s schedule.</>
-          : <>Set a transplant date for {field.name} in Crop Cycle to see actual dates — showing day offsets only until then.</>}
+        {anchor
+          ? <>Anchored to {fmtDate(anchor)} — day-offset events below are computed from this date.</>
+          : <>No start/transplant date set for {field.name} yet — day-offset events will show once you set one; events with their own fixed date still work regardless.</>}
         {' '}This is a plan, not a log — record what you actually spray in <strong>Spray &amp; Fertigation</strong> as you go.
       </p>
 
-      <div className="field-seg" style={{ marginBottom: 18 }}>
-        <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All events</button>
-        {PEPPER_PROGRAMME_CATS.map((c) => (
-          <button key={c} className={filter === c ? 'active' : ''} onClick={() => setFilter(c)}>{PEPPER_CAT_LABEL[c]}</button>
-        ))}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <button className="btn" onClick={() => setModal('event')}>+ Add event</button>
+        <button className="btn" onClick={() => setModal('pattern')}>+ Repeating pattern</button>
+        <button className="btn" onClick={() => fileRef.current && fileRef.current.click()}>⤒ Upload CSV</button>
+        <button className="btn btn-gold" onClick={() => { onLoadTemplate(); showToast('Loaded the standard Bell Pepper 14-week programme.', 'green'); }}>
+          Load Bell Pepper template
+        </button>
+        <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCsvFile} />
       </div>
 
-      {weeks.map((wk) => {
-        const wkEvents = filtered.filter((e) => e.week === wk);
-        if (!wkEvents.length) return null;
-        return (
-          <div key={wk} style={{ marginBottom: 16 }}>
-            <div className="panel-head" style={{ marginBottom: 8 }}>
-              <h3 style={{ fontSize: 14 }}>Week {wk} · {pepperStageForWeek(wk)}</h3>
-              <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {wkEvents.map((ev) => {
-                const id = `${ev.day}-${ev.title}`;
-                const isOpen = openId === id;
-                const overdue = ev.daysLeft != null && ev.daysLeft < 0;
-                return (
-                  <div className="panel" key={id} style={{ marginBottom: 0, cursor: 'pointer' }} onClick={() => setOpenId(isOpen ? null : id)}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                      <span className={`tag ${PEPPER_CAT_TONE[ev.cat] || ''}`} style={{ flexShrink: 0 }}>
-                        {PEPPER_CAT_LABEL[ev.cat]}
-                      </span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{ev.title}</div>
-                        <div className="stat-foot" style={{ margin: '3px 0 0' }}>
-                          Day {ev.day} · {ev.time}
-                          {ev.date && ` · ${fmtDate(ev.date)}`}
-                          {ev.daysLeft != null && (
-                            overdue ? ` · ${Math.abs(ev.daysLeft)}d ago` : ev.daysLeft === 0 ? ' · today' : ` · in ${ev.daysLeft}d`
-                          )}
-                        </div>
-                        {isOpen && (
-                          <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
-                            {PEPPER_RATES[ev.cat] || 'See spray programme for full rates.'}
-                          </div>
-                        )}
-                        {isOpen && hasTransplant && (
-                          <button
-                            className="btn btn-green"
-                            style={{ marginTop: 8 }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onLogNow({
-                                fieldId: field.id,
-                                product: ev.title,
-                                rate: PEPPER_RATES[ev.cat] || '',
-                                type: PEPPER_CAT_SPRAY_TYPE[ev.cat] || 'Other',
-                                notes: `From spray programme — Day ${ev.day}, Week ${ev.week}`,
-                              });
-                            }}
-                          >
-                            ⤓ Log this spray now
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+      {resolved.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          No spray programme yet for {field.name} — add events by hand, generate a repeating pattern,
+          upload a CSV, or load the Bell Pepper standard template as a starting point to edit from.
+        </p>
+      ) : (
+        <>
+          <div className="field-seg" style={{ marginBottom: 18 }}>
+            <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All events</button>
+            {cats.map((c) => (
+              <button key={c} className={filter === c ? 'active' : ''} onClick={() => setFilter(c)}>{PEPPER_CAT_LABEL[c] || c}</button>
+            ))}
           </div>
-        );
-      })}
 
-      <p className="section-title">Programme summary</p>
-      <div className="grid grid-4">
-        <StatCard title="Total Events" value={String(PEPPER_PROGRAMME.length)} tone="gold" foot="over 14 weeks" />
-        <StatCard title="Nutrition Sprays" value={String(counts.nutrition || 0)} tone="green" />
-        <StatCard title="Pesticide Events" value={String(counts.pesticide || 0)} tone="rust" />
-        <StatCard title="Fungicide Events" value={String((counts.fungicide || 0))} tone="gold" />
-      </div>
+          {weeks.sort((a, b) => a - b).map((wk) => {
+            const wkEvents = filtered.filter((e) => e.week === wk);
+            if (!wkEvents.length) return null;
+            return (
+              <div key={wk} style={{ marginBottom: 16 }}>
+                <div className="panel-head" style={{ marginBottom: 8 }}>
+                  <h3 style={{ fontSize: 14 }}>Week {wk}{showPepperRules ? ` · ${pepperStageForWeek(wk)}` : ''}</h3>
+                  <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {wkEvents.map(renderEvent)}
+                </div>
+              </div>
+            );
+          })}
 
-      <div className="stale-banner" style={{ marginTop: 18 }}>
-        ⚠ <span>
-          Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
-          CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
-          Alt Sulfur application.
-        </span>
-      </div>
+          {undated.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <p className="section-title" style={{ marginTop: 0 }}>Fixed-date events</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {undated.map(renderEvent)}
+              </div>
+            </div>
+          )}
+
+          <p className="section-title">Programme summary</p>
+          <div className="grid grid-4">
+            <StatCard title="Total Events" value={String(resolved.length)} tone="gold" />
+            {topCats.map(([cat, n]) => (
+              <StatCard key={cat} title={PEPPER_CAT_LABEL[cat] || cat} value={String(n)} tone={SPRAY_CAT_TONE[cat] || undefined} />
+            ))}
+          </div>
+
+          {showPepperRules && (
+            <div className="stale-banner" style={{ marginTop: 18 }}>
+              ⚠ <span>
+                Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
+                CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
+                Alt Sulfur application.
+              </span>
+            </div>
+          )}
+        </>
+      )}
+
+      {modal === 'event' && (
+        <SprayEventForm
+          onClose={() => setModal(null)}
+          onSave={(ev) => { onAddEvent(ev); setModal(null); }}
+        />
+      )}
+      {modal === 'pattern' && (
+        <SprayPatternForm
+          onClose={() => setModal(null)}
+          onSave={(events) => { onAddPattern(events); setModal(null); }}
+        />
+      )}
     </>
   );
 }
+
+function SprayEventForm({ onClose, onSave }) {
+  const [f, setF] = useState({
+    dateMode: 'offset', dayOffset: '', date: todayISO(),
+    title: '', cat: 'other', rate: '', phi: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.title) return;
+    if (f.dateMode === 'offset' && f.dayOffset === '') return;
+    onSave({
+      id: newId(),
+      dayOffset: f.dateMode === 'offset' ? Number(f.dayOffset) : null,
+      date: f.dateMode === 'date' ? f.date : null,
+      title: f.title, cat: f.cat || 'other',
+      rate: f.rate || null, phi: f.phi === '' ? null : Number(f.phi), notes: f.notes || null,
+    });
+  }
+  return (
+    <Modal title="Add spray event" sub="One event in this field's programme." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Timing" span2>
+          <select value={f.dateMode} onChange={set('dateMode')}>
+            <option value="offset">Days from start/transplant date</option>
+            <option value="date">Fixed calendar date</option>
+          </select>
+        </Field>
+        {f.dateMode === 'offset'
+          ? <Field label="Day offset"><input type="number" value={f.dayOffset} onChange={set('dayOffset')} placeholder="e.g. 14" /></Field>
+          : <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>}
+        <Field label="Title" span2><input value={f.title} onChange={set('title')} placeholder="e.g. Fungicide spray" /></Field>
+        <Field label="Category"><input value={f.cat} onChange={set('cat')} placeholder="e.g. fungicide, nutrition" /></Field>
+        <Field label="PHI (days)"><input type="number" value={f.phi} onChange={set('phi')} placeholder="pre-harvest interval" /></Field>
+        <Field label="Rate / dosage" span2><input value={f.rate} onChange={set('rate')} placeholder="e.g. 30g/15L" /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Add event</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SprayPatternForm({ onClose, onSave }) {
+  const [f, setF] = useState({
+    startOffset: '0', intervalDays: '14', repeatCount: '3',
+    title: '', cat: 'other', rate: '', phi: '', notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const preview = (() => {
+    const n = Number(f.repeatCount) || 0, start = Number(f.startOffset) || 0, interval = Number(f.intervalDays) || 0;
+    const days = [];
+    for (let i = 0; i < Math.min(n, 8); i++) days.push(start + i * interval);
+    return days;
+  })();
+  function submit() {
+    if (!f.title || f.repeatCount === '' || f.intervalDays === '') return;
+    onSave(generateSprayPattern({
+      startOffset: f.startOffset || 0, intervalDays: f.intervalDays, repeatCount: f.repeatCount,
+      title: f.title, cat: f.cat || 'other', rate: f.rate, phi: f.phi, notes: f.notes,
+    }));
+  }
+  return (
+    <Modal
+      title="Generate a repeating pattern"
+      sub="E.g. 'every 14 days, spray fungicide, 5 times' — generates the individual dated events for you."
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Starts on day"><input type="number" value={f.startOffset} onChange={set('startOffset')} /></Field>
+        <Field label="Repeat every (days)"><input type="number" value={f.intervalDays} onChange={set('intervalDays')} /></Field>
+        <Field label="Number of repeats"><input type="number" value={f.repeatCount} onChange={set('repeatCount')} /></Field>
+        <Field label="Category"><input value={f.cat} onChange={set('cat')} placeholder="e.g. fungicide" /></Field>
+        <Field label="Title" span2><input value={f.title} onChange={set('title')} placeholder="e.g. Fungicide rotation" /></Field>
+        <Field label="PHI (days)"><input type="number" value={f.phi} onChange={set('phi')} /></Field>
+        <Field label="Rate / dosage" span2><input value={f.rate} onChange={set('rate')} placeholder="e.g. 30g/15L" /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      {preview.length > 0 && (
+        <p className="stat-foot">
+          Will create events on day{preview.length > 1 ? 's' : ''}: {preview.join(', ')}{Number(f.repeatCount) > 8 ? '…' : ''}
+        </p>
+      )}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Generate {f.repeatCount || 0} event(s)</button>
+      </div>
+    </Modal>
+  );
+}
+
 
 function FieldForm({ field, onClose, onSave }) {
   const [section, setSection] = useState('crop'); // 'crop' | 'soil'
@@ -5656,6 +6014,62 @@ function buildExportDatasets(data) {
       ],
     },
     {
+      key: 'customFarms', label: 'My Farms — Registry', rows: (data.customFarms || []),
+      columns: [
+        { key: 'name', label: 'Farm' }, { key: 'category', label: 'Category' }, { key: 'subtype', label: 'Type' },
+        { key: 'startDate', label: 'Started' }, { key: 'location', label: 'Location' }, { key: 'status', label: 'Status' },
+        { key: 'headcount', label: 'Headcount' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'customFarmFields', label: 'My Farms — Fields',
+      rows: (data.customFarms || []).flatMap((f) => (f.fields || []).map((fl) => ({ ...fl, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'name', label: 'Field' }, { key: 'sizeAcres', label: 'Size (acres)' },
+        { key: 'transplantDate', label: 'Planted' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'customFarmScouting', label: 'My Farms — Scouting',
+      rows: (data.customFarms || []).flatMap((f) => (f.scouting || []).map((e) => ({ ...e, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'date', label: 'Date' }, { key: 'severity', label: 'Severity' },
+        { key: 'notes', label: 'Observation' },
+      ],
+    },
+    {
+      key: 'customFarmHarvests', label: 'My Farms — Harvests',
+      rows: (data.customFarms || []).flatMap((f) => (f.harvests || []).map((e) => ({ ...e, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'date', label: 'Date' }, { key: 'quantityKg', label: 'Quantity (kg)' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'customFarmHealth', label: 'My Farms — Livestock Health',
+      rows: (data.customFarms || []).flatMap((f) => (f.healthLog || []).map((e) => ({ ...e, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'date', label: 'Date' }, { key: 'type', label: 'Type' },
+        { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
+      key: 'customFarmFeed', label: 'My Farms — Livestock Feed',
+      rows: (data.customFarms || []).flatMap((f) => (f.feedLog || []).map((e) => ({ ...e, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'date', label: 'Date' }, { key: 'feedType', label: 'Feed' },
+        { key: 'quantityKg', label: 'Quantity (kg)' }, { key: 'cost', label: 'Cost (GHS)' },
+      ],
+    },
+    {
+      key: 'customFarmSales', label: 'My Farms — Livestock Sales',
+      rows: (data.customFarms || []).flatMap((f) => (f.salesLog || []).map((e) => ({ ...e, farmName: f.name }))),
+      columns: [
+        { key: 'farmName', label: 'Farm' }, { key: 'date', label: 'Date' }, { key: 'quantity', label: 'Quantity' },
+        { key: 'amount', label: 'Amount (GHS)' }, { key: 'buyer', label: 'Buyer' }, { key: 'notes', label: 'Notes' },
+      ],
+    },
+    {
       key: 'goatAnimals', label: 'Goats — Herd Registry', rows: g.animals || [],
       columns: [
         { key: 'tag', label: 'Tag' }, { key: 'name', label: 'Name' }, { key: 'sex', label: 'Sex' },
@@ -7123,6 +7537,487 @@ function GoatSaleForm({ animals, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>Save sale</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================= */
+/* ===================== GENERIC "MY FARMS" ======================= */
+/* Any crop or livestock type Gilbert adds beyond the built-in     */
+/* Poultry / Bell Pepper / Goats modules. Crop farms reuse the same */
+/* SprayProgrammeTab as Bell Pepper — same engine, same UI, any crop. */
+/* ============================================================= */
+
+const FARM_CATEGORIES = [['crop', 'Crop'], ['livestock', 'Livestock']];
+
+function FarmsWorkspace({
+  farms, reminders, onAddFarm, onUpdateFarm, onDeleteFarm,
+  onAddField, onUpdateField, onDeleteField,
+  onAddReminder, onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
+  onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale,
+}) {
+  const { askConfirm } = useToastConfirm();
+  const [activeFarmId, setActiveFarmId] = useState(farms[0]?.id || null);
+  const [modal, setModal] = useState(null);
+  const [editingFarm, setEditingFarm] = useState(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const activeFarm = farms.find((f) => f.id === activeFarmId) || farms.find((f) => f.status !== 'completed') || farms[0];
+
+  return (
+    <>
+      <header className="header">
+        <div>
+          <p className="brand-eyebrow">My Farms</p>
+          <h1 className="brand-title">{activeFarm ? activeFarm.name : 'Add your first farm'}</h1>
+          <p className="brand-sub">
+            {activeFarm ? `${activeFarm.category === 'crop' ? 'Crop' : 'Livestock'} · ${activeFarm.subtype || 'unspecified type'}` : 'Any crop or livestock type not already covered by Poultry, Bell Pepper, or Goats'}
+            {activeFarm && <>{' '}<button className="link-btn" onClick={() => { setEditingFarm(activeFarm); setModal('farm'); }}>Edit farm</button></>}
+          </p>
+        </div>
+      </header>
+
+      <div className="seg-row">
+        <div className="flock-seg">
+          {farms
+            .filter((f) => f.status !== 'completed' || showCompleted || f.id === activeFarmId)
+            .map((f) => (
+              <button key={f.id} className={activeFarmId === f.id || (!activeFarmId && f.id === activeFarm?.id) ? 'active' : ''} onClick={() => setActiveFarmId(f.id)}>
+                {f.name}{f.status === 'completed' ? ' ✓' : ''}
+              </button>
+            ))}
+          <button className="seg-add" onClick={() => { setEditingFarm(null); setModal('farm'); }}>+ Add farm</button>
+          {farms.some((f) => f.status === 'completed') && (
+            <button className="seg-add" onClick={() => setShowCompleted((v) => !v)}>{showCompleted ? 'Hide completed' : 'Show completed'}</button>
+          )}
+        </div>
+      </div>
+
+      {!activeFarm ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          No farms added yet — tap <strong>+ Add farm</strong> to set up any crop or livestock type
+          not already covered by Poultry, Bell Pepper, or Goats. Each crop farm gets its own fields
+          and spray programme (manual entry, a repeating pattern, CSV upload, or the Bell Pepper
+          template as a starting point) — livestock farms get a headcount, health log, feed log,
+          and sales log.
+        </p>
+      ) : activeFarm.category === 'crop' ? (
+        <CropFarmDetail
+          farm={activeFarm} reminders={reminders}
+          onAddField={(field) => onAddField(activeFarm.id, field)}
+          onUpdateField={(fieldId, patch) => onUpdateField(activeFarm.id, fieldId, patch)}
+          onDeleteField={(fieldId) => onDeleteField(activeFarm.id, fieldId)}
+          onAddReminder={onAddReminder}
+          onAddScouting={(entry) => onAddScouting(activeFarm.id, entry)}
+          onDeleteScouting={(id) => onDeleteScouting(activeFarm.id, id)}
+          onAddHarvest={(entry) => onAddHarvest(activeFarm.id, entry)}
+          onDeleteHarvest={(id) => onDeleteHarvest(activeFarm.id, id)}
+        />
+      ) : (
+        <LivestockFarmDetail
+          farm={activeFarm}
+          onAddHealthLog={(entry) => onAddHealthLog(activeFarm.id, entry)}
+          onDeleteHealthLog={(id) => onDeleteHealthLog(activeFarm.id, id)}
+          onAddFeedLog={(entry) => onAddFeedLog(activeFarm.id, entry)}
+          onDeleteFeedLog={(id) => onDeleteFeedLog(activeFarm.id, id)}
+          onAddSale={(entry) => onAddSale(activeFarm.id, entry)}
+          onDeleteSale={(id) => onDeleteSale(activeFarm.id, id)}
+        />
+      )}
+
+      {modal === 'farm' && (
+        <FarmForm
+          farm={editingFarm}
+          onClose={() => { setModal(null); setEditingFarm(null); }}
+          onSave={(f) => {
+            if (editingFarm) onUpdateFarm(f.id, f);
+            else { onAddFarm(f); setActiveFarmId(f.id); }
+            setModal(null); setEditingFarm(null);
+          }}
+          onDelete={editingFarm ? async () => {
+            if (await askConfirm(`Delete ${editingFarm.name} and everything logged under it? This can't be undone.`)) {
+              onDeleteFarm(editingFarm.id);
+              setModal(null); setEditingFarm(null);
+              setActiveFarmId(null);
+            }
+          } : null}
+        />
+      )}
+    </>
+  );
+}
+
+function FarmForm({ farm, onClose, onSave, onDelete }) {
+  const isEdit = Boolean(farm);
+  const [f, setF] = useState({
+    name: farm?.name || '', category: farm?.category || 'crop', subtype: farm?.subtype || '',
+    startDate: farm?.startDate || todayISO(), location: farm?.location || '',
+    status: farm?.status || 'active', notes: farm?.notes || '',
+    headcount: farm?.headcount ?? '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.name || !f.subtype) return;
+    onSave({
+      id: farm?.id || newId(), name: f.name, category: f.category, subtype: f.subtype,
+      startDate: f.startDate, location: f.location || '', status: f.status, notes: f.notes || '',
+      fields: farm?.fields || [], scouting: farm?.scouting || [], harvests: farm?.harvests || [],
+      headcount: f.headcount === '' ? null : Number(f.headcount),
+      healthLog: farm?.healthLog || [], feedLog: farm?.feedLog || [], salesLog: farm?.salesLog || [],
+    });
+  }
+  return (
+    <Modal
+      title={isEdit ? `Edit ${farm.name}` : 'Add a new farm'}
+      sub="Any crop or livestock type not already covered by Poultry, Bell Pepper, or Goats."
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Farm name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Maize Plot, Rabbit Hutch" /></Field>
+        <Field label="Category">
+          <select value={f.category} onChange={set('category')}>
+            {FARM_CATEGORIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </Field>
+        <Field label={f.category === 'crop' ? 'Crop type' : 'Species / type'}>
+          <input value={f.subtype} onChange={set('subtype')} placeholder={f.category === 'crop' ? 'e.g. Maize, Tomatoes' : 'e.g. Rabbits, Cattle'} />
+        </Field>
+        <Field label="Start date"><input type="date" value={f.startDate} onChange={set('startDate')} /></Field>
+        <Field label="Location"><input value={f.location} onChange={set('location')} /></Field>
+        {f.category === 'livestock' && (
+          <Field label="Headcount"><input type="number" value={f.headcount} onChange={set('headcount')} /></Field>
+        )}
+        {isEdit && (
+          <Field label="Status">
+            <select value={f.status} onChange={set('status')}>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+            </select>
+          </Field>
+        )}
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions" style={{ justifyContent: onDelete ? 'space-between' : 'flex-end' }}>
+        {onDelete && <button className="link-btn rust" onClick={onDelete}>Delete farm</button>}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-green" onClick={submit}>{isEdit ? 'Save changes' : 'Add farm'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Crop farm detail (generic — any crop) ---------------- */
+
+function CropFarmDetail({
+  farm, reminders, onAddField, onUpdateField, onDeleteField, onAddReminder,
+  onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
+}) {
+  const { askConfirm } = useToastConfirm();
+  const [view, setView] = useState('fields'); // 'fields' | 'programme' | 'scouting' | 'harvest'
+  const [modal, setModal] = useState(null);
+  const [activeFieldId, setActiveFieldId] = useState(farm.fields?.[0]?.id || null);
+  const fields = farm.fields || [];
+  const activeField = fields.find((fl) => fl.id === activeFieldId) || fields[0];
+
+  return (
+    <>
+      <div className="field-seg" style={{ marginBottom: 18 }}>
+        <button className={view === 'fields' ? 'active' : ''} onClick={() => setView('fields')}>Fields</button>
+        <button className={view === 'programme' ? 'active' : ''} onClick={() => setView('programme')}>Spray Programme</button>
+        <button className={view === 'scouting' ? 'active' : ''} onClick={() => setView('scouting')}>Scouting</button>
+        <button className={view === 'harvest' ? 'active' : ''} onClick={() => setView('harvest')}>Harvest</button>
+      </div>
+
+      {view === 'fields' && (
+        <>
+          <div className="panel-head" style={{ marginBottom: 6 }}>
+            <h3 style={{ fontSize: 18 }}>Fields</h3>
+            <button className="btn btn-green" onClick={() => setModal('field')}>+ Add field</button>
+          </div>
+          {fields.length === 0 ? (
+            <p className="empty" style={{ padding: '18px 0' }}>No fields yet for {farm.name} — add one to start tracking planting dates and a spray programme.</p>
+          ) : (
+            <div className="field-card-grid">
+              {fields.map((fl) => (
+                <div className="panel" key={fl.id} style={{ marginBottom: 0 }}>
+                  <div className="panel-head"><h3>{fl.name}</h3></div>
+                  <div style={{ padding: '4px 0 10px' }}>
+                    <div className="kv"><span className="k">Planted</span><span className="v">{fl.transplantDate ? fmtDate(fl.transplantDate) : 'not set'}</span></div>
+                    {fl.sizeAcres != null && <div className="kv"><span className="k">Size</span><span className="v">{num(fl.sizeAcres, 2)} acres</span></div>}
+                    {fl.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{fl.notes}</span></div>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn" onClick={() => { setActiveFieldId(fl.id); setModal('field:' + fl.id); }}>Edit</button>
+                    <button className="btn" onClick={() => { setActiveFieldId(fl.id); setView('programme'); }}>Spray programme</button>
+                    <button className="link-btn rust" onClick={async () => { if (await askConfirm(`Delete ${fl.name}? Its spray programme and history go with it.`)) onDeleteField(fl.id); }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {view === 'programme' && (
+        fields.length === 0 ? (
+          <p className="empty" style={{ padding: '18px 0' }}>Add a field first to plan its spray programme.</p>
+        ) : (
+          <>
+            {fields.length > 1 && (
+              <div className="field-seg" style={{ marginBottom: 14 }}>
+                {fields.map((fl) => (
+                  <button key={fl.id} className={activeField?.id === fl.id ? 'active' : ''} onClick={() => setActiveFieldId(fl.id)}>{fl.name}</button>
+                ))}
+              </div>
+            )}
+            <SprayProgrammeTab
+              field={activeField}
+              reminders={reminders}
+              onAddReminder={onAddReminder}
+              onLogNow={() => {}}
+              showPepperRules={false}
+              onAddEvent={(ev) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ev] } })}
+              onAddPattern={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
+              onLoadTemplate={() => onUpdateField(activeField.id, { sprayProgramme: { events: loadBellPepperTemplate() } })}
+              onUploadCsv={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
+              onDeleteEvent={(eventId) => onUpdateField(activeField.id, { sprayProgramme: { events: ((activeField.sprayProgramme && activeField.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } })}
+            />
+          </>
+        )
+      )}
+
+      {view === 'scouting' && (
+        <GenericLogView
+          title="Scouting" farm={farm} entries={farm.scouting || []}
+          onAdd={() => setModal('scouting')} onDelete={onDeleteScouting}
+          columns={[['date', 'Date'], ['notes', 'Observation'], ['severity', 'Severity']]}
+        />
+      )}
+
+      {view === 'harvest' && (
+        <GenericLogView
+          title="Harvest" farm={farm} entries={farm.harvests || []}
+          onAdd={() => setModal('harvest')} onDelete={onDeleteHarvest}
+          columns={[['date', 'Date'], ['quantityKg', 'Qty (kg)'], ['notes', 'Notes']]}
+        />
+      )}
+
+      {(modal === 'field' || (typeof modal === 'string' && modal.startsWith('field:'))) && (
+        <CustomFieldForm
+          field={typeof modal === 'string' && modal.startsWith('field:') ? fields.find((fl) => fl.id === modal.split(':')[1]) : null}
+          onClose={() => setModal(null)}
+          onSave={(fl) => {
+            if (fl.id && fields.some((x) => x.id === fl.id)) onUpdateField(fl.id, fl);
+            else onAddField(fl);
+            setModal(null);
+          }}
+        />
+      )}
+      {modal === 'scouting' && (
+        <SimpleLogForm
+          title="Add scouting observation"
+          fields={[['date', 'Date', 'date'], ['severity', 'Severity', 'text'], ['notes', 'Observation', 'textarea']]}
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAddScouting(entry); setModal(null); }}
+        />
+      )}
+      {modal === 'harvest' && (
+        <SimpleLogForm
+          title="Log a harvest"
+          fields={[['date', 'Date', 'date'], ['quantityKg', 'Quantity (kg)', 'number'], ['notes', 'Notes', 'textarea']]}
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAddHarvest(entry); setModal(null); }}
+        />
+      )}
+    </>
+  );
+}
+
+function CustomFieldForm({ field, onClose, onSave }) {
+  const isEdit = Boolean(field);
+  const [f, setF] = useState({
+    name: field?.name || '', sizeAcres: field?.sizeAcres ?? '',
+    transplantDate: field?.transplantDate || '', notes: field?.notes || '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.name) return;
+    onSave({
+      id: field?.id || newId(), name: f.name,
+      sizeAcres: f.sizeAcres === '' ? null : Number(f.sizeAcres),
+      transplantDate: f.transplantDate || '', notes: f.notes || '',
+      sprayProgramme: field?.sprayProgramme || { events: [] },
+    });
+  }
+  return (
+    <Modal title={isEdit ? `Edit ${field.name}` : 'Add a field'} onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Plot 1" /></Field>
+        <Field label="Size (acres)"><input type="number" step="0.1" value={f.sizeAcres} onChange={set('sizeAcres')} /></Field>
+        <Field label="Planting / start date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>{isEdit ? 'Save changes' : 'Add field'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Livestock farm detail (generic — any species) ---------------- */
+
+function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale }) {
+  const [view, setView] = useState('overview');
+  const [modal, setModal] = useState(null);
+  const totalFeedCost = (farm.feedLog || []).reduce((s, e) => s + (Number(e.cost) || 0), 0);
+  const totalSalesRevenue = (farm.salesLog || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  return (
+    <>
+      <div className="field-seg" style={{ marginBottom: 18 }}>
+        <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>Overview</button>
+        <button className={view === 'health' ? 'active' : ''} onClick={() => setView('health')}>Health</button>
+        <button className={view === 'feed' ? 'active' : ''} onClick={() => setView('feed')}>Feed</button>
+        <button className={view === 'sales' ? 'active' : ''} onClick={() => setView('sales')}>Sales</button>
+      </div>
+
+      {view === 'overview' && (
+        <>
+          <p className="stat-foot" style={{ marginTop: 0 }}>
+            A general-purpose tracker for {farm.subtype} — headcount, health, feed, and sales. This is
+            deliberately simpler than the Poultry or Goats modules, which are built around the specific
+            biology of those animals; for a new species this covers the basics without assuming details
+            that don't apply.
+          </p>
+          <div className="grid grid-4">
+            <StatCard title="Headcount" value={farm.headcount != null ? num(farm.headcount) : '—'} tone="gold" />
+            <StatCard title="Feed Cost" value={`GHS ${num(totalFeedCost, 2)}`} />
+            <StatCard title="Sales Revenue" value={`GHS ${num(totalSalesRevenue, 2)}`} tone="green" />
+            <StatCard title="Health Entries" value={num((farm.healthLog || []).length)} />
+          </div>
+        </>
+      )}
+
+      {view === 'health' && (
+        <GenericLogView
+          title="Health" farm={farm} entries={farm.healthLog || []}
+          onAdd={() => setModal('health')} onDelete={onDeleteHealthLog}
+          columns={[['date', 'Date'], ['type', 'Type'], ['notes', 'Notes']]}
+        />
+      )}
+      {view === 'feed' && (
+        <GenericLogView
+          title="Feed" farm={farm} entries={farm.feedLog || []}
+          onAdd={() => setModal('feed')} onDelete={onDeleteFeedLog}
+          columns={[['date', 'Date'], ['feedType', 'Feed'], ['quantityKg', 'Qty (kg)'], ['cost', 'Cost (GHS)']]}
+        />
+      )}
+      {view === 'sales' && (
+        <GenericLogView
+          title="Sales" farm={farm} entries={farm.salesLog || []}
+          onAdd={() => setModal('sale')} onDelete={onDeleteSale}
+          columns={[['date', 'Date'], ['quantity', 'Qty'], ['amount', 'Amount (GHS)'], ['buyer', 'Buyer']]}
+        />
+      )}
+
+      {modal === 'health' && (
+        <SimpleLogForm
+          title="Add health record"
+          fields={[['date', 'Date', 'date'], ['type', 'Type (vaccination, treatment, etc.)', 'text'], ['notes', 'Notes', 'textarea']]}
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAddHealthLog(entry); setModal(null); }}
+        />
+      )}
+      {modal === 'feed' && (
+        <SimpleLogForm
+          title="Log feed"
+          fields={[['date', 'Date', 'date'], ['feedType', 'Feed type', 'text'], ['quantityKg', 'Quantity (kg)', 'number'], ['cost', 'Cost (GHS)', 'number']]}
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAddFeedLog(entry); setModal(null); }}
+        />
+      )}
+      {modal === 'sale' && (
+        <SimpleLogForm
+          title="Log a sale"
+          fields={[['date', 'Date', 'date'], ['quantity', 'Quantity', 'number'], ['amount', 'Amount (GHS)', 'number'], ['buyer', 'Buyer', 'text'], ['notes', 'Notes', 'textarea']]}
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAddSale(entry); setModal(null); }}
+        />
+      )}
+    </>
+  );
+}
+
+/* ---------------- Shared small pieces ---------------- */
+
+function GenericLogView({ title, entries, onAdd, onDelete, columns }) {
+  const { askConfirm } = useToastConfirm();
+  const sorted = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 6 }}>
+        <h3 style={{ fontSize: 18 }}>{title}</h3>
+        <button className="btn btn-green" onClick={onAdd}>+ Add</button>
+      </div>
+      {sorted.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>Nothing logged yet.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="data">
+            <thead><tr>{columns.map(([k, label]) => <th key={k}>{label}</th>)}<th></th></tr></thead>
+            <tbody>
+              {sorted.map((e) => (
+                <tr key={e.id}>
+                  {columns.map(([k]) => (
+                    <td key={k} className={k === 'date' ? 'mono' : undefined}>
+                      {k === 'date' ? fmtDate(e[k]) : (e[k] ?? '—')}
+                    </td>
+                  ))}
+                  <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(e.id); }}>Delete</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** A small generic add-entry form driven by a field spec, used for every
+    simple log (scouting, harvest, health, feed, sales) so those five don't
+    each need their own bespoke form component. */
+function SimpleLogForm({ title, fields, onClose, onSave }) {
+  const initial = { date: todayISO() };
+  fields.forEach(([key]) => { if (!(key in initial)) initial[key] = ''; });
+  const [f, setF] = useState(initial);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    const out = { id: newId() };
+    fields.forEach(([key, , type]) => {
+      const v = f[key];
+      out[key] = type === 'number' ? (v === '' ? null : Number(v)) : (v || null);
+    });
+    onSave(out);
+  }
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="form-grid">
+        {fields.map(([key, label, type]) => (
+          <Field key={key} label={label} span2={type === 'textarea'}>
+            {type === 'textarea'
+              ? <textarea rows={2} value={f[key]} onChange={set(key)} />
+              : <input type={type === 'number' ? 'number' : type === 'date' ? 'date' : 'text'} value={f[key]} onChange={set(key)} />}
+          </Field>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save</button>
       </div>
     </Modal>
   );
