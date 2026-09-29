@@ -1394,6 +1394,27 @@ function AppInner() {
   function updateField(id, patch) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
   }
+  /** Adds a new bell pepper field with its own crop cycle, spray programme and soil targets. */
+  function addPepperField(name) {
+    const id = newId();
+    setData((d) => {
+      const n = d.pepper.fields.length + 1;
+      const field = {
+        id, name: (name || '').trim() || `Field ${n}`,
+        variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70,
+        setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults(),
+      };
+      return touch({ ...d, pepper: { ...d.pepper, fields: [...d.pepper.fields, field] } });
+    });
+    return id;
+  }
+  /** Removes a field. The UI only offers this for fields with no records and never the last field. */
+  function deletePepperField(id) {
+    setData((d) => {
+      if (d.pepper.fields.length <= 1) return d;
+      return touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } });
+    });
+  }
   function addManureReading(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: [...(d.pepper.manureReadings || []), entry] } }));
   }
@@ -1950,6 +1971,8 @@ function AppInner() {
           reminders={data.reminders || []}
           expenses={data.expenses || []}
           onUpdateField={updateField}
+          onAddField={addPepperField}
+          onDeleteField={deletePepperField}
           onAddScouting={addScouting}
           onAddSpray={addSpray}
           onAddHarvest={addHarvest}
@@ -3333,7 +3356,7 @@ function nurseryStatus(batch, asOf = todayISO()) {
 }
 
 function PepperWorkspace({
-  pepper, farmProfile, reminders, expenses, onUpdateField, onAddScouting, onAddSpray, onAddHarvest,
+  pepper, farmProfile, reminders, expenses, onUpdateField, onAddField, onDeleteField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
@@ -3342,7 +3365,7 @@ function PepperWorkspace({
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
-  const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
+  const [scope, setScope] = useState('all');   // 'all' | any field id
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
   const [sprayPrefill, setSprayPrefill] = useState(null); // pre-fill data when opening SprayForm from the programme
 
@@ -3465,7 +3488,7 @@ function PepperWorkspace({
     pest: s.pest,
   }));
 
-  const scopeOptions = [['all', 'Both fields'], ...fields.map((f) => [f.id, f.name])];
+  const scopeOptions = [['all', fields.length > 1 ? 'All fields' : 'Whole farm'], ...fields.map((f) => [f.id, f.name])];
 
   return (
     <>
@@ -3504,6 +3527,7 @@ function PepperWorkspace({
         {scopeOptions.map(([id, label]) => (
           <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
         ))}
+        <button onClick={() => setModal('add-field')} title="Add another field">+ Add field</button>
       </div>
 
       <nav className="tabs pepper">
@@ -3649,11 +3673,22 @@ function PepperWorkspace({
         />
       )}
 
-      {modal && modal.startsWith('field:') && (
+      {modal === 'add-field' && (
+        <AddFieldForm
+          defaultName={`Field ${fields.length + 1}`}
+          existingNames={fields.map((f) => f.name)}
+          onClose={() => setModal(null)}
+          onSave={(name) => { const id = onAddField(name); setScope(id); setModal(`field:${id}`); }}
+        />
+      )}
+      {modal && modal.startsWith('field:') && fields.find((f) => f.id === modal.split(':')[1]) && (
         <FieldForm
           field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
           onSave={(patch) => { onUpdateField(modal.split(':')[1], patch); setModal(null); }}
+          canDelete={fields.length > 1 && !fieldHasRecords(pepper, modal.split(':')[1])}
+          deleteBlockedReason={fields.length <= 1 ? 'A farm needs at least one field.' : (fieldHasRecords(pepper, modal.split(':')[1]) ? 'This field has scouting, spray, harvest, soil or batch records, so it cannot be deleted.' : '')}
+          onDelete={() => { const id = modal.split(':')[1]; if (scope === id) setScope('all'); onDeleteField(id); setModal(null); }}
         />
       )}
       {modal === 'scout' && (
@@ -3745,7 +3780,7 @@ function PepperDashboard({
   return (
     <>
       <div className="grid grid-4">
-        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'both fields' : 'in this field'} />
+        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'all fields' : 'in this field'} />
         <StatCard
           title="Pest Pressure"
           value={latestScout ? latestScout.severity : 'None yet'}
@@ -4390,9 +4425,10 @@ function SprayPatternForm({ onClose, onSave }) {
 }
 
 
-function FieldForm({ field, onClose, onSave }) {
+function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedReason }) {
   const [section, setSection] = useState('crop'); // 'crop' | 'soil'
   const [f, setF] = useState({
+    name: field.name || '',
     variety: field.variety || '', transplantDate: field.transplantDate || '',
     plantCount: field.plantCount ?? '', spacing: field.spacing || '',
     expectedHarvestDAT: field.expectedHarvestDAT ?? 70, setupCost: field.setupCost ?? '', notes: field.notes || '',
@@ -4407,6 +4443,7 @@ function FieldForm({ field, onClose, onSave }) {
   const num2 = (v) => (v === '' ? null : Number(v));
   function submit() {
     onSave({
+      name: (f.name || '').trim() || field.name,
       variety: f.variety || '', transplantDate: f.transplantDate || '',
       plantCount: f.plantCount === '' ? null : Number(f.plantCount),
       spacing: f.spacing || '',
@@ -4430,6 +4467,7 @@ function FieldForm({ field, onClose, onSave }) {
 
       {section === 'crop' ? (
         <div className="form-grid">
+          <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Field C, North plot" /></Field>
           <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
           <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
           <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
@@ -4460,9 +4498,40 @@ function FieldForm({ field, onClose, onSave }) {
         </>
       )}
 
+      {onDelete && (
+        <p className="stat-foot" style={{ marginTop: 12 }}>
+          {canDelete
+            ? <button className="btn" onClick={() => { if (window.confirm(`Delete ${field.name}? This cannot be undone.`)) onDelete(); }}>Delete this field</button>
+            : deleteBlockedReason}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-green" onClick={submit}>Save field</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** True when any record still points at this field, so deleting it would orphan data. */
+function fieldHasRecords(pepper, fieldId) {
+  const hit = (arr) => (arr || []).some((r) => r.fieldId === fieldId || r.transplantedToFieldId === fieldId);
+  return hit(pepper.scouting) || hit(pepper.sprays) || hit(pepper.harvests) || hit(pepper.soilReadings)
+    || hit(pepper.batches) || hit(pepper.nurseryBatches);
+}
+
+function AddFieldForm({ defaultName, existingNames, onClose, onSave }) {
+  const [name, setName] = useState(defaultName);
+  const clash = existingNames.some((n) => n.trim().toLowerCase() === name.trim().toLowerCase());
+  return (
+    <Modal title="Add field" sub="A new field gets its own crop cycle, spray programme, soil targets and records." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Field name" span2><input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+      </div>
+      {clash && <p className="stat-foot">Another field already uses that name.</p>}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" disabled={!name.trim() || clash} onClick={() => onSave(name)}>Add field</button>
       </div>
     </Modal>
   );
@@ -8044,7 +8113,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   const flocks = data.flocks || [];
   const labelFor = (e) => {
     if (e.target === 'shared' || !e.target) {
-      return e.scope === 'pepper' ? 'Both fields' : e.scope === 'poultry' ? 'All flocks' : e.scope === 'goats' ? 'Whole herd' : 'Whole farm';
+      return e.scope === 'pepper' ? 'All fields' : e.scope === 'poultry' ? 'All flocks' : e.scope === 'goats' ? 'Whole herd' : 'Whole farm';
     }
     const f = fields.find((x) => x.id === e.target);
     if (f) return f.name;
@@ -8445,7 +8514,7 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
   }
 
   const targetOptions = f.scope === 'pepper'
-    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'All fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
       : f.scope === 'goats'
@@ -8820,7 +8889,7 @@ function PaymentForm({ entry, staff, fields, flocks, payments, onClose, onSave }
   const currentBalance = selectedStaff ? staffBalanceOwed(payments.filter((p) => p.id !== entry?.id), selectedStaff.id) : 0;
 
   const targetOptions = f.scope === 'pepper'
-    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'All fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
       : f.scope === 'goats'
@@ -9013,7 +9082,7 @@ function FuelForm({ entry, fields, flocks, onClose, onSave }) {
   const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
 
   const targetOptions = f.scope === 'pepper'
-    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'All fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
       : f.scope === 'goats'
@@ -9383,7 +9452,7 @@ function OwnerLoanForm({ entry, fields, flocks, onClose, onSave }) {
     };
   }
   const targetOptions = f.scope === 'pepper'
-    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'Both fields / shared']]
+    ? [...fields.map((fl) => [fl.id, fl.name]), ['shared', 'All fields / shared']]
     : f.scope === 'poultry'
       ? [...flocks.map((fl) => [fl.id, fl.flockName]), ['shared', 'All flocks / shared']]
       : [['shared', 'Whole farm']];
@@ -9854,7 +9923,7 @@ function NurseryTab({ batches, fields, onAdd, onEdit, onDelete, onTransplant }) 
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
         Track seedlings from sowing through germination to transplant-ready, before they ever reach
-        Field A or B. Typical bell pepper nursery duration is around 30 days, but every batch can set
+        one of your fields. Typical bell pepper nursery duration is around 30 days, but every batch can set
         its own.
       </p>
 
