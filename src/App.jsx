@@ -12,6 +12,7 @@ import {
   getUser, signIn, signUp, signOut, resetPassword,
 } from './sync';
 import './App.css';
+import FinancialsModule from './FinancialsModule';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
 
@@ -1574,6 +1575,10 @@ function AppInner() {
           className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
           onClick={() => { setWorkspace('farm'); setModal(null); }}
         >Whole Farm</button>
+        <button
+          className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('financials'); setModal(null); }}
+        >💰 Financials</button>
       </div>
 
       <SyncBar
@@ -2069,6 +2074,10 @@ function AppInner() {
           onAddLoanRepayment={addLoanRepayment}
           onDeleteLoanRepayment={deleteLoanRepayment}
         />
+      )}
+
+      {workspace === 'financials' && (
+        <FinancialsModule />
       )}
 
       {modal === 'sync' && null}
