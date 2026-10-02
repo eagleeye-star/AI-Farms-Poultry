@@ -2083,6 +2083,8 @@ function AppInner() {
           expenses={data.expenses || []}
           pepperHarvests={data.pepper?.harvests || []}
           goatSales={data.goats?.sales || []}
+          customFarms={data.customFarms || []}
+          flocks={data.flocks || []}
           farmProfile={data.farmProfile}
         />
       )}
