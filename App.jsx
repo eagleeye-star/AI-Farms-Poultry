@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react';
 import {
-  ResponsiveContainer, ComposedChart, Line, Bar, Area, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, BarChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart, ReferenceDot,
 } from 'recharts';
 import { SEED } from './data/seed';
@@ -910,6 +910,50 @@ function AppInner() {
     used: e.kind === 'usage' ? e.ref.feedGiven : e.ref.used,
   })), [feedLedger]);
 
+  // ── Revenue chart: monthly breakdown by section, from earliest record to today ──
+  const revenueChartData = useMemo(() => {
+    // Gather all dated revenue events across every section
+    const allEvents = [];
+    // Poultry sales
+    (data.sales || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'Poultry', amount: Number(s.amount) }); });
+    // Pepper harvests (weightKg × pricePerKg)
+    (data.pepper?.harvests || []).forEach((h) => {
+      const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+      if (h.date && amt) allEvents.push({ date: h.date, section: 'Pepper', amount: amt });
+    });
+    // Goat sales (revenue field is `price`)
+    (data.goats?.sales || []).forEach((s) => { if (s.date && Number(s.price)) allEvents.push({ date: s.date, section: 'Goats', amount: Number(s.price) }); });
+    // Custom farms (livestock salesLog only — crop harvests have no price)
+    (data.customFarms || []).forEach((farm) => {
+      if (farm.category === 'livestock') {
+        (farm.salesLog || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'My Farms', amount: Number(s.amount) }); });
+      }
+    });
+    if (allEvents.length === 0) return [];
+    // Find the earliest date across all events
+    const dates = allEvents.map((e) => new Date(e.date)).filter((d) => !isNaN(d));
+    const earliest = new Date(Math.min(...dates));
+    const today = new Date();
+    // Build ordered list of YYYY-MM keys from earliest month to current month
+    const months = [];
+    const cur = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+    while (cur <= today) {
+      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    // Aggregate events into monthly buckets
+    const buckets = {};
+    months.forEach((m) => { buckets[m] = { month: m, Poultry: 0, Pepper: 0, Goats: 0, 'My Farms': 0 }; });
+    allEvents.forEach((e) => {
+      const m = e.date.slice(0, 7);
+      if (buckets[m]) buckets[m][e.section] = (buckets[m][e.section] || 0) + e.amount;
+    });
+    return months.map((m) => ({
+      ...buckets[m],
+      label: new Date(m + '-01').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }),
+    }));
+  }, [data.sales, data.pepper?.harvests, data.goats?.sales, data.customFarms]);
+
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
       overwritten by an older remote copy on the next sync. */
@@ -1722,6 +1766,7 @@ function AppInner() {
           growthChartData={growthChartData}
           vaxStatus={vaxStatus}
           vaxPending={vaxPending}
+          revenueChartData={revenueChartData}
           onExport={exportWeeklyReport}
         />
       )}
@@ -2120,7 +2165,7 @@ function DashboardTab({
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
-  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, onExport,
+  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, revenueChartData, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
@@ -2251,6 +2296,78 @@ function DashboardTab({
         </div>
       </div>
 
+      {/* ── Production Trend (FIRST chart) ── */}
+      {!isBroiler && (
+        <div className="panel">
+          <div className="panel-head"><h3>Egg production trend — daily eggs &amp; hen-day %</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis yAxisId="eggs" tickLine={false} axisLine={false} />
+                <YAxis yAxisId="pct" orientation="right" tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
+                <Tooltip
+                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                  formatter={(val, name) => name === 'Hen-day %' ? [`${num(val, 1)}%`, name] : [num(val), name]}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Bar yAxisId="eggs" dataKey="eggs" name="Eggs collected" fill="#D4A537" opacity={0.85} barSize={8} radius={[3, 3, 0, 0]} />
+                <Line yAxisId="pct" type="monotone" dataKey="henDay" name="Hen-day %" stroke="#7A9A66" strokeWidth={2} dot={false} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+      {isBroiler && (
+        <div className="panel">
+          <div className="panel-head"><h3>Daily feed intake &amp; flock size trend</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis yAxisId="left" tickLine={false} axisLine={false} />
+                <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Area yAxisId="left" type="monotone" dataKey="feedGiven" name="Feed (kg)" fill="#7A9A6622" stroke="#7A9A66" strokeWidth={2} />
+                <Line yAxisId="right" type="monotone" dataKey="closing" name="Birds" stroke="#D4A537" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ── Revenue by section — from first record to today ── */}
+      {revenueChartData && revenueChartData.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Revenue by farm section</h3>
+            <span style={{ fontSize: 11, color: '#83786A' }}>GH₵ · from first recorded sale</span>
+          </div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={revenueChartData} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tickLine={false} axisLine={{ stroke: '#423827' }} tick={{ fontSize: 11 }} />
+                <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => `₵${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}`} />
+                <Tooltip
+                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                  formatter={(val, name) => [`GH₵ ${Number(val).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Bar dataKey="Poultry"  stackId="rev" fill="#D4A537" radius={[0,0,0,0]} />
+                <Bar dataKey="Pepper"   stackId="rev" fill="#7A9A66" radius={[0,0,0,0]} />
+                <Bar dataKey="Goats"    stackId="rev" fill="#C15F41" radius={[0,0,0,0]} />
+                <Bar dataKey="My Farms" stackId="rev" fill="#7AABBA" radius={[3,3,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ── Flock population & mortality ── */}
       <div className="panel">
         <div className="panel-head"><h3>Flock population &amp; daily mortality</h3></div>
         <div className="chart-card">
