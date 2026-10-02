@@ -1,9 +1,17 @@
 import { useState, useMemo } from 'react';
 
 /* ============================================================
-   AI Farms — Financials Module  v2.0
+   AI Farms — Financials Module  v2.1
    Reads directly from App.jsx data props — no own localStorage.
    Theme: dark gold (#1a1a1a / #242424 bg, #D4A537 gold accent)
+
+   Revenue sources:
+     • data.sales[]          — poultry: eggs + bird sales  (amount field)
+     • data.pepper.harvests[]— bell pepper: weightKg × pricePerKg  (no totalRevenue)
+     • data.goats.sales[]    — goat sales  (price field, NOT amount)
+     • data.customFarms[]    — "My Farms":
+         crop farms  → farm.harvests[]   (quantityKg only, no price → revenue = 0 unless noted)
+         livestock   → farm.salesLog[]   (amount field)
    ============================================================ */
 
 const GOLD   = '#D4A537';
@@ -15,7 +23,7 @@ const MUTED  = '#888';
 const GREEN  = '#7a9a66';
 const RED    = '#c0392b';
 
-/* ---------- tiny helpers ---------- */
+/* ---------- helpers ---------- */
 function todayISO() {
   const n = new Date();
   return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
@@ -31,16 +39,117 @@ function num(v, d=0) {
   return Number(v).toLocaleString('en-GB',{maximumFractionDigits:d,minimumFractionDigits:d});
 }
 function ghc(v) {
-  if (v===null||v===undefined||isNaN(v)) return '—';
-  return `GH₵ ${num(v,2)}`;
-}
-function addDays(iso,n) {
-  const d = new Date(iso); d.setUTCDate(d.getUTCDate()+n);
-  return d.toISOString().slice(0,10);
+  if (v===null||v===undefined||isNaN(Number(v))) return '—';
+  return `GH₵ ${Number(v).toLocaleString('en-GB',{maximumFractionDigits:2,minimumFractionDigits:2})}`;
 }
 function newId() { return Math.random().toString(36).slice(2,10); }
 
-/* --------- inline styles (no extra CSS file needed) --------- */
+/* ============================================================
+   CANONICAL INCOME ROW BUILDER
+   Converts every source into a uniform shape:
+   { id, date, source, category, description, qty, unit, price, amount, buyer }
+   ============================================================ */
+function buildIncomeRows({ sales, pepperHarvests, goatSales, customFarms, flocks }) {
+  const rows = [];
+
+  /* 1. Poultry sales (eggs + bird sales) — revenue field: amount */
+  (sales || []).forEach(s => {
+    const flock = (flocks || []).find(f => f.id === s.flockId);
+    const isEgg = (s.item || '').toLowerCase().includes('egg');
+    rows.push({
+      id: s.id || newId(),
+      date: s.date,
+      source: flock?.flockName || 'Poultry',
+      category: isEgg ? 'Eggs' : 'Poultry sale',
+      description: s.item || 'Poultry sale',
+      qty: s.quantity,
+      unit: isEgg ? ((s.item||'').includes('crates')?'crates':'pcs') : 'birds',
+      price: s.unitPrice,
+      amount: Number(s.amount) || 0,
+      buyer: s.buyer || '—',
+    });
+  });
+
+  /* 2. Bell pepper harvests — revenue = weightKg × pricePerKg (NO totalRevenue field) */
+  (pepperHarvests || []).forEach(h => {
+    const kg  = Number(h.weightKg)  || 0;
+    const ppk = Number(h.pricePerKg) || 0;
+    const amt = kg * ppk;           // ← correct calculation
+    rows.push({
+      id: h.id || newId(),
+      date: h.date,
+      source: h.fieldName || 'Bell Pepper',
+      category: 'Pepper',
+      description: `${num(kg,1)} kg${h.grade ? ` (${h.grade})` : ''}`,
+      qty: kg,
+      unit: 'kg',
+      price: ppk || null,
+      amount: amt,
+      buyer: h.buyer || '—',
+    });
+  });
+
+  /* 3. Goat sales — revenue field is `price`, NOT `amount` */
+  (goatSales || []).forEach(s => {
+    rows.push({
+      id: s.id || newId(),
+      date: s.date,
+      source: 'Goats',
+      category: 'Goat sale',
+      description: `Goat${s.weightKg ? ` (${num(s.weightKg,1)} kg)` : ''}`,
+      qty: s.weightKg || null,
+      unit: 'kg',
+      price: null,
+      amount: Number(s.price) || 0,   // ← uses `price`, not `amount`
+      buyer: s.buyer || '—',
+    });
+  });
+
+  /* 4. Custom farms (My Farms)
+       - Livestock farms: salesLog[].amount
+       - Crop farms:      harvests[].quantityKg (no price → amount = 0, shown as "—")
+  */
+  (customFarms || []).forEach(farm => {
+    if (farm.category === 'livestock') {
+      (farm.salesLog || []).forEach(s => {
+        rows.push({
+          id: s.id || newId(),
+          date: s.date,
+          source: farm.name || 'My Farm',
+          category: farm.subtype || 'Livestock',
+          description: s.notes || `${farm.name} sale`,
+          qty: s.quantity || null,
+          unit: null,
+          price: null,
+          amount: Number(s.amount) || 0,
+          buyer: s.buyer || '—',
+        });
+      });
+    } else {
+      /* crop farm — harvests have quantityKg but no price,
+         so we include the row with amount=0 so the harvest is visible */
+      (farm.harvests || []).forEach(h => {
+        rows.push({
+          id: h.id || newId(),
+          date: h.date,
+          source: farm.name || 'My Farm',
+          category: farm.subtype || 'Crop',
+          description: `Harvest${h.quantityKg ? ` — ${num(h.quantityKg,1)} kg` : ''}${h.notes ? ` (${h.notes})` : ''}`,
+          qty: h.quantityKg || null,
+          unit: 'kg',
+          price: null,
+          amount: 0,   // crop farms don't record a sale price
+          buyer: '—',
+          noRevenue: true,
+        });
+      });
+    }
+  });
+
+  return rows.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+/* ---------- inline styles ---------- */
 const S = {
   wrap: { background:BG1, minHeight:'100vh', color:'#e8e0d0', fontFamily:'inherit' },
   header: { padding:'20px 20px 0', borderBottom:`1px solid ${BORDER}`, marginBottom:0 },
@@ -70,174 +179,126 @@ const S = {
   th: { textAlign:'left', padding:'8px 10px', fontSize:11, textTransform:'uppercase',
         letterSpacing:'0.08em', color:MUTED, borderBottom:`1px solid ${BORDER}`, background:BG2 },
   td: { padding:'9px 10px', borderBottom:`1px solid rgba(255,255,255,0.05)`, verticalAlign:'middle' },
-  trHover: { background:'rgba(212,165,55,0.05)' },
 
   btn: { padding:'7px 14px', borderRadius:6, border:`1px solid ${GOLD}`, background:'transparent',
          color:GOLD, fontSize:13, fontWeight:600, cursor:'pointer' },
   btnGold: { padding:'7px 14px', borderRadius:6, border:'none', background:GOLD,
               color:'#1a1a1a', fontSize:13, fontWeight:700, cursor:'pointer' },
-  btnGhost: { padding:'7px 14px', borderRadius:6, border:`1px solid ${BORDER}`, background:'transparent',
-               color:MUTED, fontSize:13, cursor:'pointer' },
-  btnRust: { padding:'6px 10px', borderRadius:5, border:'none', background:'#7a2a2a',
-              color:'#f5c5c5', fontSize:12, cursor:'pointer' },
 
-  badge: (tone) => ({
-    display:'inline-block', padding:'2px 8px', borderRadius:12, fontSize:11, fontWeight:600,
-    background: tone==='green' ? 'rgba(122,154,102,0.2)' : tone==='red' ? 'rgba(192,57,43,0.2)' : 'rgba(212,165,55,0.15)',
-    color: tone==='green' ? GREEN : tone==='red' ? '#e07070' : GOLD,
-  }),
-
-  empty: { textAlign:'center', padding:'40px 20px', color:MUTED, fontSize:13 },
-
-  modal: { position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', display:'flex',
-           alignItems:'center', justifyContent:'center', zIndex:1000 },
-  modalBox: { background:BG2, border:`1px solid ${BORDER}`, borderRadius:12,
-               padding:'24px', width:'min(95vw,440px)', maxHeight:'90vh', overflowY:'auto' },
-  modalTitle: { fontSize:17, fontWeight:700, color:'#f5ead8', margin:'0 0 4px' },
-  modalSub: { fontSize:12, color:MUTED, margin:'0 0 18px' },
-  formGrid: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 },
-  field: { display:'flex', flexDirection:'column', gap:4 },
-  label: { fontSize:11, textTransform:'uppercase', letterSpacing:'0.08em', color:MUTED },
-  input: { padding:'8px 10px', background:BG3, border:`1px solid ${BORDER}`, borderRadius:6,
-           color:'#e8e0d0', fontSize:13, outline:'none' },
-  span2: { gridColumn:'span 2' },
-  modalActions: { display:'flex', justifyContent:'flex-end', gap:8, marginTop:20 },
-
-  divider: { border:'none', borderTop:`1px solid ${BORDER}`, margin:'16px 0' },
   tag: (tone) => ({
     display:'inline-block', padding:'1px 7px', borderRadius:10, fontSize:11,
     background: tone==='green'?'rgba(122,154,102,0.15)':tone==='red'?'rgba(192,57,43,0.15)':'rgba(212,165,55,0.12)',
     color: tone==='green'?GREEN:tone==='red'?'#e07070':GOLD,
   }),
+
+  empty: { textAlign:'center', padding:'40px 20px', color:MUTED, fontSize:13 },
+  divider: { border:'none', borderTop:`1px solid ${BORDER}`, margin:'16px 0' },
 };
 
-/* ============================================================
-   HELPER: derive summary numbers from existing app data
-   ============================================================ */
-function buildSummary(data, sales, expenses, pepperHarvests) {
-  const CRATE = 30;
-
-  /* --- egg revenue from poultry sales --- */
-  const eggSales = (sales||[]).filter(s => s.item==='Eggs (crates)'||s.item==='Eggs (pieces)');
-  const eggRevenue = eggSales.reduce((s,r)=>s+(Number(r.amount)||0),0);
-
-  /* --- bird / poultry sales --- */
-  const birdSales = (sales||[]).filter(s=>s.item&&!s.item.toLowerCase().includes('egg'));
-  const birdRevenue = birdSales.reduce((s,r)=>s+(Number(r.amount)||0),0);
-
-  /* --- pepper / crop revenue --- */
-  const pepperRevenue = (pepperHarvests||[]).reduce((s,h)=>{
-    const kg = Number(h.weightKg)||0;
-    const price = Number(h.pricePerKg)||0;
-    return s + (h.totalRevenue ? Number(h.totalRevenue) : kg*price);
-  },0);
-
-  /* --- total expenses from whole-farm expenses --- */
-  const totalExpenses = (expenses||[]).reduce((s,e)=>s+(Number(e.amount)||0),0);
-
-  /* --- total revenue --- */
-  const totalRevenue = eggRevenue + birdRevenue + pepperRevenue;
-
-  /* --- net profit --- */
-  const netProfit = totalRevenue - totalExpenses;
-
-  /* --- this month --- */
-  const thisMonth = todayISO().slice(0,7);
-  const monthRevenue = [
-    ...(sales||[]).filter(s=>s.date&&s.date.startsWith(thisMonth)),
-    ...(pepperHarvests||[]).filter(h=>h.date&&h.date.startsWith(thisMonth)),
-  ].reduce((s,r)=>s+(Number(r.amount)||Number(r.totalRevenue)||(Number(r.weightKg||0)*Number(r.pricePerKg||0))),0);
-  const monthExpenses = (expenses||[]).filter(e=>e.date&&e.date.startsWith(thisMonth))
-    .reduce((s,e)=>s+(Number(e.amount)||0),0);
-
-  return { eggRevenue, birdRevenue, pepperRevenue, totalRevenue, totalExpenses, netProfit, monthRevenue, monthExpenses };
+/* category colour */
+function catTone(cat) {
+  if (!cat) return 'gold';
+  const c = cat.toLowerCase();
+  if (c.includes('egg')) return 'gold';
+  if (c.includes('pepper')||c.includes('crop')) return 'green';
+  if (c.includes('goat')) return 'green';
+  return 'gold';
 }
 
 /* ============================================================
    OVERVIEW TAB
    ============================================================ */
-function OverviewTab({ data, sales, expenses, pepperHarvests }) {
-  const s = buildSummary(data, sales, expenses, pepperHarvests);
+function OverviewTab({ sales, expenses, pepperHarvests, goatSales, customFarms, flocks }) {
+  const allIncome = useMemo(()=>buildIncomeRows({sales,pepperHarvests,goatSales,customFarms,flocks}),[sales,pepperHarvests,goatSales,customFarms,flocks]);
 
-  /* monthly trend — last 6 months */
+  const eggRev     = allIncome.filter(r=>r.category==='Eggs').reduce((s,r)=>s+r.amount,0);
+  const birdRev    = allIncome.filter(r=>r.category==='Poultry sale').reduce((s,r)=>s+r.amount,0);
+  const pepperRev  = allIncome.filter(r=>r.category==='Pepper').reduce((s,r)=>s+r.amount,0);
+  const goatRev    = allIncome.filter(r=>r.category==='Goat sale').reduce((s,r)=>s+r.amount,0);
+  const customRev  = allIncome.filter(r=>!['Eggs','Poultry sale','Pepper','Goat sale'].includes(r.category)).reduce((s,r)=>s+r.amount,0);
+  const totalRev   = allIncome.reduce((s,r)=>s+r.amount,0);
+  const totalExp   = (expenses||[]).reduce((s,e)=>s+(Number(e.amount)||0),0);
+  const netProfit  = totalRev - totalExp;
+
+  /* this month */
+  const thisMonth = todayISO().slice(0,7);
+  const monthRev = allIncome.filter(r=>r.date&&r.date.startsWith(thisMonth)).reduce((s,r)=>s+r.amount,0);
+  const monthExp = (expenses||[]).filter(e=>e.date&&e.date.startsWith(thisMonth)).reduce((s,e)=>s+(Number(e.amount)||0),0);
+
+  /* 6-month bar chart */
   const months = useMemo(()=>{
-    const result = [];
-    for (let i=5; i>=0; i--) {
-      const d = new Date(); d.setMonth(d.getMonth()-i);
-      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      const label = d.toLocaleDateString('en-GB',{month:'short',year:'2-digit'});
-      const rev = [
-        ...(sales||[]).filter(r=>r.date&&r.date.startsWith(key)),
-        ...(pepperHarvests||[]).filter(h=>h.date&&h.date.startsWith(key)),
-      ].reduce((a,r)=>a+(Number(r.amount)||Number(r.totalRevenue)||(Number(r.weightKg||0)*Number(r.pricePerKg||0))),0);
-      const exp = (expenses||[]).filter(e=>e.date&&e.date.startsWith(key))
-        .reduce((a,e)=>a+(Number(e.amount)||0),0);
-      result.push({key,label,rev,exp,profit:rev-exp});
+    const result=[];
+    for(let i=5;i>=0;i--){
+      const d=new Date(); d.setMonth(d.getMonth()-i);
+      const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const label=d.toLocaleDateString('en-GB',{month:'short',year:'2-digit'});
+      const rev=allIncome.filter(r=>r.date&&r.date.startsWith(key)).reduce((a,r)=>a+r.amount,0);
+      const exp=(expenses||[]).filter(e=>e.date&&e.date.startsWith(key)).reduce((a,e)=>a+(Number(e.amount)||0),0);
+      result.push({key,label,rev,exp});
     }
     return result;
-  },[sales,expenses,pepperHarvests]);
+  },[allIncome,expenses]);
+  const maxVal=Math.max(...months.map(m=>Math.max(m.rev,m.exp)),1);
 
-  const maxVal = Math.max(...months.map(m=>Math.max(m.rev,m.exp)),1);
+  /* breakdown rows — only show sources with > 0 */
+  const breakdown = [
+    {label:'🥚 Egg Sales',     val:eggRev},
+    {label:'🐔 Bird Sales',    val:birdRev},
+    {label:'🌶 Pepper Sales',  val:pepperRev},
+    {label:'🐐 Goat Sales',    val:goatRev},
+    {label:'🌾 My Farms',      val:customRev},
+  ].filter(r=>r.val>0);
 
   return (
     <div style={S.section}>
-      {/* KPI row */}
       <div style={S.grid(2)}>
         <div style={S.card}>
           <p style={S.cardTitle}>Total Revenue (All-time)</p>
-          <p style={S.cardValue('gold')}>{ghc(s.totalRevenue)}</p>
-          <p style={S.cardFoot}>Eggs + Poultry + Pepper</p>
+          <p style={S.cardValue('gold')}>{ghc(totalRev)}</p>
+          <p style={S.cardFoot}>{allIncome.filter(r=>!r.noRevenue).length} sale records</p>
         </div>
         <div style={S.card}>
           <p style={S.cardTitle}>Total Expenses (All-time)</p>
-          <p style={S.cardValue('red')}>{ghc(s.totalExpenses)}</p>
-          <p style={S.cardFoot}>All farm costs logged</p>
+          <p style={S.cardValue('red')}>{ghc(totalExp)}</p>
+          <p style={S.cardFoot}>{(expenses||[]).length} expense records</p>
         </div>
         <div style={S.card}>
           <p style={S.cardTitle}>Net Profit / Loss</p>
-          <p style={S.cardValue(s.netProfit>=0?'green':'red')}>{ghc(Math.abs(s.netProfit))}</p>
-          <p style={S.cardFoot}>{s.netProfit>=0?'Profit':'Loss'} to date</p>
+          <p style={S.cardValue(netProfit>=0?'green':'red')}>{ghc(Math.abs(netProfit))}</p>
+          <p style={S.cardFoot}>{netProfit>=0?'Profit':'Loss'} to date</p>
         </div>
         <div style={S.card}>
           <p style={S.cardTitle}>This Month</p>
-          <p style={S.cardValue(s.monthRevenue-s.monthExpenses>=0?'green':'red')}>
-            {ghc(Math.abs(s.monthRevenue-s.monthExpenses))}
-          </p>
-          <p style={S.cardFoot}>Rev {ghc(s.monthRevenue)} · Exp {ghc(s.monthExpenses)}</p>
+          <p style={S.cardValue(monthRev-monthExp>=0?'green':'red')}>{ghc(Math.abs(monthRev-monthExp))}</p>
+          <p style={S.cardFoot}>Rev {ghc(monthRev)} · Exp {ghc(monthExp)}</p>
         </div>
       </div>
 
-      {/* Revenue breakdown */}
-      <div style={{...S.card, marginBottom:16}}>
-        <p style={S.cardTitle}>Revenue breakdown</p>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:8}}>
-          {[
-            {label:'🥚 Egg Sales', val:s.eggRevenue},
-            {label:'🐔 Bird Sales', val:s.birdRevenue},
-            {label:'🌶 Pepper Sales', val:s.pepperRevenue},
-          ].map(item=>(
-            <div key={item.label} style={{textAlign:'center'}}>
-              <p style={{fontSize:12,color:MUTED,margin:'0 0 4px'}}>{item.label}</p>
-              <p style={{fontSize:17,fontWeight:700,color:GOLD,margin:0}}>{ghc(item.val)}</p>
-              <p style={{fontSize:11,color:MUTED,margin:'2px 0 0'}}>
-                {s.totalRevenue>0?`${Math.round((item.val/s.totalRevenue)*100)}%`:'—'}
-              </p>
-            </div>
-          ))}
+      {breakdown.length>0 && (
+        <div style={{...S.card,marginBottom:16}}>
+          <p style={S.cardTitle}>Revenue breakdown</p>
+          <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.min(breakdown.length,4)},1fr)`,gap:12,marginTop:8}}>
+            {breakdown.map(item=>(
+              <div key={item.label} style={{textAlign:'center'}}>
+                <p style={{fontSize:12,color:MUTED,margin:'0 0 4px'}}>{item.label}</p>
+                <p style={{fontSize:17,fontWeight:700,color:GOLD,margin:0}}>{ghc(item.val)}</p>
+                <p style={{fontSize:11,color:MUTED,margin:'2px 0 0'}}>
+                  {totalRev>0?`${Math.round((item.val/totalRev)*100)}%`:'—'}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* 6-month bar chart */}
       <div style={S.card}>
         <p style={S.cardTitle}>Revenue vs Expenses — last 6 months</p>
         <div style={{display:'flex',alignItems:'flex-end',gap:8,height:100,marginTop:12}}>
           {months.map(m=>(
             <div key={m.key} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
               <div style={{width:'100%',display:'flex',gap:2,alignItems:'flex-end',height:80}}>
-                <div style={{flex:1,background:GOLD,borderRadius:'3px 3px 0 0',
-                  height:`${Math.round((m.rev/maxVal)*80)}px`,minHeight:m.rev>0?2:0,transition:'height .3s'}}/>
-                <div style={{flex:1,background:RED,borderRadius:'3px 3px 0 0',
-                  height:`${Math.round((m.exp/maxVal)*80)}px`,minHeight:m.exp>0?2:0,opacity:0.7,transition:'height .3s'}}/>
+                <div style={{flex:1,background:GOLD,borderRadius:'3px 3px 0 0',height:`${Math.round((m.rev/maxVal)*80)}px`,minHeight:m.rev>0?2:0}}/>
+                <div style={{flex:1,background:RED,borderRadius:'3px 3px 0 0',height:`${Math.round((m.exp/maxVal)*80)}px`,minHeight:m.exp>0?2:0,opacity:0.7}}/>
               </div>
               <p style={{fontSize:9,color:MUTED,margin:0,textAlign:'center'}}>{m.label}</p>
             </div>
@@ -253,65 +314,47 @@ function OverviewTab({ data, sales, expenses, pepperHarvests }) {
 }
 
 /* ============================================================
-   INCOME TAB  — shows all sales (egg + bird + pepper)
+   INCOME TAB
    ============================================================ */
-function IncomeTab({ sales, pepperHarvests, flocks }) {
-  const CRATE = 30;
+function IncomeTab({ sales, pepperHarvests, goatSales, customFarms, flocks }) {
+  const allIncome = useMemo(()=>buildIncomeRows({sales,pepperHarvests,goatSales,customFarms,flocks}),[sales,pepperHarvests,goatSales,customFarms,flocks]);
+  const total = allIncome.filter(r=>!r.noRevenue).reduce((s,r)=>s+r.amount,0);
 
-  const allIncome = useMemo(()=>{
-    const rows = [];
-    (sales||[]).forEach(s=>{
-      const flock = (flocks||[]).find(f=>f.id===s.flockId);
-      rows.push({
-        id: s.id||newId(),
-        date: s.date,
-        source: flock ? flock.flockName : 'Poultry',
-        category: (s.item||'').toLowerCase().includes('egg') ? 'Eggs' : 'Poultry sale',
-        description: s.item || '—',
-        qty: s.quantity,
-        unit: (s.item||'').includes('crates') ? 'crates' : (s.item||'').includes('pieces') ? 'pcs' : 'birds',
-        price: s.unitPrice,
-        amount: Number(s.amount)||0,
-        buyer: s.buyer || '—',
-      });
-    });
-    (pepperHarvests||[]).forEach(h=>{
-      const amt = Number(h.totalRevenue)||(Number(h.weightKg||0)*Number(h.pricePerKg||0));
-      rows.push({
-        id: h.id||newId(),
-        date: h.date,
-        source: h.fieldName || 'Bell Pepper',
-        category: 'Pepper',
-        description: `${num(h.weightKg,1)} kg${h.grade?' ('+h.grade+')':''}`,
-        qty: h.weightKg,
-        unit: 'kg',
-        price: h.pricePerKg,
-        amount: amt,
-        buyer: h.buyer || '—',
-      });
-    });
-    return rows.sort((a,b)=>new Date(b.date)-new Date(a.date));
-  },[sales,pepperHarvests,flocks]);
-
-  const total = allIncome.reduce((s,r)=>s+r.amount,0);
+  /* unique categories for filter */
+  const categories = ['All', ...Array.from(new Set(allIncome.map(r=>r.category)))];
+  const [filter, setFilter] = useState('All');
+  const visible = filter==='All' ? allIncome : allIncome.filter(r=>r.category===filter);
 
   return (
     <div style={S.section}>
-      <div style={S.grid(3)}>
+      <div style={S.grid(4)}>
         <div style={S.card}>
           <p style={S.cardTitle}>Total Income</p>
           <p style={S.cardValue('gold')}>{ghc(total)}</p>
-          <p style={S.cardFoot}>{allIncome.length} records</p>
+          <p style={S.cardFoot}>{allIncome.filter(r=>!r.noRevenue).length} records</p>
         </div>
         <div style={S.card}>
-          <p style={S.cardTitle}>Egg Revenue</p>
-          <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Eggs').reduce((s,r)=>s+r.amount,0))}</p>
+          <p style={S.cardTitle}>Egg + Poultry</p>
+          <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Eggs'||r.category==='Poultry sale').reduce((s,r)=>s+r.amount,0))}</p>
         </div>
         <div style={S.card}>
-          <p style={S.cardTitle}>Pepper Revenue</p>
+          <p style={S.cardTitle}>Pepper</p>
           <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Pepper').reduce((s,r)=>s+r.amount,0))}</p>
         </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Goats</p>
+          <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Goat sale').reduce((s,r)=>s+r.amount,0))}</p>
+        </div>
       </div>
+
+      {/* Category filter */}
+      {categories.length>2 && (
+        <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
+          {categories.map(c=>(
+            <button key={c} style={filter===c?S.btnGold:S.btn} onClick={()=>setFilter(c)}>{c}</button>
+          ))}
+        </div>
+      )}
 
       <div style={{overflowX:'auto'}}>
         <table style={S.table}>
@@ -323,29 +366,33 @@ function IncomeTab({ sales, pepperHarvests, flocks }) {
             </tr>
           </thead>
           <tbody>
-            {allIncome.length===0 && (
+            {visible.length===0 && (
               <tr><td colSpan={8} style={S.empty}>
-                No income records yet. Record egg sales in Poultry → Sales, and pepper harvests in Bell Pepper Fields → the harvest tab.
+                No income records yet. Sales recorded in Poultry, Bell Pepper Fields, Goats, and My Farms all appear here automatically.
               </td></tr>
             )}
-            {allIncome.map(r=>(
+            {visible.map(r=>(
               <tr key={r.id}>
                 <td style={S.td}>{fmtDate(r.date)}</td>
                 <td style={S.td}>{r.source}</td>
-                <td style={S.td}><span style={S.tag(r.category==='Eggs'?'gold':r.category==='Pepper'?'green':'gold')}>{r.category}</span></td>
+                <td style={S.td}><span style={S.tag(catTone(r.category))}>{r.category}</span></td>
                 <td style={S.td}>{r.description}</td>
-                <td style={{...S.td,fontFamily:'monospace'}}>{r.qty!=null?num(r.qty,1):'—'} {r.unit}</td>
+                <td style={{...S.td,fontFamily:'monospace'}}>{r.qty!=null?num(r.qty,1):'—'}{r.unit&&!r.noRevenue?' '+r.unit:''}</td>
                 <td style={{...S.td,fontFamily:'monospace'}}>{r.price!=null?ghc(r.price):'—'}</td>
-                <td style={{...S.td,fontFamily:'monospace',color:GOLD,fontWeight:600}}>{ghc(r.amount)}</td>
+                <td style={{...S.td,fontFamily:'monospace',color:r.noRevenue?MUTED:GOLD,fontWeight:600}}>
+                  {r.noRevenue ? 'no price' : ghc(r.amount)}
+                </td>
                 <td style={S.td}>{r.buyer}</td>
               </tr>
             ))}
           </tbody>
-          {allIncome.length>0 && (
+          {visible.filter(r=>!r.noRevenue).length>0 && (
             <tfoot>
               <tr>
-                <td colSpan={6} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total</td>
-                <td style={{...S.td,fontFamily:'monospace',color:GOLD,fontWeight:700}}>{ghc(total)}</td>
+                <td colSpan={6} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total{filter!=='All'?` (${filter})`:''}</td>
+                <td style={{...S.td,fontFamily:'monospace',color:GOLD,fontWeight:700}}>
+                  {ghc(visible.filter(r=>!r.noRevenue).reduce((s,r)=>s+r.amount,0))}
+                </td>
                 <td style={S.td}/>
               </tr>
             </tfoot>
@@ -357,21 +404,12 @@ function IncomeTab({ sales, pepperHarvests, flocks }) {
 }
 
 /* ============================================================
-   EXPENSES TAB — shows all whole-farm expenses
+   EXPENSES TAB
    ============================================================ */
-function ExpensesTab({ expenses, data }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [f, setF] = useState({ date:todayISO(), category:'Feed', description:'', amount:'', notes:'' });
-
-  const CATEGORIES = ['Feed','Labour','Transport','Agrochemicals','Equipment','Veterinary','Seeds & Inputs','Utilities','Maintenance','Other'];
-
-  const rows = useMemo(()=>
-    [...(expenses||[])].sort((a,b)=>new Date(b.date)-new Date(a.date))
-  ,[expenses]);
-
+function ExpensesTab({ expenses }) {
+  const rows = useMemo(()=>[...(expenses||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)),[expenses]);
   const total = rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
 
-  /* group by category */
   const byCategory = useMemo(()=>{
     const m={};
     rows.forEach(r=>{ const k=r.category||'Other'; m[k]=(m[k]||0)+(Number(r.amount)||0); });
@@ -380,13 +418,6 @@ function ExpensesTab({ expenses, data }) {
 
   return (
     <div style={S.section}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-        <div>
-          <p style={{...S.cardTitle,margin:0}}>All Expenses</p>
-          <p style={{fontSize:11,color:MUTED,margin:'2px 0 0'}}>Logged in Whole Farm → Expenses</p>
-        </div>
-      </div>
-
       <div style={S.grid(2)}>
         <div style={S.card}>
           <p style={S.cardTitle}>Total Expenses</p>
@@ -400,16 +431,15 @@ function ExpensesTab({ expenses, data }) {
         </div>
       </div>
 
-      {/* Category breakdown */}
       {byCategory.length>0 && (
         <div style={{...S.card,marginBottom:16}}>
           <p style={S.cardTitle}>By Category</p>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
             {byCategory.map(([cat,amt])=>(
               <div key={cat} style={{display:'flex',alignItems:'center',gap:8}}>
-                <span style={{width:120,fontSize:12,color:'#e8e0d0',flexShrink:0}}>{cat}</span>
+                <span style={{width:130,fontSize:12,color:'#e8e0d0',flexShrink:0}}>{cat}</span>
                 <div style={{flex:1,height:6,background:BG3,borderRadius:3,overflow:'hidden'}}>
-                  <div style={{width:`${Math.round((amt/total)*100)}%`,height:'100%',background:GOLD,borderRadius:3}}/>
+                  <div style={{width:`${total>0?Math.round((amt/total)*100):0}%`,height:'100%',background:GOLD,borderRadius:3}}/>
                 </div>
                 <span style={{width:90,fontSize:12,fontFamily:'monospace',color:GOLD,textAlign:'right',flexShrink:0}}>{ghc(amt)}</span>
               </div>
@@ -422,7 +452,7 @@ function ExpensesTab({ expenses, data }) {
         <table style={S.table}>
           <thead>
             <tr>
-              {['Date','Category','Description','Amount','Notes'].map(h=>(
+              {['Date','Category','Scope','Description','Amount'].map(h=>(
                 <th key={h} style={S.th}>{h}</th>
               ))}
             </tr>
@@ -430,25 +460,24 @@ function ExpensesTab({ expenses, data }) {
           <tbody>
             {rows.length===0 && (
               <tr><td colSpan={5} style={S.empty}>
-                No expenses logged yet. Add them in Whole Farm → Expenses and they will appear here automatically.
+                No expenses yet. Add them in Whole Farm → Expenses and they appear here automatically.
               </td></tr>
             )}
             {rows.map(r=>(
               <tr key={r.id}>
                 <td style={S.td}>{fmtDate(r.date)}</td>
                 <td style={S.td}><span style={S.tag('gold')}>{r.category||'—'}</span></td>
+                <td style={{...S.td,color:MUTED,fontSize:12}}>{r.scope||'—'}</td>
                 <td style={S.td}>{r.description||r.note||'—'}</td>
                 <td style={{...S.td,fontFamily:'monospace',color:'#e07070',fontWeight:600}}>{ghc(r.amount)}</td>
-                <td style={{...S.td,color:MUTED,fontSize:12}}>{r.notes||'—'}</td>
               </tr>
             ))}
           </tbody>
           {rows.length>0 && (
             <tfoot>
               <tr>
-                <td colSpan={3} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total</td>
+                <td colSpan={4} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total</td>
                 <td style={{...S.td,fontFamily:'monospace',color:'#e07070',fontWeight:700}}>{ghc(total)}</td>
-                <td style={S.td}/>
               </tr>
             </tfoot>
           )}
@@ -461,7 +490,7 @@ function ExpensesTab({ expenses, data }) {
 /* ============================================================
    PROFIT & LOSS TAB
    ============================================================ */
-function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
+function ProfitLossTab({ sales, expenses, pepperHarvests, goatSales, customFarms, flocks }) {
   const [period, setPeriod] = useState('all');
 
   const periods = [
@@ -473,60 +502,65 @@ function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
 
   function inPeriod(date) {
     if (!date) return false;
-    const d = date.slice(0,7);
     const now = todayISO();
     const thisMonth = now.slice(0,7);
-    const lastMonthDate = new Date(now.slice(0,4),Number(now.slice(5,7))-2,1);
-    const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth()+1).padStart(2,'0')}`;
+    const lmd = new Date(now.slice(0,4),Number(now.slice(5,7))-2,1);
+    const lastMonth = `${lmd.getFullYear()}-${String(lmd.getMonth()+1).padStart(2,'0')}`;
     if (period==='all') return true;
-    if (period==='thismonth') return d===thisMonth;
-    if (period==='lastmonth') return d===lastMonth;
+    if (period==='thismonth') return date.startsWith(thisMonth);
+    if (period==='lastmonth') return date.startsWith(lastMonth);
     if (period==='thisyear') return date.startsWith(now.slice(0,4));
     return true;
   }
 
-  const filteredSales = (sales||[]).filter(r=>inPeriod(r.date));
-  const filteredHarvests = (pepperHarvests||[]).filter(r=>inPeriod(r.date));
+  const allIncome = useMemo(()=>buildIncomeRows({
+    sales:(sales||[]).filter(r=>inPeriod(r.date)),
+    pepperHarvests:(pepperHarvests||[]).filter(r=>inPeriod(r.date)),
+    goatSales:(goatSales||[]).filter(r=>inPeriod(r.date)),
+    customFarms:(customFarms||[]).map(f=>({...f,
+      salesLog:(f.salesLog||[]).filter(r=>inPeriod(r.date)),
+      harvests:(f.harvests||[]).filter(r=>inPeriod(r.date)),
+    })),
+    flocks,
+  }),[sales,pepperHarvests,goatSales,customFarms,flocks,period]);
+
   const filteredExp = (expenses||[]).filter(r=>inPeriod(r.date));
 
-  const eggRev  = filteredSales.filter(s=>s.item&&(s.item.includes('Eggs')||s.item.includes('egg'))).reduce((a,r)=>a+(Number(r.amount)||0),0);
-  const birdRev = filteredSales.filter(s=>s.item&&!s.item.toLowerCase().includes('egg')).reduce((a,r)=>a+(Number(r.amount)||0),0);
-  const pepperRev = filteredHarvests.reduce((a,h)=>a+(Number(h.totalRevenue)||(Number(h.weightKg||0)*Number(h.pricePerKg||0))),0);
-  const totalRev = eggRev + birdRev + pepperRev;
+  /* group income by category */
+  const incomeByCategory = {};
+  allIncome.filter(r=>!r.noRevenue).forEach(r=>{ const k=r.category; incomeByCategory[k]=(incomeByCategory[k]||0)+r.amount; });
+  const totalRev = Object.values(incomeByCategory).reduce((a,v)=>a+v,0);
 
-  /* group expenses */
+  /* group expenses by category */
   const expByCategory = {};
   filteredExp.forEach(e=>{ const k=e.category||'Other'; expByCategory[k]=(expByCategory[k]||0)+(Number(e.amount)||0); });
   const totalExp = filteredExp.reduce((a,e)=>a+(Number(e.amount)||0),0);
+
   const grossProfit = totalRev - totalExp;
 
   return (
     <div style={S.section}>
-      {/* Period picker */}
       <div style={{display:'flex',gap:6,marginBottom:16,flexWrap:'wrap'}}>
         {periods.map(p=>(
           <button key={p.id} style={period===p.id?S.btnGold:S.btn} onClick={()=>setPeriod(p.id)}>{p.label}</button>
         ))}
       </div>
 
-      {/* P&L Statement */}
       <div style={S.card}>
         <p style={{fontSize:15,fontWeight:700,color:'#f5ead8',margin:'0 0 16px'}}>
           AI Farms — Profit & Loss Statement
         </p>
 
-        {/* Revenue section */}
         <p style={{fontSize:11,textTransform:'uppercase',letterSpacing:'0.1em',color:GOLD,margin:'0 0 8px'}}>Revenue</p>
-        {[
-          {label:'Egg sales', val:eggRev},
-          {label:'Bird / poultry sales', val:birdRev},
-          {label:'Bell pepper sales', val:pepperRev},
-        ].map(row=>(
-          <div key={row.label} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
-            <span style={{fontSize:13,color:'#e8e0d0',paddingLeft:12}}>{row.label}</span>
-            <span style={{fontSize:13,fontFamily:'monospace',color:GOLD}}>{ghc(row.val)}</span>
+        {Object.entries(incomeByCategory).map(([cat,amt])=>(
+          <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+            <span style={{fontSize:13,color:'#e8e0d0',paddingLeft:12}}>{cat}</span>
+            <span style={{fontSize:13,fontFamily:'monospace',color:GOLD}}>{ghc(amt)}</span>
           </div>
         ))}
+        {Object.keys(incomeByCategory).length===0 && (
+          <p style={{fontSize:12,color:MUTED,paddingLeft:12}}>No revenue in this period</p>
+        )}
         <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',marginTop:4,borderTop:`1px solid ${BORDER}`}}>
           <span style={{fontSize:14,fontWeight:700,color:'#f5ead8'}}>Total Revenue</span>
           <span style={{fontSize:14,fontFamily:'monospace',fontWeight:700,color:GOLD}}>{ghc(totalRev)}</span>
@@ -534,10 +568,9 @@ function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
 
         <hr style={S.divider}/>
 
-        {/* Expenses section */}
         <p style={{fontSize:11,textTransform:'uppercase',letterSpacing:'0.1em',color:'#e07070',margin:'0 0 8px'}}>Expenses</p>
         {Object.entries(expByCategory).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>(
-          <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
+          <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
             <span style={{fontSize:13,color:'#e8e0d0',paddingLeft:12}}>{cat}</span>
             <span style={{fontSize:13,fontFamily:'monospace',color:'#e07070'}}>{ghc(amt)}</span>
           </div>
@@ -552,8 +585,7 @@ function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
 
         <hr style={S.divider}/>
 
-        {/* Net */}
-        <div style={{display:'flex',justifyContent:'space-between',padding:'10px 0',background:grossProfit>=0?'rgba(122,154,102,0.08)':'rgba(192,57,43,0.08)',borderRadius:6,paddingLeft:12,paddingRight:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',padding:'10px 12px',background:grossProfit>=0?'rgba(122,154,102,0.08)':'rgba(192,57,43,0.08)',borderRadius:6}}>
           <span style={{fontSize:16,fontWeight:700,color:'#f5ead8'}}>
             {grossProfit>=0?'Net Profit':'Net Loss'}
           </span>
@@ -575,21 +607,21 @@ function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
 /* ============================================================
    MAIN COMPONENT
    ============================================================ */
-export default function FinancialsModule({ data, sales, expenses, pepperHarvests }) {
+export default function FinancialsModule({ data, sales, expenses, pepperHarvests, goatSales, customFarms, flocks }) {
   const [tab, setTab] = useState('overview');
 
-  /* safe fallbacks if props not yet passed */
-  const _data         = data || {};
-  const _sales        = sales || [];
-  const _expenses     = expenses || [];
+  const _sales          = sales || [];
+  const _expenses       = expenses || [];
   const _pepperHarvests = pepperHarvests || [];
-  const _flocks       = (_data.flocks) || [];
+  const _goatSales      = goatSales || [];
+  const _customFarms    = customFarms || [];
+  const _flocks         = flocks || (data?.flocks) || [];
 
   const TABS = [
-    {id:'overview',   label:'📊 Overview'},
-    {id:'income',     label:'💵 Income'},
-    {id:'expenses',   label:'📤 Expenses'},
-    {id:'pnl',        label:'📋 Profit & Loss'},
+    {id:'overview', label:'📊 Overview'},
+    {id:'income',   label:'💵 Income'},
+    {id:'expenses', label:'📤 Expenses'},
+    {id:'pnl',      label:'📋 Profit & Loss'},
   ];
 
   return (
@@ -597,7 +629,7 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
       <div style={S.header}>
         <p style={S.eyebrow}>AI Farms</p>
         <h1 style={S.title}>Financials</h1>
-        <p style={S.sub}>All figures pulled live from your farm records — no re-entry needed.</p>
+        <p style={S.sub}>Live from your farm records — poultry, pepper, goats and My Farms, all in one place.</p>
       </div>
 
       <nav style={S.tabs}>
@@ -606,10 +638,27 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
         ))}
       </nav>
 
-      {tab==='overview'  && <OverviewTab  data={_data} sales={_sales} expenses={_expenses} pepperHarvests={_pepperHarvests}/>}
-      {tab==='income'    && <IncomeTab    sales={_sales} pepperHarvests={_pepperHarvests} flocks={_flocks}/>}
-      {tab==='expenses'  && <ExpensesTab  expenses={_expenses} data={_data}/>}
-      {tab==='pnl'       && <ProfitLossTab data={_data} sales={_sales} expenses={_expenses} pepperHarvests={_pepperHarvests}/>}
+      {tab==='overview' && (
+        <OverviewTab
+          sales={_sales} expenses={_expenses}
+          pepperHarvests={_pepperHarvests} goatSales={_goatSales}
+          customFarms={_customFarms} flocks={_flocks}
+        />
+      )}
+      {tab==='income' && (
+        <IncomeTab
+          sales={_sales} pepperHarvests={_pepperHarvests}
+          goatSales={_goatSales} customFarms={_customFarms} flocks={_flocks}
+        />
+      )}
+      {tab==='expenses' && <ExpensesTab expenses={_expenses} />}
+      {tab==='pnl' && (
+        <ProfitLossTab
+          sales={_sales} expenses={_expenses}
+          pepperHarvests={_pepperHarvests} goatSales={_goatSales}
+          customFarms={_customFarms} flocks={_flocks}
+        />
+      )}
     </div>
   );
 }
