@@ -2077,7 +2077,14 @@ function AppInner() {
       )}
 
       {workspace === 'financials' && (
-        <FinancialsModule />
+        <FinancialsModule
+          data={data}
+          sales={data.sales || []}
+          expenses={data.expenses || []}
+          pepperHarvests={data.pepper?.harvests || []}
+          goatSales={data.goats?.sales || []}
+          farmProfile={data.farmProfile}
+        />
       )}
 
       {modal === 'sync' && null}
