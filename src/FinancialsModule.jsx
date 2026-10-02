@@ -1,587 +1,615 @@
-// ─────────────────────────────────────────────────────────────
-// AI Farms — Financial Module v1.0
-// Drop into App.jsx: import FinancialsModule from './FinancialsModule'
-// Add tab: {tab === 'financials' && <FinancialsModule />}
-// ─────────────────────────────────────────────────────────────
+import { useState, useMemo } from 'react';
 
-import { useState, useEffect, useMemo } from "react";
+/* ============================================================
+   AI Farms — Financials Module  v2.0
+   Reads directly from App.jsx data props — no own localStorage.
+   Theme: dark gold (#1a1a1a / #242424 bg, #D4A537 gold accent)
+   ============================================================ */
 
-// ── Constants ─────────────────────────────────────────────────
-const FARMS = [
-  { id: "all",        label: "All Farms",      icon: "🏡", type: "all" },
-  { id: "poultry",   label: "Poultry",         icon: "🐔", type: "poultry" },
-  { id: "pepper_s1", label: "Pepper Section 1",icon: "🌶", type: "crop", field: true },
-  { id: "pepper_s2", label: "Pepper Section 2",icon: "🌶", type: "crop", field: true },
-  { id: "pepper_s3", label: "Pepper Section 3",icon: "🌶", type: "crop", field: true },
-  { id: "cucumber",  label: "Cucumber",        icon: "🥒", type: "crop", field: true },
-  { id: "goats",     label: "Goats",           icon: "🐐", type: "livestock" },
-  { id: "hydro",     label: "Hydro Towers",    icon: "💧", type: "crop", field: true },
-];
+const GOLD   = '#D4A537';
+const BG1    = '#1a1a1a';
+const BG2    = '#242424';
+const BG3    = '#2e2e2e';
+const BORDER = 'rgba(212,165,55,0.18)';
+const MUTED  = '#888';
+const GREEN  = '#7a9a66';
+const RED    = '#c0392b';
 
-const EXPENSE_CATS = [
-  "Feed","Medication","Fertilizer","Pesticide","Fungicide",
-  "Labour","Fuel","Equipment","Transport","Packaging","Other"
-];
+/* ---------- tiny helpers ---------- */
+function todayISO() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
+}
+function num(v, d=0) {
+  if (v===null||v===undefined||v===''||isNaN(v)) return '—';
+  return Number(v).toLocaleString('en-GB',{maximumFractionDigits:d,minimumFractionDigits:d});
+}
+function ghc(v) {
+  if (v===null||v===undefined||isNaN(v)) return '—';
+  return `GH₵ ${num(v,2)}`;
+}
+function addDays(iso,n) {
+  const d = new Date(iso); d.setUTCDate(d.getUTCDate()+n);
+  return d.toISOString().slice(0,10);
+}
+function newId() { return Math.random().toString(36).slice(2,10); }
 
-const FUNDED_FROM = ["Egg Sales","Crop Sales","Personal Funds","External/Loan","Other"];
+/* --------- inline styles (no extra CSS file needed) --------- */
+const S = {
+  wrap: { background:BG1, minHeight:'100vh', color:'#e8e0d0', fontFamily:'inherit' },
+  header: { padding:'20px 20px 0', borderBottom:`1px solid ${BORDER}`, marginBottom:0 },
+  eyebrow: { fontSize:11, textTransform:'uppercase', letterSpacing:'0.12em', color:GOLD, margin:'0 0 4px' },
+  title: { fontSize:24, fontWeight:700, color:'#f5ead8', margin:'0 0 4px' },
+  sub: { fontSize:13, color:MUTED, margin:'0 0 16px' },
 
-const PAYMENT_METHODS = ["Cash","Mobile Money","Bank Transfer","Credit"];
+  tabs: { display:'flex', gap:4, padding:'0 20px', background:BG2, borderBottom:`1px solid ${BORDER}`, overflowX:'auto' },
+  tab: (active) => ({
+    padding:'10px 16px', fontSize:13, fontWeight:600, border:'none', cursor:'pointer',
+    background:'transparent', borderBottom: active ? `2px solid ${GOLD}` : '2px solid transparent',
+    color: active ? GOLD : MUTED, whiteSpace:'nowrap', transition:'color .15s',
+  }),
 
-const EGG_PRICE_DEFAULT = 28; // GHS per crate of 30
+  section: { padding:'20px' },
+  grid: (cols) => ({ display:'grid', gridTemplateColumns:`repeat(${cols},1fr)`, gap:12, marginBottom:20 }),
+  card: { background:BG2, border:`1px solid ${BORDER}`, borderRadius:8, padding:'14px 16px' },
+  cardTitle: { fontSize:11, textTransform:'uppercase', letterSpacing:'0.1em', color:MUTED, margin:'0 0 6px' },
+  cardValue: (tone) => ({
+    fontSize:22, fontWeight:700,
+    color: tone==='green' ? GREEN : tone==='red' ? RED : GOLD,
+    margin:'0 0 2px',
+  }),
+  cardFoot: { fontSize:12, color:MUTED, margin:0 },
 
-// ── Storage helpers ───────────────────────────────────────────
-const KEYS = {
-  eggLogs:     "aif_egg_logs",
-  cropSales:   "aif_crop_sales",
-  expenses:    "aif_expenses",
-  batches:     "aif_batches",
-  otherSales:  "aif_other_sales",
+  table: { width:'100%', borderCollapse:'collapse', fontSize:13 },
+  th: { textAlign:'left', padding:'8px 10px', fontSize:11, textTransform:'uppercase',
+        letterSpacing:'0.08em', color:MUTED, borderBottom:`1px solid ${BORDER}`, background:BG2 },
+  td: { padding:'9px 10px', borderBottom:`1px solid rgba(255,255,255,0.05)`, verticalAlign:'middle' },
+  trHover: { background:'rgba(212,165,55,0.05)' },
+
+  btn: { padding:'7px 14px', borderRadius:6, border:`1px solid ${GOLD}`, background:'transparent',
+         color:GOLD, fontSize:13, fontWeight:600, cursor:'pointer' },
+  btnGold: { padding:'7px 14px', borderRadius:6, border:'none', background:GOLD,
+              color:'#1a1a1a', fontSize:13, fontWeight:700, cursor:'pointer' },
+  btnGhost: { padding:'7px 14px', borderRadius:6, border:`1px solid ${BORDER}`, background:'transparent',
+               color:MUTED, fontSize:13, cursor:'pointer' },
+  btnRust: { padding:'6px 10px', borderRadius:5, border:'none', background:'#7a2a2a',
+              color:'#f5c5c5', fontSize:12, cursor:'pointer' },
+
+  badge: (tone) => ({
+    display:'inline-block', padding:'2px 8px', borderRadius:12, fontSize:11, fontWeight:600,
+    background: tone==='green' ? 'rgba(122,154,102,0.2)' : tone==='red' ? 'rgba(192,57,43,0.2)' : 'rgba(212,165,55,0.15)',
+    color: tone==='green' ? GREEN : tone==='red' ? '#e07070' : GOLD,
+  }),
+
+  empty: { textAlign:'center', padding:'40px 20px', color:MUTED, fontSize:13 },
+
+  modal: { position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', display:'flex',
+           alignItems:'center', justifyContent:'center', zIndex:1000 },
+  modalBox: { background:BG2, border:`1px solid ${BORDER}`, borderRadius:12,
+               padding:'24px', width:'min(95vw,440px)', maxHeight:'90vh', overflowY:'auto' },
+  modalTitle: { fontSize:17, fontWeight:700, color:'#f5ead8', margin:'0 0 4px' },
+  modalSub: { fontSize:12, color:MUTED, margin:'0 0 18px' },
+  formGrid: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 },
+  field: { display:'flex', flexDirection:'column', gap:4 },
+  label: { fontSize:11, textTransform:'uppercase', letterSpacing:'0.08em', color:MUTED },
+  input: { padding:'8px 10px', background:BG3, border:`1px solid ${BORDER}`, borderRadius:6,
+           color:'#e8e0d0', fontSize:13, outline:'none' },
+  span2: { gridColumn:'span 2' },
+  modalActions: { display:'flex', justifyContent:'flex-end', gap:8, marginTop:20 },
+
+  divider: { border:'none', borderTop:`1px solid ${BORDER}`, margin:'16px 0' },
+  tag: (tone) => ({
+    display:'inline-block', padding:'1px 7px', borderRadius:10, fontSize:11,
+    background: tone==='green'?'rgba(122,154,102,0.15)':tone==='red'?'rgba(192,57,43,0.15)':'rgba(212,165,55,0.12)',
+    color: tone==='green'?GREEN:tone==='red'?'#e07070':GOLD,
+  }),
 };
 
-function load(key) {
-  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; }
+/* ============================================================
+   HELPER: derive summary numbers from existing app data
+   ============================================================ */
+function buildSummary(data, sales, expenses, pepperHarvests) {
+  const CRATE = 30;
+
+  /* --- egg revenue from poultry sales --- */
+  const eggSales = (sales||[]).filter(s => s.item==='Eggs (crates)'||s.item==='Eggs (pieces)');
+  const eggRevenue = eggSales.reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+  /* --- bird / poultry sales --- */
+  const birdSales = (sales||[]).filter(s=>s.item&&!s.item.toLowerCase().includes('egg'));
+  const birdRevenue = birdSales.reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+  /* --- pepper / crop revenue --- */
+  const pepperRevenue = (pepperHarvests||[]).reduce((s,h)=>{
+    const kg = Number(h.weightKg)||0;
+    const price = Number(h.pricePerKg)||0;
+    return s + (h.totalRevenue ? Number(h.totalRevenue) : kg*price);
+  },0);
+
+  /* --- total expenses from whole-farm expenses --- */
+  const totalExpenses = (expenses||[]).reduce((s,e)=>s+(Number(e.amount)||0),0);
+
+  /* --- total revenue --- */
+  const totalRevenue = eggRevenue + birdRevenue + pepperRevenue;
+
+  /* --- net profit --- */
+  const netProfit = totalRevenue - totalExpenses;
+
+  /* --- this month --- */
+  const thisMonth = todayISO().slice(0,7);
+  const monthRevenue = [
+    ...(sales||[]).filter(s=>s.date&&s.date.startsWith(thisMonth)),
+    ...(pepperHarvests||[]).filter(h=>h.date&&h.date.startsWith(thisMonth)),
+  ].reduce((s,r)=>s+(Number(r.amount)||Number(r.totalRevenue)||(Number(r.weightKg||0)*Number(r.pricePerKg||0))),0);
+  const monthExpenses = (expenses||[]).filter(e=>e.date&&e.date.startsWith(thisMonth))
+    .reduce((s,e)=>s+(Number(e.amount)||0),0);
+
+  return { eggRevenue, birdRevenue, pepperRevenue, totalRevenue, totalExpenses, netProfit, monthRevenue, monthExpenses };
 }
-function save(key, data) {
-  try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
-}
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
-function today() { return new Date().toISOString().slice(0,10); }
-function fmt(n) { return "GHS " + Number(n||0).toLocaleString("en-GH",{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtShort(n) { return "GHS " + Number(n||0).toFixed(2); }
 
-function startOfWeek(d) {
-  const dt = new Date(d); dt.setDate(dt.getDate() - dt.getDay() + 1); return dt.toISOString().slice(0,10);
-}
-function endOfWeek(d) {
-  const dt = new Date(d); dt.setDate(dt.getDate() - dt.getDay() + 7); return dt.toISOString().slice(0,10);
-}
-function startOfMonth(d) { return d.slice(0,7) + "-01"; }
-function endOfMonth(d) {
-  const dt = new Date(d.slice(0,7) + "-01");
-  dt.setMonth(dt.getMonth()+1); dt.setDate(0);
-  return dt.toISOString().slice(0,10);
-}
+/* ============================================================
+   OVERVIEW TAB
+   ============================================================ */
+function OverviewTab({ data, sales, expenses, pepperHarvests }) {
+  const s = buildSummary(data, sales, expenses, pepperHarvests);
 
-// ── Styles ────────────────────────────────────────────────────
-const C = {
-  GRN:  "#1A5276", GRN2: "#1E8449", GRN3: "#D5F5E3",
-  ORG:  "#E67E22", RED:  "#C0392B", RED2: "#FADBD8",
-  YEL:  "#F39C12", YEL2: "#FEF9E7", PUR:  "#6C3483",
-  TEAL: "#148F77", GREY: "#F4F6F8", WHT:  "#FFFFFF",
-  TXT:  "#1a1a1a", TXT2: "#555",    BRD:  "#e4e4e4",
-};
+  /* monthly trend — last 6 months */
+  const months = useMemo(()=>{
+    const result = [];
+    for (let i=5; i>=0; i--) {
+      const d = new Date(); d.setMonth(d.getMonth()-i);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const label = d.toLocaleDateString('en-GB',{month:'short',year:'2-digit'});
+      const rev = [
+        ...(sales||[]).filter(r=>r.date&&r.date.startsWith(key)),
+        ...(pepperHarvests||[]).filter(h=>h.date&&h.date.startsWith(key)),
+      ].reduce((a,r)=>a+(Number(r.amount)||Number(r.totalRevenue)||(Number(r.weightKg||0)*Number(r.pricePerKg||0))),0);
+      const exp = (expenses||[]).filter(e=>e.date&&e.date.startsWith(key))
+        .reduce((a,e)=>a+(Number(e.amount)||0),0);
+      result.push({key,label,rev,exp,profit:rev-exp});
+    }
+    return result;
+  },[sales,expenses,pepperHarvests]);
 
-const s = {
-  wrap:  { fontFamily:"Arial,sans-serif", background:C.GREY, minHeight:"100vh", paddingBottom:40 },
-  hdr:   { background:C.GRN, color:C.WHT, padding:"14px 14px 10px" },
-  hdrT:  { fontSize:17, fontWeight:700, margin:"0 0 2px" },
-  hdrS:  { fontSize:11, opacity:.75, margin:0 },
-  tabs:  { display:"flex", overflowX:"auto", background:C.WHT,
-           borderBottom:"1px solid "+C.BRD, padding:"0 12px" },
-  tab:   (a)=>({ padding:"10px 14px", fontSize:12, fontWeight:600, cursor:"pointer",
-                 border:"none", background:"transparent", whiteSpace:"nowrap",
-                 color:a?C.GRN:C.TXT2, borderBottom:a?"3px solid "+C.GRN:"3px solid transparent" }),
-  body:  { padding:"10px 12px 0" },
-  card:  { background:C.WHT, borderRadius:10, border:"1px solid "+C.BRD,
-           padding:"12px 14px", marginBottom:10 },
-  cardT: { fontSize:13, fontWeight:700, color:C.GRN, marginBottom:8 },
-  row:   { display:"flex", gap:8, marginBottom:8, flexWrap:"wrap" },
-  col:   { flex:1, minWidth:120 },
-  lbl:   { fontSize:11, color:C.TXT2, marginBottom:3, display:"block", fontWeight:600 },
-  inp:   { width:"100%", padding:"7px 8px", borderRadius:7, border:"1px solid "+C.BRD,
-           fontSize:13, color:C.TXT, background:C.WHT, boxSizing:"border-box" },
-  sel:   { width:"100%", padding:"7px 8px", borderRadius:7, border:"1px solid "+C.BRD,
-           fontSize:13, color:C.TXT, background:C.WHT, boxSizing:"border-box" },
-  btn:   (bg,col)=>({ padding:"8px 18px", borderRadius:8, border:"none", cursor:"pointer",
-                      background:bg||C.GRN, color:col||C.WHT, fontSize:13, fontWeight:600 }),
-  smBtn: (bg)=>({ padding:"4px 10px", borderRadius:6, border:"none", cursor:"pointer",
-                  background:bg||C.GRN, color:C.WHT, fontSize:11, fontWeight:600 }),
-  metric:(bg)=>({ background:bg||C.GRN3, borderRadius:8, padding:"10px 12px", flex:1, minWidth:100 }),
-  mLabel:{ fontSize:10, color:C.TXT2, margin:"0 0 2px" },
-  mVal:  { fontSize:17, fontWeight:700, color:C.TXT, margin:0 },
-  mSub:  { fontSize:9, color:C.TXT2, margin:"2px 0 0" },
-  badge: (bg,col)=>({ display:"inline-block", background:bg||C.GRN3, color:col||C.GRN,
-                      borderRadius:4, padding:"2px 7px", fontSize:10, fontWeight:700 }),
-  tbl:   { width:"100%", borderCollapse:"collapse", fontSize:12 },
-  th:    { padding:"6px 8px", background:C.GRN, color:C.WHT, textAlign:"left", fontWeight:600, fontSize:11 },
-  td:    { padding:"6px 8px", borderBottom:"1px solid "+C.BRD, color:C.TXT },
-  divider:{ border:"none", borderTop:"1px solid "+C.BRD, margin:"10px 0" },
-  filterBar:{ display:"flex", gap:6, overflowX:"auto", padding:"8px 12px",
-              background:C.WHT, borderBottom:"1px solid "+C.BRD },
-  fChip:(a,bg)=>({ padding:"4px 12px", borderRadius:20, fontSize:11, fontWeight:600,
-                   cursor:"pointer", border:`1px solid ${a?bg||C.GRN:C.BRD}`,
-                   background:a?bg||C.GRN:C.WHT, color:a?C.WHT:C.TXT2, whiteSpace:"nowrap" }),
-  warn:  { background:C.RED2, border:"1px solid "+C.RED, borderRadius:8,
-           padding:"8px 12px", fontSize:12, color:C.RED, marginBottom:8 },
-  info:  { background:C.YEL2, border:"1px solid "+C.YEL, borderRadius:8,
-           padding:"8px 12px", fontSize:12, color:"#7D6608", marginBottom:8 },
-};
-
-// ── Sub-forms ─────────────────────────────────────────────────
-
-function EggLogForm({ onSave }) {
-  const [f, setF] = useState({
-    date: today(), collected:"", sold_crates:"", sold_loose:"",
-    price_per_crate: EGG_PRICE_DEFAULT, eaten:"", dashed:"", broken:"",
-    buyer:"", payment: "Cash", notes:""
-  });
-  const up = (k,v) => setF(p=>({...p,[k]:v}));
-
-  const cratesVal   = Number(f.sold_crates||0);
-  const looseVal    = Number(f.sold_loose||0);
-  const saleAmt     = cratesVal * Number(f.price_per_crate||0) + (looseVal * Number(f.price_per_crate||0)/30);
-  const totalOut    = cratesVal*30 + looseVal + Number(f.eaten||0) + Number(f.dashed||0) + Number(f.broken||0);
-  const balance     = Number(f.collected||0) - totalOut;
-
-  function submit() {
-    if (!f.collected) return alert("Enter eggs collected");
-    const rec = { ...f, id:uid(), sale_amount: +saleAmt.toFixed(2),
-                  total_eggs_out: totalOut, stock_balance: balance };
-    const logs = load(KEYS.eggLogs);
-    logs.unshift(rec); save(KEYS.eggLogs, logs);
-    onSave && onSave();
-    setF(p=>({...p, collected:"", sold_crates:"", sold_loose:"", eaten:"", dashed:"", broken:"", buyer:"", notes:""}));
-  }
+  const maxVal = Math.max(...months.map(m=>Math.max(m.rev,m.exp)),1);
 
   return (
-    <div style={s.card}>
-      <p style={s.cardT}>🥚 Record Egg Collection & Sales</p>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Date</label>
-          <input style={s.inp} type="date" value={f.date} onChange={e=>up("date",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Eggs Collected</label>
-          <input style={s.inp} type="number" placeholder="e.g. 120" value={f.collected} onChange={e=>up("collected",e.target.value)}/></div>
-      </div>
-      <p style={{fontSize:11,color:C.TXT2,margin:"0 0 8px"}}>📦 1 crate = 30 eggs</p>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Crates Sold</label>
-          <input style={s.inp} type="number" placeholder="0" value={f.sold_crates} onChange={e=>up("sold_crates",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Loose Eggs Sold</label>
-          <input style={s.inp} type="number" placeholder="0" value={f.sold_loose} onChange={e=>up("sold_loose",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Price/Crate (GHS)</label>
-          <input style={s.inp} type="number" value={f.price_per_crate} onChange={e=>up("price_per_crate",e.target.value)}/></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>🍳 Eaten (eggs)</label>
-          <input style={s.inp} type="number" placeholder="0" value={f.eaten} onChange={e=>up("eaten",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>🎁 Dashed Out (eggs)</label>
-          <input style={s.inp} type="number" placeholder="0" value={f.dashed} onChange={e=>up("dashed",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>💔 Broken (eggs)</label>
-          <input style={s.inp} type="number" placeholder="0" value={f.broken} onChange={e=>up("broken",e.target.value)}/></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Buyer Name</label>
-          <input style={s.inp} placeholder="Optional" value={f.buyer} onChange={e=>up("buyer",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Payment</label>
-          <select style={s.sel} value={f.payment} onChange={e=>up("payment",e.target.value)}>
-            {PAYMENT_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
-      </div>
-      <input style={{...s.inp,marginBottom:8}} placeholder="Notes (optional)" value={f.notes} onChange={e=>up("notes",e.target.value)}/>
-      <div style={{...s.row, background:C.GRN3, borderRadius:8, padding:"8px 10px", marginBottom:8}}>
-        <div><span style={s.mLabel}>Sale Amount</span><br/><b style={{color:C.GRN2}}>{fmtShort(saleAmt)}</b></div>
-        <div><span style={s.mLabel}>Total Out</span><br/><b>{totalOut} eggs</b></div>
-        <div><span style={s.mLabel}>Stock Balance</span><br/>
-          <b style={{color:balance<0?C.RED:C.GRN2}}>{balance} eggs</b></div>
-      </div>
-      {balance < 0 && <div style={s.warn}>⚠️ Eggs out ({totalOut}) exceeds collected ({f.collected}). Check numbers.</div>}
-      <button style={s.btn()} onClick={submit}>Save Egg Record</button>
-    </div>
-  );
-}
-
-function CropSaleForm({ onSave }) {
-  const [batches, setBatches] = useState(load(KEYS.batches));
-  const [f, setF] = useState({
-    date:today(), farm_id:"pepper_s1", batch_id:"", weight_kg:"",
-    price_per_kg:"", buyer:"", payment:"Cash", notes:""
-  });
-  const up = (k,v) => setF(p=>({...p,[k]:v}));
-  const amount = Number(f.weight_kg||0) * Number(f.price_per_kg||0);
-  const cropFarms = FARMS.filter(fm=>fm.type==="crop");
-
-  function addBatch() {
-    const name = prompt("Batch name (e.g. 'Harvest 1 — Section 1 Oct 2026'):");
-    if (!name) return;
-    const b = { id:uid(), name, farm_id:f.farm_id, date:today() };
-    const all = [...batches, b]; setBatches(all); save(KEYS.batches, all);
-  }
-
-  function submit() {
-    if (!f.weight_kg || !f.price_per_kg) return alert("Enter weight and price");
-    const rec = { ...f, id:uid(), amount:+amount.toFixed(2) };
-    const all = load(KEYS.cropSales); all.unshift(rec); save(KEYS.cropSales, all);
-    onSave && onSave();
-    setF(p=>({...p, weight_kg:"", price_per_kg:"", buyer:"", batch_id:"", notes:""}));
-  }
-
-  const farmBatches = batches.filter(b=>b.farm_id===f.farm_id);
-
-  return (
-    <div style={s.card}>
-      <p style={s.cardT}>🌶 Record Crop Sale</p>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Date</label>
-          <input style={s.inp} type="date" value={f.date} onChange={e=>up("date",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Farm / Field</label>
-          <select style={s.sel} value={f.farm_id} onChange={e=>up("farm_id",e.target.value)}>
-            {cropFarms.map(fm=><option key={fm.id} value={fm.id}>{fm.icon} {fm.label}</option>)}
-          </select></div>
-      </div>
-      <div style={s.row}>
-        <div style={{flex:1}}>
-          <label style={s.lbl}>Harvest Batch</label>
-          <select style={s.sel} value={f.batch_id} onChange={e=>up("batch_id",e.target.value)}>
-            <option value="">— Select batch —</option>
-            {farmBatches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+    <div style={S.section}>
+      {/* KPI row */}
+      <div style={S.grid(2)}>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Total Revenue (All-time)</p>
+          <p style={S.cardValue('gold')}>{ghc(s.totalRevenue)}</p>
+          <p style={S.cardFoot}>Eggs + Poultry + Pepper</p>
         </div>
-        <div style={{alignSelf:"flex-end"}}>
-          <button style={s.btn(C.TEAL)} onClick={addBatch}>+ New Batch</button></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Weight Sold (kg)</label>
-          <input style={s.inp} type="number" placeholder="0.0" value={f.weight_kg} onChange={e=>up("weight_kg",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Price per kg (GHS)</label>
-          <input style={s.inp} type="number" placeholder="0.00" value={f.price_per_kg} onChange={e=>up("price_per_kg",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Payment</label>
-          <select style={s.sel} value={f.payment} onChange={e=>up("payment",e.target.value)}>
-            {PAYMENT_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Buyer Name</label>
-          <input style={s.inp} placeholder="Optional" value={f.buyer} onChange={e=>up("buyer",e.target.value)}/></div>
-      </div>
-      <input style={{...s.inp,marginBottom:8}} placeholder="Notes" value={f.notes} onChange={e=>up("notes",e.target.value)}/>
-      <div style={{...s.row, background:"#eafaf1", borderRadius:8, padding:"8px 10px", marginBottom:8}}>
-        <b style={{color:C.GRN2}}>Sale Total: {fmtShort(amount)}</b>
-      </div>
-      <button style={s.btn(C.GRN2)} onClick={submit}>Save Crop Sale</button>
-    </div>
-  );
-}
-
-function ExpenseForm({ onSave }) {
-  const [f, setF] = useState({
-    date:today(), farm_id:"poultry", category:"Feed", funded_from:"Egg Sales",
-    amount:"", supplier:"", description:"", receipt_no:""
-  });
-  const up = (k,v) => setF(p=>({...p,[k]:v}));
-
-  function submit() {
-    if (!f.amount || !f.description) return alert("Enter amount and description");
-    const rec = { ...f, id:uid(), amount:+Number(f.amount).toFixed(2) };
-    const all = load(KEYS.expenses); all.unshift(rec); save(KEYS.expenses, all);
-    onSave && onSave();
-    setF(p=>({...p, amount:"", supplier:"", description:"", receipt_no:""}));
-  }
-
-  return (
-    <div style={s.card}>
-      <p style={s.cardT}>💸 Record Expense</p>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Date</label>
-          <input style={s.inp} type="date" value={f.date} onChange={e=>up("date",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Farm</label>
-          <select style={s.sel} value={f.farm_id} onChange={e=>up("farm_id",e.target.value)}>
-            {FARMS.filter(fm=>fm.id!=="all").map(fm=><option key={fm.id} value={fm.id}>{fm.icon} {fm.label}</option>)}
-          </select></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Category</label>
-          <select style={s.sel} value={f.category} onChange={e=>up("category",e.target.value)}>
-            {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}</select></div>
-        <div style={s.col}><label style={s.lbl}>Funded From</label>
-          <select style={s.sel} value={f.funded_from} onChange={e=>up("funded_from",e.target.value)}>
-            {FUNDED_FROM.map(f=><option key={f}>{f}</option>)}</select></div>
-        <div style={s.col}><label style={s.lbl}>Amount (GHS)</label>
-          <input style={s.inp} type="number" placeholder="0.00" value={f.amount} onChange={e=>up("amount",e.target.value)}/></div>
-      </div>
-      <div style={s.row}>
-        <div style={s.col}><label style={s.lbl}>Description</label>
-          <input style={s.inp} placeholder="What was it for?" value={f.description} onChange={e=>up("description",e.target.value)}/></div>
-        <div style={s.col}><label style={s.lbl}>Supplier</label>
-          <input style={s.inp} placeholder="Optional" value={f.supplier} onChange={e=>up("supplier",e.target.value)}/></div>
-      </div>
-      <input style={{...s.inp,marginBottom:8}} placeholder="Receipt No. (optional)" value={f.receipt_no} onChange={e=>up("receipt_no",e.target.value)}/>
-      <button style={s.btn(C.RED)} onClick={submit}>Save Expense</button>
-    </div>
-  );
-}
-
-// ── Dashboard / Reports ───────────────────────────────────────
-function FinancialDashboard({ refresh }) {
-  const [period, setPeriod]   = useState("daily");
-  const [farmFilter, setFarm] = useState("all");
-  const [customStart, setCStart] = useState(today());
-  const [customEnd,   setCEnd]   = useState(today());
-  const [viewDate, setViewDate]  = useState(today());
-
-  const eggLogs   = useMemo(()=>load(KEYS.eggLogs),   [refresh]);
-  const cropSales = useMemo(()=>load(KEYS.cropSales),  [refresh]);
-  const expenses  = useMemo(()=>load(KEYS.expenses),   [refresh]);
-  const batches   = useMemo(()=>load(KEYS.batches),    [refresh]);
-
-  function dateRange() {
-    if (period==="daily")  return [viewDate, viewDate];
-    if (period==="weekly") return [startOfWeek(viewDate), endOfWeek(viewDate)];
-    if (period==="monthly")return [startOfMonth(viewDate), endOfMonth(viewDate)];
-    return [customStart, customEnd];
-  }
-
-  const [ds, de] = dateRange();
-
-  function inRange(d) { return d >= ds && d <= de; }
-  function farmMatch(id) { return farmFilter==="all" || id===farmFilter; }
-
-  // Filtered data
-  const filtEggs = eggLogs.filter(r=>inRange(r.date));
-  const filtCrop = cropSales.filter(r=>inRange(r.date) && farmMatch(r.farm_id));
-  const filtExp  = expenses.filter(r=>inRange(r.date) && (farmFilter==="all"||r.farm_id===farmFilter));
-
-  // Totals
-  const eggIncome  = filtEggs.reduce((s,r)=>s+Number(r.sale_amount||0),0);
-  const cropIncome = filtCrop.reduce((s,r)=>s+Number(r.amount||0),0);
-  const totalIncome= eggIncome + cropIncome;
-  const totalExp   = filtExp.reduce((s,r)=>s+Number(r.amount||0),0);
-  const profit     = totalIncome - totalExp;
-  const totalEggsCollected = filtEggs.reduce((s,r)=>s+Number(r.collected||0),0);
-  const totalEggsSold = filtEggs.reduce((s,r)=>s+(Number(r.sold_crates||0)*30+Number(r.sold_loose||0)),0);
-  const totalEggsEaten = filtEggs.reduce((s,r)=>s+Number(r.eaten||0),0);
-  const totalEggsDashed= filtEggs.reduce((s,r)=>s+Number(r.dashed||0),0);
-  const totalEggsBroken= filtEggs.reduce((s,r)=>s+Number(r.broken||0),0);
-
-  // Expense by category
-  const expByCat = EXPENSE_CATS.reduce((acc,c)=>({
-    ...acc, [c]: filtExp.filter(e=>e.category===c).reduce((s,e)=>s+Number(e.amount||0),0)
-  }),{});
-
-  // Crop income by farm
-  const cropByFarm = FARMS.filter(f=>f.type==="crop").map(f=>({
-    ...f, income: cropSales.filter(r=>inRange(r.date)&&r.farm_id===f.id).reduce((s,r)=>s+Number(r.amount||0),0)
-  })).filter(f=>f.income>0);
-
-  function exportCSV() {
-    const rows = [
-      ["Date","Type","Farm","Description","Amount (GHS)"],
-      ...filtEggs.map(r=>[r.date,"Egg Sale","Poultry",`${r.sold_crates} crates + ${r.sold_loose} loose`,r.sale_amount]),
-      ...filtCrop.map(r=>[r.date,"Crop Sale",r.farm_id,`${r.weight_kg}kg @ GHS${r.price_per_kg}/kg`,r.amount]),
-      ...filtExp.map(r=>[r.date,"Expense",r.farm_id,r.description,-r.amount]),
-    ];
-    const csv = rows.map(r=>r.join(",")).join("\n");
-    const a = document.createElement("a");
-    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-    a.download = `AI_Farms_Financials_${ds}_to_${de}.csv`;
-    a.click();
-  }
-
-  const periodLabel = period==="daily" ? viewDate
-    : period==="weekly" ? `${ds} to ${de}`
-    : period==="monthly" ? ds.slice(0,7)
-    : `${customStart} to ${customEnd}`;
-
-  return (
-    <div>
-      {/* Period tabs */}
-      <div style={s.tabs}>
-        {[["daily","Day"],["weekly","Week"],["monthly","Month"],["custom","Custom"]].map(([v,l])=>(
-          <button key={v} style={s.tab(period===v)} onClick={()=>setPeriod(v)}>{l}</button>
-        ))}
-      </div>
-
-      {/* Date controls */}
-      <div style={{...s.filterBar, gap:8, flexWrap:"wrap"}}>
-        {period==="daily" && (
-          <input style={{...s.inp, width:160}} type="date" value={viewDate} onChange={e=>setViewDate(e.target.value)}/>
-        )}
-        {period==="weekly" && (
-          <><span style={{fontSize:12,color:C.TXT2,alignSelf:"center"}}>Week of:</span>
-          <input style={{...s.inp, width:160}} type="date" value={viewDate} onChange={e=>setViewDate(e.target.value)}/></>
-        )}
-        {period==="monthly" && (
-          <input style={{...s.inp, width:160}} type="month" value={viewDate.slice(0,7)} onChange={e=>setViewDate(e.target.value+"-01")}/>
-        )}
-        {period==="custom" && (<>
-          <input style={{...s.inp, width:140}} type="date" value={customStart} onChange={e=>setCStart(e.target.value)}/>
-          <span style={{alignSelf:"center",fontSize:12}}>to</span>
-          <input style={{...s.inp, width:140}} type="date" value={customEnd} onChange={e=>setCEnd(e.target.value)}/>
-        </>)}
-        <button style={s.smBtn(C.TEAL)} onClick={exportCSV}>📥 Export CSV</button>
-      </div>
-
-      {/* Farm filter */}
-      <div style={s.filterBar}>
-        {FARMS.map(f=>(
-          <button key={f.id} style={s.fChip(farmFilter===f.id)} onClick={()=>setFarm(f.id)}>
-            {f.icon} {f.label}
-          </button>
-        ))}
-      </div>
-
-      <div style={s.body}>
-        {/* Summary cards */}
-        <div style={{...s.row, marginBottom:4}}>
-          <div style={s.metric("d5f5e3")}>
-            <p style={s.mLabel}>Total Income</p>
-            <p style={s.mVal}>{fmt(totalIncome)}</p>
-            <p style={s.mSub}>{periodLabel}</p>
-          </div>
-          <div style={s.metric(C.RED2)}>
-            <p style={s.mLabel}>Total Expenses</p>
-            <p style={s.mVal}>{fmt(totalExp)}</p>
-            <p style={s.mSub}>{periodLabel}</p>
-          </div>
-          <div style={s.metric(profit>=0?"#d5f5e3":"#fadbd8")}>
-            <p style={s.mLabel}>Net Profit / Loss</p>
-            <p style={{...s.mVal, color:profit>=0?C.GRN2:C.RED}}>{fmt(profit)}</p>
-            <p style={s.mSub}>{profit>=0?"✅ Profit":"❌ Loss"}</p>
-          </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Total Expenses (All-time)</p>
+          <p style={S.cardValue('red')}>{ghc(s.totalExpenses)}</p>
+          <p style={S.cardFoot}>All farm costs logged</p>
         </div>
-        <div style={s.row}>
-          <div style={s.metric(C.YEL2)}>
-            <p style={s.mLabel}>Egg Sales</p>
-            <p style={s.mVal}>{fmt(eggIncome)}</p>
-          </div>
-          <div style={s.metric("#eaf4fb")}>
-            <p style={s.mLabel}>Crop Sales</p>
-            <p style={s.mVal}>{fmt(cropIncome)}</p>
-          </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Net Profit / Loss</p>
+          <p style={S.cardValue(s.netProfit>=0?'green':'red')}>{ghc(Math.abs(s.netProfit))}</p>
+          <p style={S.cardFoot}>{s.netProfit>=0?'Profit':'Loss'} to date</p>
         </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>This Month</p>
+          <p style={S.cardValue(s.monthRevenue-s.monthExpenses>=0?'green':'red')}>
+            {ghc(Math.abs(s.monthRevenue-s.monthExpenses))}
+          </p>
+          <p style={S.cardFoot}>Rev {ghc(s.monthRevenue)} · Exp {ghc(s.monthExpenses)}</p>
+        </div>
+      </div>
 
-        {/* Egg summary */}
-        {(farmFilter==="all"||farmFilter==="poultry") && filtEggs.length>0 && (
-          <div style={s.card}>
-            <p style={s.cardT}>🥚 Egg Summary</p>
-            <div style={s.row}>
-              <div style={s.metric()}><p style={s.mLabel}>Collected</p><p style={s.mVal}>{totalEggsCollected}</p></div>
-              <div style={s.metric()}><p style={s.mLabel}>Sold</p><p style={s.mVal}>{totalEggsSold}</p>
-                <p style={s.mSub}>{Math.floor(totalEggsSold/30)} crates + {totalEggsSold%30} loose</p></div>
-              <div style={s.metric(C.YEL2)}><p style={s.mLabel}>🍳 Eaten</p><p style={s.mVal}>{totalEggsEaten}</p></div>
-              <div style={s.metric("#e8daef")}><p style={s.mLabel}>🎁 Dashed</p><p style={s.mVal}>{totalEggsDashed}</p></div>
-              <div style={s.metric(C.RED2)}><p style={s.mLabel}>💔 Broken</p><p style={s.mVal}>{totalEggsBroken}</p></div>
+      {/* Revenue breakdown */}
+      <div style={{...S.card, marginBottom:16}}>
+        <p style={S.cardTitle}>Revenue breakdown</p>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:8}}>
+          {[
+            {label:'🥚 Egg Sales', val:s.eggRevenue},
+            {label:'🐔 Bird Sales', val:s.birdRevenue},
+            {label:'🌶 Pepper Sales', val:s.pepperRevenue},
+          ].map(item=>(
+            <div key={item.label} style={{textAlign:'center'}}>
+              <p style={{fontSize:12,color:MUTED,margin:'0 0 4px'}}>{item.label}</p>
+              <p style={{fontSize:17,fontWeight:700,color:GOLD,margin:0}}>{ghc(item.val)}</p>
+              <p style={{fontSize:11,color:MUTED,margin:'2px 0 0'}}>
+                {s.totalRevenue>0?`${Math.round((item.val/s.totalRevenue)*100)}%`:'—'}
+              </p>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
+      </div>
 
-        {/* Crop income by field */}
-        {cropByFarm.length>0 && (farmFilter==="all"||FARMS.find(f=>f.id===farmFilter)?.type==="crop") && (
-          <div style={s.card}>
-            <p style={s.cardT}>🌾 Crop Income by Field</p>
-            <table style={s.tbl}>
-              <thead><tr><th style={s.th}>Field</th><th style={s.th}>Income</th></tr></thead>
-              <tbody>{cropByFarm.map(f=>(
-                <tr key={f.id}>
-                  <td style={s.td}>{f.icon} {f.label}</td>
-                  <td style={s.td}><b style={{color:C.GRN2}}>{fmt(f.income)}</b></td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Expenses by category */}
-        {filtExp.length>0 && (
-          <div style={s.card}>
-            <p style={s.cardT}>💸 Expenses by Category</p>
-            <table style={s.tbl}>
-              <thead><tr><th style={s.th}>Category</th><th style={s.th}>Amount</th></tr></thead>
-              <tbody>
-                {EXPENSE_CATS.filter(c=>expByCat[c]>0).map(c=>(
-                  <tr key={c}><td style={s.td}>{c}</td>
-                    <td style={s.td}><b style={{color:C.RED}}>{fmt(expByCat[c])}</b></td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Transaction list */}
-        <div style={s.card}>
-          <p style={s.cardT}>📋 Transactions</p>
-          {filtEggs.length===0 && filtCrop.length===0 && filtExp.length===0 && (
-            <p style={{color:C.TXT2,fontSize:12}}>No records for this period.</p>
-          )}
-          <table style={s.tbl}>
-            <thead><tr>
-              <th style={s.th}>Date</th><th style={s.th}>Type</th>
-              <th style={s.th}>Detail</th><th style={s.th}>Amount</th>
-            </tr></thead>
-            <tbody>
-              {filtEggs.map(r=>(
-                <tr key={r.id}>
-                  <td style={s.td}>{r.date}</td>
-                  <td style={s.td}><span style={s.badge(C.YEL2,"#7D6608")}>🥚 Eggs</span></td>
-                  <td style={s.td}>{r.sold_crates} crates + {r.sold_loose} loose
-                    {r.buyer ? ` → ${r.buyer}` : ""}
-                    {r.eaten>0 ? ` | 🍳${r.eaten}` : ""}
-                    {r.dashed>0 ? ` | 🎁${r.dashed}` : ""}
-                  </td>
-                  <td style={{...s.td,color:C.GRN2,fontWeight:700}}>{fmt(r.sale_amount)}</td>
-                </tr>
-              ))}
-              {filtCrop.map(r=>{
-                const farm = FARMS.find(f=>f.id===r.farm_id);
-                const batch = batches.find(b=>b.id===r.batch_id);
-                return (
-                  <tr key={r.id}>
-                    <td style={s.td}>{r.date}</td>
-                    <td style={s.td}><span style={s.badge(C.GRN3,C.GRN)}>{farm?.icon||"🌾"} {farm?.label||r.farm_id}</span></td>
-                    <td style={s.td}>{r.weight_kg}kg @ GHS{r.price_per_kg}/kg
-                      {batch ? ` [${batch.name}]`:""}{r.buyer?` → ${r.buyer}`:""}</td>
-                    <td style={{...s.td,color:C.GRN2,fontWeight:700}}>{fmt(r.amount)}</td>
-                  </tr>
-                );
-              })}
-              {filtExp.map(r=>{
-                const farm = FARMS.find(f=>f.id===r.farm_id);
-                return (
-                  <tr key={r.id}>
-                    <td style={s.td}>{r.date}</td>
-                    <td style={s.td}><span style={s.badge(C.RED2,C.RED)}>💸 {r.category}</span></td>
-                    <td style={s.td}>{r.description}{r.supplier?` (${r.supplier})`:""}
-                      <span style={{fontSize:10,color:C.TXT2}}> | {farm?.icon||""} {farm?.label||r.farm_id} | {r.funded_from}</span>
-                    </td>
-                    <td style={{...s.td,color:C.RED,fontWeight:700}}>-{fmt(r.amount)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* 6-month bar chart */}
+      <div style={S.card}>
+        <p style={S.cardTitle}>Revenue vs Expenses — last 6 months</p>
+        <div style={{display:'flex',alignItems:'flex-end',gap:8,height:100,marginTop:12}}>
+          {months.map(m=>(
+            <div key={m.key} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              <div style={{width:'100%',display:'flex',gap:2,alignItems:'flex-end',height:80}}>
+                <div style={{flex:1,background:GOLD,borderRadius:'3px 3px 0 0',
+                  height:`${Math.round((m.rev/maxVal)*80)}px`,minHeight:m.rev>0?2:0,transition:'height .3s'}}/>
+                <div style={{flex:1,background:RED,borderRadius:'3px 3px 0 0',
+                  height:`${Math.round((m.exp/maxVal)*80)}px`,minHeight:m.exp>0?2:0,opacity:0.7,transition:'height .3s'}}/>
+              </div>
+              <p style={{fontSize:9,color:MUTED,margin:0,textAlign:'center'}}>{m.label}</p>
+            </div>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:16,marginTop:8}}>
+          <span style={{fontSize:11,color:MUTED}}><span style={{color:GOLD}}>■</span> Revenue</span>
+          <span style={{fontSize:11,color:MUTED}}><span style={{color:RED}}>■</span> Expenses</span>
         </div>
       </div>
     </div>
   );
 }
 
-// ── Main Component ────────────────────────────────────────────
-export default function FinancialsModule() {
-  const [tab, setTab]       = useState("dashboard");
-  const [refresh, setRefresh] = useState(0);
-  const bump = () => setRefresh(r=>r+1);
+/* ============================================================
+   INCOME TAB  — shows all sales (egg + bird + pepper)
+   ============================================================ */
+function IncomeTab({ sales, pepperHarvests, flocks }) {
+  const CRATE = 30;
+
+  const allIncome = useMemo(()=>{
+    const rows = [];
+    (sales||[]).forEach(s=>{
+      const flock = (flocks||[]).find(f=>f.id===s.flockId);
+      rows.push({
+        id: s.id||newId(),
+        date: s.date,
+        source: flock ? flock.flockName : 'Poultry',
+        category: (s.item||'').toLowerCase().includes('egg') ? 'Eggs' : 'Poultry sale',
+        description: s.item || '—',
+        qty: s.quantity,
+        unit: (s.item||'').includes('crates') ? 'crates' : (s.item||'').includes('pieces') ? 'pcs' : 'birds',
+        price: s.unitPrice,
+        amount: Number(s.amount)||0,
+        buyer: s.buyer || '—',
+      });
+    });
+    (pepperHarvests||[]).forEach(h=>{
+      const amt = Number(h.totalRevenue)||(Number(h.weightKg||0)*Number(h.pricePerKg||0));
+      rows.push({
+        id: h.id||newId(),
+        date: h.date,
+        source: h.fieldName || 'Bell Pepper',
+        category: 'Pepper',
+        description: `${num(h.weightKg,1)} kg${h.grade?' ('+h.grade+')':''}`,
+        qty: h.weightKg,
+        unit: 'kg',
+        price: h.pricePerKg,
+        amount: amt,
+        buyer: h.buyer || '—',
+      });
+    });
+    return rows.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  },[sales,pepperHarvests,flocks]);
+
+  const total = allIncome.reduce((s,r)=>s+r.amount,0);
+
+  return (
+    <div style={S.section}>
+      <div style={S.grid(3)}>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Total Income</p>
+          <p style={S.cardValue('gold')}>{ghc(total)}</p>
+          <p style={S.cardFoot}>{allIncome.length} records</p>
+        </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Egg Revenue</p>
+          <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Eggs').reduce((s,r)=>s+r.amount,0))}</p>
+        </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Pepper Revenue</p>
+          <p style={S.cardValue()}>{ghc(allIncome.filter(r=>r.category==='Pepper').reduce((s,r)=>s+r.amount,0))}</p>
+        </div>
+      </div>
+
+      <div style={{overflowX:'auto'}}>
+        <table style={S.table}>
+          <thead>
+            <tr>
+              {['Date','Source','Category','Description','Qty','Price/unit','Amount','Buyer'].map(h=>(
+                <th key={h} style={S.th}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {allIncome.length===0 && (
+              <tr><td colSpan={8} style={S.empty}>
+                No income records yet. Record egg sales in Poultry → Sales, and pepper harvests in Bell Pepper Fields → the harvest tab.
+              </td></tr>
+            )}
+            {allIncome.map(r=>(
+              <tr key={r.id}>
+                <td style={S.td}>{fmtDate(r.date)}</td>
+                <td style={S.td}>{r.source}</td>
+                <td style={S.td}><span style={S.tag(r.category==='Eggs'?'gold':r.category==='Pepper'?'green':'gold')}>{r.category}</span></td>
+                <td style={S.td}>{r.description}</td>
+                <td style={{...S.td,fontFamily:'monospace'}}>{r.qty!=null?num(r.qty,1):'—'} {r.unit}</td>
+                <td style={{...S.td,fontFamily:'monospace'}}>{r.price!=null?ghc(r.price):'—'}</td>
+                <td style={{...S.td,fontFamily:'monospace',color:GOLD,fontWeight:600}}>{ghc(r.amount)}</td>
+                <td style={S.td}>{r.buyer}</td>
+              </tr>
+            ))}
+          </tbody>
+          {allIncome.length>0 && (
+            <tfoot>
+              <tr>
+                <td colSpan={6} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total</td>
+                <td style={{...S.td,fontFamily:'monospace',color:GOLD,fontWeight:700}}>{ghc(total)}</td>
+                <td style={S.td}/>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   EXPENSES TAB — shows all whole-farm expenses
+   ============================================================ */
+function ExpensesTab({ expenses, data }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [f, setF] = useState({ date:todayISO(), category:'Feed', description:'', amount:'', notes:'' });
+
+  const CATEGORIES = ['Feed','Labour','Transport','Agrochemicals','Equipment','Veterinary','Seeds & Inputs','Utilities','Maintenance','Other'];
+
+  const rows = useMemo(()=>
+    [...(expenses||[])].sort((a,b)=>new Date(b.date)-new Date(a.date))
+  ,[expenses]);
+
+  const total = rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+  /* group by category */
+  const byCategory = useMemo(()=>{
+    const m={};
+    rows.forEach(r=>{ const k=r.category||'Other'; m[k]=(m[k]||0)+(Number(r.amount)||0); });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  },[rows]);
+
+  return (
+    <div style={S.section}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div>
+          <p style={{...S.cardTitle,margin:0}}>All Expenses</p>
+          <p style={{fontSize:11,color:MUTED,margin:'2px 0 0'}}>Logged in Whole Farm → Expenses</p>
+        </div>
+      </div>
+
+      <div style={S.grid(2)}>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Total Expenses</p>
+          <p style={S.cardValue('red')}>{ghc(total)}</p>
+          <p style={S.cardFoot}>{rows.length} records</p>
+        </div>
+        <div style={S.card}>
+          <p style={S.cardTitle}>Top Category</p>
+          <p style={S.cardValue()}>{byCategory[0]?byCategory[0][0]:'—'}</p>
+          <p style={S.cardFoot}>{byCategory[0]?ghc(byCategory[0][1]):''}</p>
+        </div>
+      </div>
+
+      {/* Category breakdown */}
+      {byCategory.length>0 && (
+        <div style={{...S.card,marginBottom:16}}>
+          <p style={S.cardTitle}>By Category</p>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
+            {byCategory.map(([cat,amt])=>(
+              <div key={cat} style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{width:120,fontSize:12,color:'#e8e0d0',flexShrink:0}}>{cat}</span>
+                <div style={{flex:1,height:6,background:BG3,borderRadius:3,overflow:'hidden'}}>
+                  <div style={{width:`${Math.round((amt/total)*100)}%`,height:'100%',background:GOLD,borderRadius:3}}/>
+                </div>
+                <span style={{width:90,fontSize:12,fontFamily:'monospace',color:GOLD,textAlign:'right',flexShrink:0}}>{ghc(amt)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{overflowX:'auto'}}>
+        <table style={S.table}>
+          <thead>
+            <tr>
+              {['Date','Category','Description','Amount','Notes'].map(h=>(
+                <th key={h} style={S.th}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length===0 && (
+              <tr><td colSpan={5} style={S.empty}>
+                No expenses logged yet. Add them in Whole Farm → Expenses and they will appear here automatically.
+              </td></tr>
+            )}
+            {rows.map(r=>(
+              <tr key={r.id}>
+                <td style={S.td}>{fmtDate(r.date)}</td>
+                <td style={S.td}><span style={S.tag('gold')}>{r.category||'—'}</span></td>
+                <td style={S.td}>{r.description||r.note||'—'}</td>
+                <td style={{...S.td,fontFamily:'monospace',color:'#e07070',fontWeight:600}}>{ghc(r.amount)}</td>
+                <td style={{...S.td,color:MUTED,fontSize:12}}>{r.notes||'—'}</td>
+              </tr>
+            ))}
+          </tbody>
+          {rows.length>0 && (
+            <tfoot>
+              <tr>
+                <td colSpan={3} style={{...S.td,fontWeight:700,color:'#e8e0d0'}}>Total</td>
+                <td style={{...S.td,fontFamily:'monospace',color:'#e07070',fontWeight:700}}>{ghc(total)}</td>
+                <td style={S.td}/>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROFIT & LOSS TAB
+   ============================================================ */
+function ProfitLossTab({ data, sales, expenses, pepperHarvests }) {
+  const [period, setPeriod] = useState('all');
+
+  const periods = [
+    {id:'all',label:'All time'},
+    {id:'thismonth',label:'This month'},
+    {id:'lastmonth',label:'Last month'},
+    {id:'thisyear',label:'This year'},
+  ];
+
+  function inPeriod(date) {
+    if (!date) return false;
+    const d = date.slice(0,7);
+    const now = todayISO();
+    const thisMonth = now.slice(0,7);
+    const lastMonthDate = new Date(now.slice(0,4),Number(now.slice(5,7))-2,1);
+    const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth()+1).padStart(2,'0')}`;
+    if (period==='all') return true;
+    if (period==='thismonth') return d===thisMonth;
+    if (period==='lastmonth') return d===lastMonth;
+    if (period==='thisyear') return date.startsWith(now.slice(0,4));
+    return true;
+  }
+
+  const filteredSales = (sales||[]).filter(r=>inPeriod(r.date));
+  const filteredHarvests = (pepperHarvests||[]).filter(r=>inPeriod(r.date));
+  const filteredExp = (expenses||[]).filter(r=>inPeriod(r.date));
+
+  const eggRev  = filteredSales.filter(s=>s.item&&(s.item.includes('Eggs')||s.item.includes('egg'))).reduce((a,r)=>a+(Number(r.amount)||0),0);
+  const birdRev = filteredSales.filter(s=>s.item&&!s.item.toLowerCase().includes('egg')).reduce((a,r)=>a+(Number(r.amount)||0),0);
+  const pepperRev = filteredHarvests.reduce((a,h)=>a+(Number(h.totalRevenue)||(Number(h.weightKg||0)*Number(h.pricePerKg||0))),0);
+  const totalRev = eggRev + birdRev + pepperRev;
+
+  /* group expenses */
+  const expByCategory = {};
+  filteredExp.forEach(e=>{ const k=e.category||'Other'; expByCategory[k]=(expByCategory[k]||0)+(Number(e.amount)||0); });
+  const totalExp = filteredExp.reduce((a,e)=>a+(Number(e.amount)||0),0);
+  const grossProfit = totalRev - totalExp;
+
+  return (
+    <div style={S.section}>
+      {/* Period picker */}
+      <div style={{display:'flex',gap:6,marginBottom:16,flexWrap:'wrap'}}>
+        {periods.map(p=>(
+          <button key={p.id} style={period===p.id?S.btnGold:S.btn} onClick={()=>setPeriod(p.id)}>{p.label}</button>
+        ))}
+      </div>
+
+      {/* P&L Statement */}
+      <div style={S.card}>
+        <p style={{fontSize:15,fontWeight:700,color:'#f5ead8',margin:'0 0 16px'}}>
+          AI Farms — Profit & Loss Statement
+        </p>
+
+        {/* Revenue section */}
+        <p style={{fontSize:11,textTransform:'uppercase',letterSpacing:'0.1em',color:GOLD,margin:'0 0 8px'}}>Revenue</p>
+        {[
+          {label:'Egg sales', val:eggRev},
+          {label:'Bird / poultry sales', val:birdRev},
+          {label:'Bell pepper sales', val:pepperRev},
+        ].map(row=>(
+          <div key={row.label} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
+            <span style={{fontSize:13,color:'#e8e0d0',paddingLeft:12}}>{row.label}</span>
+            <span style={{fontSize:13,fontFamily:'monospace',color:GOLD}}>{ghc(row.val)}</span>
+          </div>
+        ))}
+        <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',marginTop:4,borderTop:`1px solid ${BORDER}`}}>
+          <span style={{fontSize:14,fontWeight:700,color:'#f5ead8'}}>Total Revenue</span>
+          <span style={{fontSize:14,fontFamily:'monospace',fontWeight:700,color:GOLD}}>{ghc(totalRev)}</span>
+        </div>
+
+        <hr style={S.divider}/>
+
+        {/* Expenses section */}
+        <p style={{fontSize:11,textTransform:'uppercase',letterSpacing:'0.1em',color:'#e07070',margin:'0 0 8px'}}>Expenses</p>
+        {Object.entries(expByCategory).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>(
+          <div key={cat} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid rgba(255,255,255,0.04)`}}>
+            <span style={{fontSize:13,color:'#e8e0d0',paddingLeft:12}}>{cat}</span>
+            <span style={{fontSize:13,fontFamily:'monospace',color:'#e07070'}}>{ghc(amt)}</span>
+          </div>
+        ))}
+        {Object.keys(expByCategory).length===0 && (
+          <p style={{fontSize:12,color:MUTED,paddingLeft:12}}>No expenses in this period</p>
+        )}
+        <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',marginTop:4,borderTop:`1px solid ${BORDER}`}}>
+          <span style={{fontSize:14,fontWeight:700,color:'#f5ead8'}}>Total Expenses</span>
+          <span style={{fontSize:14,fontFamily:'monospace',fontWeight:700,color:'#e07070'}}>{ghc(totalExp)}</span>
+        </div>
+
+        <hr style={S.divider}/>
+
+        {/* Net */}
+        <div style={{display:'flex',justifyContent:'space-between',padding:'10px 0',background:grossProfit>=0?'rgba(122,154,102,0.08)':'rgba(192,57,43,0.08)',borderRadius:6,paddingLeft:12,paddingRight:12}}>
+          <span style={{fontSize:16,fontWeight:700,color:'#f5ead8'}}>
+            {grossProfit>=0?'Net Profit':'Net Loss'}
+          </span>
+          <span style={{fontSize:16,fontFamily:'monospace',fontWeight:700,color:grossProfit>=0?GREEN:RED}}>
+            {ghc(Math.abs(grossProfit))}
+          </span>
+        </div>
+
+        {totalRev>0 && (
+          <p style={{fontSize:12,color:MUTED,margin:'8px 0 0',textAlign:'right'}}>
+            Profit margin: {num(grossProfit/totalRev*100,1)}%
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   MAIN COMPONENT
+   ============================================================ */
+export default function FinancialsModule({ data, sales, expenses, pepperHarvests }) {
+  const [tab, setTab] = useState('overview');
+
+  /* safe fallbacks if props not yet passed */
+  const _data         = data || {};
+  const _sales        = sales || [];
+  const _expenses     = expenses || [];
+  const _pepperHarvests = pepperHarvests || [];
+  const _flocks       = (_data.flocks) || [];
 
   const TABS = [
-    { id:"dashboard", label:"📊 Dashboard" },
-    { id:"eggs",      label:"🥚 Egg Sales" },
-    { id:"crops",     label:"🌶 Crop Sales" },
-    { id:"expenses",  label:"💸 Expenses" },
+    {id:'overview',   label:'📊 Overview'},
+    {id:'income',     label:'💵 Income'},
+    {id:'expenses',   label:'📤 Expenses'},
+    {id:'pnl',        label:'📋 Profit & Loss'},
   ];
 
   return (
-    <div style={s.wrap}>
-      <div style={s.hdr}>
-        <p style={s.hdrT}>💰 AI Farms Financials</p>
-        <p style={s.hdrS}>Track sales, expenses and profit across all farms</p>
+    <div style={S.wrap}>
+      <div style={S.header}>
+        <p style={S.eyebrow}>AI Farms</p>
+        <h1 style={S.title}>Financials</h1>
+        <p style={S.sub}>All figures pulled live from your farm records — no re-entry needed.</p>
       </div>
-      <div style={s.tabs}>
+
+      <nav style={S.tabs}>
         {TABS.map(t=>(
-          <button key={t.id} style={s.tab(tab===t.id)} onClick={()=>setTab(t.id)}>{t.label}</button>
+          <button key={t.id} style={S.tab(tab===t.id)} onClick={()=>setTab(t.id)}>{t.label}</button>
         ))}
-      </div>
-      <div style={tab!=="dashboard"?s.body:{}}>
-        {tab==="dashboard" && <FinancialDashboard refresh={refresh}/>}
-        {tab==="eggs"      && <EggLogForm onSave={bump}/>}
-        {tab==="crops"     && <CropSaleForm onSave={bump}/>}
-        {tab==="expenses"  && <ExpenseForm onSave={bump}/>}
-      </div>
+      </nav>
+
+      {tab==='overview'  && <OverviewTab  data={_data} sales={_sales} expenses={_expenses} pepperHarvests={_pepperHarvests}/>}
+      {tab==='income'    && <IncomeTab    sales={_sales} pepperHarvests={_pepperHarvests} flocks={_flocks}/>}
+      {tab==='expenses'  && <ExpensesTab  expenses={_expenses} data={_data}/>}
+      {tab==='pnl'       && <ProfitLossTab data={_data} sales={_sales} expenses={_expenses} pepperHarvests={_pepperHarvests}/>}
     </div>
   );
 }
