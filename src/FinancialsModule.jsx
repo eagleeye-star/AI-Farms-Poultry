@@ -410,6 +410,145 @@ function SectionTab({ section, allExpenses }) {
 }
 
 /* ============================================================
+   DEBTORS TAB — aggregated credit owed across all farm sections
+   ============================================================ */
+function calcOwedFin(sale, saleAmount) {
+  const paid = (sale.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return Math.max(0, (saleAmount || 0) - paid);
+}
+
+function DebtorsTab({ allDebtorRows }) {
+  const [expanded, setExpanded] = useState({});
+  const toggle = (key) => setExpanded(v => ({ ...v, [key]: !v[key] }));
+
+  /* group by buyer name */
+  const byBuyer = useMemo(() => {
+    const map = {};
+    allDebtorRows.forEach(row => {
+      const key = (row.buyer || 'Unknown').trim();
+      if (!map[key]) map[key] = { buyer: key, rows: [], totalOwed: 0 };
+      map[key].rows.push(row);
+      map[key].totalOwed += row.owed;
+    });
+    return Object.values(map).filter(b => b.totalOwed > 0).sort((a, b) => b.totalOwed - a.totalOwed);
+  }, [allDebtorRows]);
+
+  const grandTotal = byBuyer.reduce((s, b) => s + b.totalOwed, 0);
+
+  if (byBuyer.length === 0) {
+    return (
+      <div style={{ ...S.sec, textAlign: 'center', paddingTop: 48 }}>
+        <p style={{ fontSize: 32, margin: '0 0 12px' }}>✅</p>
+        <p style={{ color: '#e8e0d0', fontSize: 16, fontWeight: 700, margin: '0 0 6px' }}>No outstanding debts</p>
+        <p style={{ color: MUTED, fontSize: 13 }}>All credit sales have been fully paid — well done!</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.sec}>
+      {/* Summary cards */}
+      <div style={S.grid(3)}>
+        <div style={S.card}>
+          <p style={S.ct}>Total Outstanding</p>
+          <p style={{ ...S.cv('red'), fontSize: 22 }}>{ghc(grandTotal)}</p>
+          <p style={S.cf}>{allDebtorRows.length} credit sale(s)</p>
+        </div>
+        <div style={S.card}>
+          <p style={S.ct}>Debtors</p>
+          <p style={{ ...S.cv('gold'), fontSize: 22 }}>{byBuyer.length}</p>
+          <p style={S.cf}>buyers with outstanding balance</p>
+        </div>
+        <div style={S.card}>
+          <p style={S.ct}>Largest Debt</p>
+          <p style={{ ...S.cv('red'), fontSize: 22 }}>{byBuyer[0] ? ghc(byBuyer[0].totalOwed) : '—'}</p>
+          <p style={S.cf}>{byBuyer[0]?.buyer || ''}</p>
+        </div>
+      </div>
+
+      {/* Per-buyer accordion */}
+      <p style={{ ...S.ct, margin: '8px 0 12px' }}>Outstanding by buyer</p>
+      {byBuyer.map(b => (
+        <div key={b.buyer} style={{ ...S.card, marginBottom: 10, padding: 0, overflow: 'hidden' }}>
+          {/* Buyer header row */}
+          <div
+            onClick={() => toggle(b.buyer)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '11px 14px', cursor: 'pointer',
+              borderBottom: expanded[b.buyer] ? `1px solid ${BORDER}` : 'none',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>👤</span>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 700, color: '#f5ead8', margin: 0 }}>{b.buyer}</p>
+                <p style={{ fontSize: 11, color: MUTED, margin: 0 }}>{b.rows.length} sale(s)</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 700, color: RED }}>
+                {ghc(b.totalOwed)} owed
+              </span>
+              <span style={{ color: MUTED, fontSize: 14 }}>{expanded[b.buyer] ? '▲' : '▼'}</span>
+            </div>
+          </div>
+
+          {/* Detail table */}
+          {expanded[b.buyer] && (
+            <div style={{ padding: '0 0 12px', overflowX: 'auto' }}>
+              <table style={{ ...S.tbl, marginTop: 0 }}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Date</th>
+                    <th style={S.th}>Section</th>
+                    <th style={S.th}>Description</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>Sale</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>Paid so far</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>Still owed</th>
+                    <th style={S.th}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {b.rows.map((row, i) => {
+                    const paid = row.saleAmount - row.owed;
+                    return (
+                      <tr key={row.id + i}>
+                        <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12 }}>{fmtDate(row.date)}</td>
+                        <td style={S.td}>
+                          <span style={S.tag('gold')}>{row.sectionIcon} {row.sectionLabel}</span>
+                        </td>
+                        <td style={{ ...S.td, fontSize: 12 }}>{row.description}</td>
+                        <td style={{ ...S.td, fontFamily: 'monospace', textAlign: 'right' }}>{ghc(row.saleAmount)}</td>
+                        <td style={{ ...S.td, fontFamily: 'monospace', color: GREEN, textAlign: 'right' }}>{ghc(paid)}</td>
+                        <td style={{ ...S.td, fontFamily: 'monospace', color: RED, fontWeight: 700, textAlign: 'right' }}>{ghc(row.owed)}</td>
+                        <td style={S.td}>
+                          {paid > 0 && row.owed > 0
+                            ? <span style={S.tag('gold')}>Part-paid</span>
+                            : <span style={S.tag('red')}>Unpaid</span>
+                          }
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={5} style={{ ...S.td, fontWeight: 700, color: '#e8e0d0' }}>Total owed by {b.buyer}</td>
+                    <td style={{ ...S.td, fontFamily: 'monospace', color: RED, fontWeight: 700, textAlign: 'right' }}>{ghc(b.totalOwed)}</td>
+                    <td style={S.td} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
    MAIN COMPONENT
    ============================================================ */
 export default function FinancialsModule({ data, sales, expenses, pepperHarvests, goatSales, customFarms, flocks }) {
@@ -581,10 +720,89 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
 
   const allSections = [...builtInSections, ...customSections, wholeFarmSection];
 
+  /* ---- Debtors: collect all credit rows owed across sections ---- */
+  const allDebtorRows = useMemo(() => {
+    const rows = [];
+
+    // Poultry sales
+    _sales.forEach(s => {
+      if ((s.paymentStatus || 'paid') === 'credit') {
+        const saleAmount = Number(s.amount) || 0;
+        const owed = calcOwedFin(s, saleAmount);
+        if (owed > 0) {
+          const flock = _flocks.find(f => f.id === s.flockId);
+          rows.push({
+            id: s.id, date: s.date, buyer: s.buyer || 'Unknown',
+            sectionLabel: 'Poultry', sectionIcon: '🐔',
+            description: `${s.item || 'Poultry sale'}${flock ? ' — ' + flock.flockName : ''}`,
+            saleAmount, owed,
+          });
+        }
+      }
+    });
+
+    // Bell Pepper harvests
+    _pepperHarvs.forEach(h => {
+      if ((h.paymentStatus || 'paid') === 'credit') {
+        const saleAmount = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+        const owed = calcOwedFin(h, saleAmount);
+        if (owed > 0) {
+          rows.push({
+            id: h.id, date: h.date, buyer: h.buyer || 'Unknown',
+            sectionLabel: 'Bell Pepper', sectionIcon: '🌶',
+            description: `${num(h.weightKg, 1)} kg${h.grade ? ' (' + h.grade + ')' : ''}`,
+            saleAmount, owed,
+          });
+        }
+      }
+    });
+
+    // Goat sales
+    _goatSales.forEach(s => {
+      if ((s.paymentStatus || 'paid') === 'credit') {
+        const saleAmount = Number(s.price) || 0;
+        const owed = calcOwedFin(s, saleAmount);
+        if (owed > 0) {
+          rows.push({
+            id: s.id, date: s.date, buyer: s.buyer || 'Unknown',
+            sectionLabel: 'Goats', sectionIcon: '🐐',
+            description: `Goat sale${s.weightKg ? ' (' + num(s.weightKg, 1) + ' kg)' : ''}`,
+            saleAmount, owed,
+          });
+        }
+      }
+    });
+
+    // Custom farms (livestock only)
+    _customFarms.forEach(farm => {
+      if (farm.category === 'livestock') {
+        (farm.salesLog || []).forEach(s => {
+          if ((s.paymentStatus || 'paid') === 'credit') {
+            const saleAmount = Number(s.amount) || 0;
+            const owed = calcOwedFin(s, saleAmount);
+            if (owed > 0) {
+              rows.push({
+                id: s.id, date: s.date, buyer: s.buyer || 'Unknown',
+                sectionLabel: farm.name, sectionIcon: '🐾',
+                description: s.notes || `${farm.name} sale`,
+                saleAmount, owed,
+              });
+            }
+          }
+        });
+      }
+    });
+
+    return rows.sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [_sales, _pepperHarvs, _goatSales, _customFarms, _flocks]);
+
+  const totalOwed = allDebtorRows.reduce((s, r) => s + r.owed, 0);
+
   /* ---- outer tab list ---- */
   const outerTabList = [
     {id:'overview', label:'📊 Overview'},
     ...allSections.map(s=>({id:s.id, label:`${s.icon} ${s.label}`})),
+    {id:'debtors', label: totalOwed > 0 ? `⚠ Debtors (${allDebtorRows.length})` : '💳 Debtors'},
   ];
 
   const activeSection = allSections.find(s=>s.id===outerTab);
@@ -606,7 +824,8 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
       </nav>
 
       {outerTab==='overview' && <OverviewTab sections={allSections}/>}
-      {activeSection && outerTab!=='overview' && (
+      {outerTab==='debtors' && <DebtorsTab allDebtorRows={allDebtorRows} />}
+      {activeSection && outerTab!=='overview' && outerTab!=='debtors' && (
         <SectionTab section={activeSection} allExpenses={_expenses}/>
       )}
     </div>
