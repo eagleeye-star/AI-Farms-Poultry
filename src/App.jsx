@@ -612,6 +612,475 @@ function useToastConfirm() {
 
 /* ---------------- main app ---------------- */
 
+/* ============================================================
+   NOTIFICATIONS — build alert list from live farm data
+   ============================================================ */
+function useNotifications({ data, activeFlock, feedDaysLeft, vaxPending,
+  litterDue, litterCondition, weeksToPOL, flockMargin, flockCost,
+  dailyLog, daysSinceLastEntry }) {
+
+  return useMemo(() => {
+    const alerts = [];
+    const today = todayISO();
+
+    /* ── 1. Feed running low ── */
+    if (feedDaysLeft !== null && feedDaysLeft <= 3) {
+      alerts.push({
+        id: 'feed-low',
+        level: feedDaysLeft <= 1 ? 'critical' : 'warning',
+        icon: '🌾',
+        title: feedDaysLeft <= 0 ? 'Feed store empty!' : `Feed runs out in ${feedDaysLeft} day${feedDaysLeft === 1 ? '' : 's'}`,
+        body: 'Restock now to avoid a gap in feeding.',
+        action: { label: 'Go to Feed', workspace: 'poultry', tab: 'feed' },
+      });
+    }
+
+    /* ── 2. Vaccination overdue / due today ── */
+    (vaxPending || []).forEach((v) => {
+      const days = v.daysLeft;
+      if (days !== null && days <= 0) {
+        alerts.push({
+          id: `vax-overdue-${v.id}`,
+          level: 'critical',
+          icon: '💉',
+          title: `Vaccination overdue: ${v.disease || v.vaccine}`,
+          body: days === 0 ? 'Due today — administer now.' : `${Math.abs(days)} day${Math.abs(days)===1?'':'s'} overdue.`,
+          action: { label: 'Go to Vaccination', workspace: 'poultry', tab: 'health' },
+        });
+      } else if (days !== null && days <= 3) {
+        alerts.push({
+          id: `vax-soon-${v.id}`,
+          level: 'warning',
+          icon: '💉',
+          title: `Vaccination due in ${days} day${days===1?'':'s'}: ${v.disease || v.vaccine}`,
+          body: `Due ${fmtDate(v.dueDate)} — prepare vaccine and equipment.`,
+          action: { label: 'Go to Vaccination', workspace: 'poultry', tab: 'health' },
+        });
+      }
+    });
+
+    /* ── 3. Mortality spike ── */
+    const todayEntry = dailyLog.find((r) => r.date === today);
+    const todayDeaths = todayEntry ? (Number(todayEntry.mortality) || 0) : null;
+    if (todayDeaths !== null && dailyLog.length >= 7) {
+      const recent = dailyLog.slice(-7);
+      const avgDeaths = recent.reduce((s, r) => s + (Number(r.mortality) || 0), 0) / recent.length;
+      if (todayDeaths > 0 && todayDeaths >= Math.max(2, avgDeaths * 2)) {
+        alerts.push({
+          id: 'mortality-spike',
+          level: 'critical',
+          icon: '⚠️',
+          title: `Mortality spike: ${todayDeaths} deaths today`,
+          body: `Your 7-day average is ${avgDeaths.toFixed(1)}/day. Inspect the flock immediately.`,
+          action: { label: 'View Log', workspace: 'poultry', tab: 'log' },
+        });
+      }
+    }
+
+    /* ── 4. Daily log not filled in ── */
+    if (daysSinceLastEntry !== null && daysSinceLastEntry >= 1) {
+      alerts.push({
+        id: 'log-missing',
+        level: daysSinceLastEntry >= 3 ? 'critical' : 'info',
+        icon: '📋',
+        title: daysSinceLastEntry === 1
+          ? "Today's daily log is missing"
+          : `Daily log missing for ${daysSinceLastEntry} days`,
+        body: 'Log today\'s bird count, feed, eggs and deaths to keep your data accurate.',
+        action: { label: 'Log Today', workspace: 'poultry', tab: 'log' },
+      });
+    }
+
+    /* ── 5. Litter change overdue ── */
+    if (litterDue) {
+      const tone = litterCondition === 'Wet' || litterCondition === 'Caked' ? 'critical' : 'warning';
+      alerts.push({
+        id: 'litter-due',
+        level: tone,
+        icon: '🏠',
+        title: `Litter change overdue${litterCondition ? ` — condition: ${litterCondition}` : ''}`,
+        body: 'Wet or compacted litter increases ammonia and disease risk. Change or top-dress now.',
+        action: { label: 'Go to Litter', workspace: 'poultry', tab: 'house' },
+      });
+    }
+
+    /* ── 6. Pepper spray due ── */
+    const pepperFields = (data.pepper?.fields || []).filter((f) => f.transplantDate);
+    pepperFields.forEach((field) => {
+      const events = (field.sprayProgramme?.events || []);
+      const upcoming = events
+        .map((e) => ({ ...e, daysAway: daysBetween(today, e.dueDate || e.date) }))
+        .filter((e) => e.daysAway !== null && e.daysAway <= 2 && e.daysAway >= -1 && !e.done)
+        .sort((a, b) => a.daysAway - b.daysAway);
+      upcoming.forEach((ev) => {
+        const when = ev.daysAway < 0 ? `${Math.abs(ev.daysAway)}d overdue` : ev.daysAway === 0 ? 'today' : `in ${ev.daysAway}d`;
+        alerts.push({
+          id: `spray-${field.id}-${ev.id}`,
+          level: ev.daysAway <= 0 ? 'warning' : 'info',
+          icon: '🌶',
+          title: `Spray due ${when} — ${field.name}`,
+          body: `${ev.product || ev.type || 'Scheduled spray'} · ${fmtDate(ev.dueDate || ev.date)}`,
+          action: { label: 'Go to Pepper', workspace: 'pepper', tab: 'schedule' },
+        });
+      });
+    });
+
+    /* ── 7. Point of Lay reached ── */
+    if (weeksToPOL !== null && weeksToPOL <= 0 && activeFlock.type === 'layer') {
+      const eggsLogged = (data.sales || []).filter((s) => (s.item||'').toLowerCase().includes('egg') && s.flockId === activeFlock.id).length;
+      if (!eggsLogged) {
+        alerts.push({
+          id: 'pol-reached',
+          level: 'info',
+          icon: '🥚',
+          title: `${activeFlock.flockName} has reached Point of Lay!`,
+          body: 'Your hens should be starting to lay. Log your first egg sales when ready.',
+          action: { label: 'Log Sales', workspace: 'poultry', tab: 'sales' },
+        });
+      }
+    }
+
+    /* ── 8. Break-even / revenue milestone ── */
+    if (flockCost > 0 && flockMargin !== null) {
+      if (flockMargin >= 0 && flockMargin < 500) {
+        alerts.push({
+          id: 'breakeven',
+          level: 'info',
+          icon: '🎯',
+          title: `Break-even reached on ${activeFlock.flockName}!`,
+          body: `Revenue has covered all costs. Every cedi from here is profit.`,
+          action: { label: 'View Financials', workspace: 'financials', tab: null },
+        });
+      }
+    }
+
+    // Sort: critical first, then warning, then info
+    const order = { critical: 0, warning: 1, info: 2 };
+    return alerts.sort((a, b) => order[a.level] - order[b.level]);
+  }, [feedDaysLeft, vaxPending, litterDue, litterCondition, weeksToPOL,
+      flockMargin, flockCost, dailyLog, daysSinceLastEntry, data, activeFlock]);
+}
+
+/* ── Bell icon + dropdown panel ── */
+function NotificationBell({ alerts, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('aifarms_dismissed_alerts') || '[]')); }
+    catch { return new Set(); }
+  });
+  const ref = useRef(null);
+
+  const visible = alerts.filter((a) => !dismissed.has(a.id));
+  const critCount = visible.filter((a) => a.level === 'critical').length;
+  const badgeCount = visible.length;
+
+  useEffect(() => {
+    function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  function dismiss(id) {
+    const next = new Set([...dismissed, id]);
+    setDismissed(next);
+    try { localStorage.setItem('aifarms_dismissed_alerts', JSON.stringify([...next])); } catch {}
+  }
+  function dismissAll() {
+    const next = new Set([...dismissed, ...visible.map((a) => a.id)]);
+    setDismissed(next);
+    try { localStorage.setItem('aifarms_dismissed_alerts', JSON.stringify([...next])); } catch {}
+  }
+  // Clear dismissals once a day so fresh alerts re-appear
+  useEffect(() => {
+    const lastReset = localStorage.getItem('aifarms_alert_reset');
+    const today = todayISO();
+    if (lastReset !== today) {
+      setDismissed(new Set());
+      localStorage.removeItem('aifarms_dismissed_alerts');
+      localStorage.setItem('aifarms_alert_reset', today);
+    }
+  }, []);
+
+  const levelColor = { critical: '#C15F41', warning: '#D4A537', info: '#7A9A66' };
+  const levelBg    = { critical: 'rgba(193,95,65,0.12)', warning: 'rgba(212,165,55,0.10)', info: 'rgba(122,154,102,0.10)' };
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          position: 'relative', background: 'transparent', border: 'none',
+          cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
+          color: critCount > 0 ? '#C15F41' : badgeCount > 0 ? '#D4A537' : '#83786A',
+          fontSize: 20, lineHeight: 1,
+          transition: 'color .15s',
+        }}
+        title="Notifications"
+      >
+        🔔
+        {badgeCount > 0 && (
+          <span style={{
+            position: 'absolute', top: 2, right: 2,
+            background: critCount > 0 ? '#C15F41' : '#D4A537',
+            color: '#fff', borderRadius: '50%',
+            fontSize: 10, fontWeight: 700, minWidth: 16, height: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            lineHeight: 1, padding: '0 3px',
+          }}>{badgeCount > 9 ? '9+' : badgeCount}</span>
+        )}
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: '110%', right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          width: 340, maxHeight: 480, overflowY: 'auto',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '12px 14px 10px', borderBottom: '1px solid rgba(212,165,55,0.12)' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#f5ead8' }}>
+              Alerts {badgeCount > 0 && <span style={{ color: '#D4A537' }}>({badgeCount})</span>}
+            </span>
+            {badgeCount > 0 && (
+              <button onClick={dismissAll}
+                style={{ fontSize: 11, color: '#83786A', background: 'none', border: 'none', cursor: 'pointer' }}>
+                Clear all
+              </button>
+            )}
+          </div>
+
+          {visible.length === 0 && (
+            <div style={{ padding: '24px 16px', textAlign: 'center', color: '#83786A', fontSize: 13 }}>
+              ✅ All clear — no alerts right now.
+            </div>
+          )}
+
+          {visible.map((a) => (
+            <div key={a.id} style={{
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              background: levelBg[a.level],
+            }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{a.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, margin: '0 0 3px',
+                    color: levelColor[a.level] }}>{a.title}</p>
+                  <p style={{ fontSize: 12, color: '#B9AD9A', margin: '0 0 8px', lineHeight: 1.4 }}>{a.body}</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {a.action && (
+                      <button onClick={() => { onNavigate(a.action); setOpen(false); }}
+                        style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 5,
+                          border: `1px solid ${levelColor[a.level]}`, background: 'transparent',
+                          color: levelColor[a.level], cursor: 'pointer' }}>
+                        {a.action.label}
+                      </button>
+                    )}
+                    <button onClick={() => dismiss(a.id)}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 5,
+                        border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
+                        color: '#83786A', cursor: 'pointer' }}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   GLOBAL SEARCH
+   ============================================================ */
+function GlobalSearch({ data, flocks, onNavigate }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    function handleClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const hits = [];
+
+    // Poultry sales
+    (data.sales || []).forEach((s) => {
+      const flock = flocks.find((f) => f.id === s.flockId);
+      const text = `${s.item||''} ${s.buyer||''} ${flock?.flockName||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `sale-${s.id}`, icon: '🐔',
+        title: `${s.item || 'Poultry sale'} — ${flock?.flockName || ''}`,
+        sub: `${fmtDate(s.date)} · GH₵ ${Number(s.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}${s.buyer?' · '+s.buyer:''}`,
+        action: { workspace: 'poultry', tab: 'sales' },
+      });
+    });
+
+    // Pepper harvests
+    (data.pepper?.harvests || []).forEach((h) => {
+      const text = `pepper harvest ${h.buyer||''} ${h.fieldName||''} ${h.grade||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `phv-${h.id}`, icon: '🌶',
+        title: `Pepper harvest — ${h.fieldName || 'field'}`,
+        sub: `${fmtDate(h.date)} · ${h.weightKg}kg${h.buyer?' · '+h.buyer:''}`,
+        action: { workspace: 'pepper', tab: 'harvests' },
+      });
+    });
+
+    // Goat sales
+    (data.goats?.sales || []).forEach((s) => {
+      const text = `goat sale ${s.buyer||''} ${s.notes||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `goat-${s.id}`, icon: '🐐',
+        title: `Goat sale${s.weightKg?' — '+s.weightKg+'kg':''}`,
+        sub: `${fmtDate(s.date)} · GH₵ ${Number(s.price||0).toLocaleString('en-GB',{minimumFractionDigits:2})}${s.buyer?' · '+s.buyer:''}`,
+        action: { workspace: 'goats', tab: null },
+      });
+    });
+
+    // Flocks
+    flocks.forEach((f) => {
+      if (`${f.flockName} ${f.breed} ${f.location}`.toLowerCase().includes(q)) hits.push({
+        id: `flock-${f.id}`, icon: '🐣',
+        title: f.flockName,
+        sub: `${f.breed} · started ${fmtDate(f.startDate)} · ${f.location || 'no location'}`,
+        action: { workspace: 'poultry', tab: 'dashboard' },
+      });
+    });
+
+    // Expenses
+    (data.expenses || []).forEach((e) => {
+      const text = `${e.category||''} ${e.description||''} ${e.scope||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `exp-${e.id}`, icon: '📤',
+        title: `${e.category || 'Expense'}: ${e.description || ''}`,
+        sub: `${fmtDate(e.date)} · GH₵ ${Number(e.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})} · ${e.scope||'whole farm'}`,
+        action: { workspace: 'financials', tab: null },
+      });
+    });
+
+    // Custom farms
+    (data.customFarms || []).forEach((farm) => {
+      if (farm.name.toLowerCase().includes(q)) hits.push({
+        id: `farm-${farm.id}`, icon: '🌾',
+        title: farm.name,
+        sub: `${farm.category} · My Farms`,
+        action: { workspace: 'custom', tab: null },
+      });
+      (farm.salesLog || []).forEach((s) => {
+        const text = `${farm.name} ${s.notes||''} ${s.buyer||''}`.toLowerCase();
+        if (text.includes(q)) hits.push({
+          id: `csl-${s.id}`, icon: '🌾',
+          title: `${farm.name} sale`,
+          sub: `${fmtDate(s.date)} · GH₵ ${Number(s.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}`,
+          action: { workspace: 'custom', tab: null },
+        });
+      });
+    });
+
+    // Pepper spray events
+    (data.pepper?.fields || []).forEach((field) => {
+      (field.sprayProgramme?.events || []).forEach((ev) => {
+        const text = `spray ${field.name} ${ev.product||''} ${ev.type||''}`.toLowerCase();
+        if (text.includes(q)) hits.push({
+          id: `spev-${field.id}-${ev.id}`, icon: '🌶',
+          title: `${ev.product || ev.type || 'Spray'} — ${field.name}`,
+          sub: `Due ${fmtDate(ev.dueDate || ev.date)}${ev.done?' · ✓ done':''}`,
+          action: { workspace: 'pepper', tab: 'schedule' },
+        });
+      });
+    });
+
+    return hits.slice(0, 12);
+  }, [query, data, flocks]);
+
+  function handleKey(e) {
+    if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', flex: 1, maxWidth: 380 }}>
+      <div style={{ position: 'relative' }}>
+        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+          fontSize: 14, color: '#83786A', pointerEvents: 'none' }}>🔍</span>
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={handleKey}
+          placeholder="Search sales, flocks, expenses, sprays…"
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(212,165,55,0.2)',
+            borderRadius: 8, padding: '7px 10px 7px 32px',
+            color: '#f5ead8', fontSize: 13, outline: 'none',
+          }}
+        />
+        {query && (
+          <button onClick={() => { setQuery(''); setOpen(false); }}
+            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+              background: 'none', border: 'none', color: '#83786A', cursor: 'pointer', fontSize: 14 }}>
+            ✕
+          </button>
+        )}
+      </div>
+
+      {open && results.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '110%', left: 0, right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          maxHeight: 380, overflowY: 'auto',
+        }}>
+          {results.map((r) => (
+            <button key={r.id}
+              onClick={() => { onNavigate(r.action); setQuery(''); setOpen(false); }}
+              style={{
+                display: 'flex', gap: 10, alignItems: 'flex-start',
+                width: '100%', textAlign: 'left', padding: '10px 14px',
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(212,165,55,0.08)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{r.icon}</span>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#f5ead8', margin: '0 0 2px' }}>{r.title}</p>
+                <p style={{ fontSize: 11, color: '#83786A', margin: 0 }}>{r.sub}</p>
+              </div>
+            </button>
+          ))}
+          <div style={{ padding: '6px 14px', fontSize: 11, color: '#83786A', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+            {results.length} result{results.length !== 1 ? 's' : ''}
+          </div>
+        </div>
+      )}
+      {open && query.length >= 2 && results.length === 0 && (
+        <div style={{
+          position: 'absolute', top: '110%', left: 0, right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          padding: '16px 14px', color: '#83786A', fontSize: 13, textAlign: 'center',
+        }}>
+          No results for "<strong style={{color:'#B9AD9A'}}>{query}</strong>"
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AppRoot() {
   return (
     <ToastConfirmProvider>
@@ -953,6 +1422,20 @@ function AppInner() {
       label: new Date(m + '-01').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }),
     }));
   }, [data.sales, data.pepper?.harvests, data.goats?.sales, data.customFarms]);
+
+  // ── Notification alerts ──
+  const notifications = useNotifications({
+    data, activeFlock, feedDaysLeft, vaxPending, litterDue, litterCondition,
+    weeksToPOL, flockMargin, flockCost, dailyLog, daysSinceLastEntry,
+  });
+
+  // ── Navigation handler for notifications & search results ──
+  function handleNavigate({ workspace: ws, tab }) {
+    setWorkspace(ws);
+    setModal(null);
+    // Tabs inside workspaces can't be set from here directly,
+    // but switching workspace is enough to orient the user.
+  }
 
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
@@ -1623,6 +2106,16 @@ function AppInner() {
           className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
           onClick={() => { setWorkspace('financials'); setModal(null); }}
         >💰 Financials</button>
+      </div>
+
+      {/* ── Global search + notification bell ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px 14px', background: 'rgba(0,0,0,0.25)',
+        borderBottom: '1px solid rgba(212,165,55,0.12)',
+      }}>
+        <GlobalSearch data={data} flocks={data.flocks || []} onNavigate={handleNavigate} />
+        <NotificationBell alerts={notifications} onNavigate={handleNavigate} />
       </div>
 
       <SyncBar
