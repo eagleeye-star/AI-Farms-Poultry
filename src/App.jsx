@@ -5389,6 +5389,10 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
 
 function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
   const [payModal, setPayModal] = useState(null);
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
   const totalOwed = rows.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') {
       const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
@@ -5396,6 +5400,11 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
     }
     return s;
   }, 0);
+
+  const visibleRows = filterByPeriod(rows, period, customStart, customEnd);
+  const periodKg = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0), 0);
+  const periodRev = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0), 0);
+
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -5404,7 +5413,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
       </div>
       {rows.length > 0 && (
         <p className="stat-foot" style={{ marginBottom: 10 }}>
-          Totals in view: <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong> ·
+          All time: <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong> ·
           revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
         </p>
       )}
@@ -5413,13 +5422,23 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
           ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from pepper harvests.
         </div>
       )}
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+      {period !== 'all' && visibleRows.length > 0 && (
+        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+          {visibleRows.length} harvest(s) · <strong style={{ color: 'var(--green)' }}>{num(periodKg, 1)} kg</strong> · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRev, 2)}</strong>
+        </p>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead>
             <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {visibleRows.map((r) => {
               const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
               return (
                 <tr key={r.id}>
@@ -5447,7 +5466,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={10} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
+            {visibleRows.length === 0 && <tr><td colSpan={10} className="empty">{rows.length === 0 ? 'No harvest logged yet — record each pick to build your yield and revenue picture.' : 'No harvests in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -5627,6 +5646,97 @@ function FlockForm({ flock, onClose, onSave }) {
    CREDIT SALES — shared utilities for all 4 sections
    ============================================================ */
 
+/* ── Period filter helpers ─────────────────────────────────────── */
+
+/**
+ * Returns { start, end } ISO strings for a given period preset relative to today.
+ * 'custom' returns null (caller must supply dates).
+ */
+function getPeriodRange(period, today) {
+  const d = today ? new Date(today) : new Date();
+  const iso = (dt) => dt.toISOString().slice(0, 10);
+  const startOfDay = (dt) => { const x = new Date(dt); x.setHours(0,0,0,0); return x; };
+  switch (period) {
+    case 'today': {
+      const s = startOfDay(d);
+      return { start: iso(s), end: iso(s) };
+    }
+    case 'week': {
+      const day = d.getDay(); // 0=Sun
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Mon
+      const s = startOfDay(new Date(d.setDate(diff)));
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    case 'month': {
+      const s = new Date(d.getFullYear(), d.getMonth(), 1);
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    case 'year': {
+      const s = new Date(d.getFullYear(), 0, 1);
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    default: return null;
+  }
+}
+
+function filterByPeriod(records, period, customStart, customEnd, dateField = 'date') {
+  if (period === 'all') return records;
+  let start, end;
+  if (period === 'custom') {
+    start = customStart || '';
+    end = customEnd || '';
+  } else {
+    const r = getPeriodRange(period);
+    if (!r) return records;
+    start = r.start; end = r.end;
+  }
+  return records.filter((rec) => {
+    const d = (rec[dateField] || '').slice(0, 10);
+    if (start && d < start) return false;
+    if (end && d > end) return false;
+    return true;
+  });
+}
+
+const PERIOD_OPTS = [
+  { value: 'all', label: 'All time' },
+  { value: 'today', label: 'Today' },
+  { value: 'week', label: 'This week' },
+  { value: 'month', label: 'This month' },
+  { value: 'year', label: 'This year' },
+  { value: 'custom', label: 'Custom range' },
+];
+
+function PeriodFilter({ period, onPeriod, customStart, customEnd, onCustomStart, onCustomEnd }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 14 }}>
+      <span style={{ fontSize: 12, color: '#aaa', marginRight: 2 }}>Period:</span>
+      {PERIOD_OPTS.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onPeriod(o.value)}
+          style={{
+            padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer',
+            background: period === o.value ? 'var(--gold)' : 'rgba(255,255,255,0.07)',
+            color: period === o.value ? '#111' : '#ccc', fontWeight: period === o.value ? 700 : 400,
+          }}
+        >{o.label}</button>
+      ))}
+      {period === 'custom' && (
+        <>
+          <input type="date" value={customStart} onChange={(e) => onCustomStart(e.target.value)}
+            style={{ background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#fff', padding: '3px 8px', fontSize: 12 }} />
+          <span style={{ color: '#888', fontSize: 12 }}>to</span>
+          <input type="date" value={customEnd} onChange={(e) => onCustomEnd(e.target.value)}
+            style={{ background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#fff', padding: '3px 8px', fontSize: 12 }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────── */
+
 /** Compute how much of a sale has been paid and what's still owed */
 function calcOwed(sale, saleAmount) {
   const paid = (sale.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -5698,6 +5808,12 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
 function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null); // sale record being paid
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const visibleSales = filterByPeriod(sales, period, customStart, customEnd);
+  const periodRevenue = visibleSales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
   const totalOwed = sales.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.amount) || 0);
@@ -5712,7 +5828,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
       </div>
 
       <div className="grid grid-4">
-        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s)`} />
+        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s) all time`} />
         <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
         <StatCard title="Housing + Setup" value={`GH₵ ${num((litterCost || 0) + setup + (coopCharge || 0), 2)}`} foot={`litter ${num(litterCost || 0, 0)} + coop ${num(coopCharge || 0, 0)} + setup ${num(setup, 0)}`} />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
@@ -5734,13 +5850,24 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         )}
       </p>
 
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+      {period !== 'all' && (
+        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+          Showing {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
+        </p>
+      )}
+
       <div className="table-wrap">
         <table className="data">
           <thead>
             <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
-            {sales.map((r) => (
+            {visibleSales.map((r) => (
               <tr key={r.id}>
                 <td className="mono">{fmtDate(r.date)}</td>
                 <td>{r.item}</td>
@@ -5764,7 +5891,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                 <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
               </tr>
             ))}
-            {sales.length === 0 && <tr><td colSpan={9} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
+            {visibleSales.length === 0 && <tr><td colSpan={9} className="empty">{sales.length === 0 ? 'No sales logged yet — record egg or bird sales to build your profit picture.' : 'No sales in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -7298,14 +7425,23 @@ function inbreedingBadge(level) {
 
 function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin, activeAnimals, goatLabel, onAddSale, onDeleteSale, onUpdateSale, onLogPayment, onInvoiceSale }) {
   const [payModal, setPayModal] = useState(null);
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
   const totalOwed = sales.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.price) || 0);
     return s;
   }, 0);
+
+  const sorted = [...sales].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const visibleSales = filterByPeriod(sorted, period, customStart, customEnd);
+  const periodRevenue = visibleSales.reduce((s, r) => s + (Number(r.price) || 0), 0);
+
   return (
     <>
       <div className="grid grid-4" style={{ marginBottom: 18 }}>
-        <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
+        <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="all time goat sales" />
         <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
         <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
         <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
@@ -7319,11 +7455,21 @@ function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin,
         <h3 style={{ fontSize: 18 }}>Sales</h3>
         <button className="btn btn-green" onClick={onAddSale} disabled={!activeAnimals.length}>+ Record sale</button>
       </div>
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+      {period !== 'all' && (
+        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+          {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
+        </p>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            {[...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map((s) => (
+            {visibleSales.map((s) => (
               <tr key={s.id}>
                 <td className="mono">{fmtDate(s.date)}</td>
                 <td>{goatLabel(s.animalId)}</td>
@@ -7350,7 +7496,7 @@ function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin,
                 </td>
               </tr>
             ))}
-            {sales.length === 0 && <tr><td colSpan={7} className="empty">No goat sales yet.</td></tr>}
+            {visibleSales.length === 0 && <tr><td colSpan={7} className="empty">{sales.length === 0 ? 'No goat sales yet.' : 'No sales in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -8825,12 +8971,17 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
   const [view, setView] = useState('overview');
   const [modal, setModal] = useState(null);
   const [payModal, setPayModal] = useState(null); // { sale, saleAmount }
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const { askConfirm } = useToastConfirm();
   const totalFeedCost = (farm.feedLog || []).reduce((s, e) => s + (Number(e.cost) || 0), 0);
   const totalSalesRevenue = (farm.salesLog || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const totalOwed = (farm.salesLog || []).reduce((s, e) => s + calcOwed(e, Number(e.amount) || 0), 0);
 
   const sortedSales = [...(farm.salesLog || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const visibleSales = filterByPeriod(sortedSales, period, customStart, customEnd);
+  const periodRevenue = visibleSales.reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
   return (
     <>
@@ -8890,6 +9041,16 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
               ⚠ GH₵ {num(totalOwed, 2)} outstanding across credit sales
             </div>
           )}
+          <PeriodFilter
+            period={period} onPeriod={setPeriod}
+            customStart={customStart} customEnd={customEnd}
+            onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+          />
+          {period !== 'all' && (
+            <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+              {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
+            </p>
+          )}
           {sortedSales.length === 0 ? (
             <p className="empty" style={{ padding: '18px 0' }}>No sales logged yet.</p>
           ) : (
@@ -8901,7 +9062,9 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedSales.map((s) => {
+                  {visibleSales.length === 0 ? (
+                    <tr><td colSpan={6} className="empty">No sales in this period.</td></tr>
+                  ) : visibleSales.map((s) => {
                     const saleAmount = Number(s.amount) || 0;
                     const owed = calcOwed(s, saleAmount);
                     return (
