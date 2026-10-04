@@ -1499,7 +1499,13 @@ function AppInner() {
     setData((d) => touch({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
   }
   function addSale(entry) {
-    setData((d) => touch({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] }));
+  }
+  function updateSale(id, patch) {
+    setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function addSalePayment(saleId, payment) {
+    setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => r.id === saleId ? { ...r, payments: [...(r.payments || []), payment] } : r) }));
   }
   function addLitter(entry) {
     setData((d) => touch({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
@@ -1619,6 +1625,13 @@ function AppInner() {
   const customHealthH = customFarmListHandlers('healthLog');
   const customFeedH = customFarmListHandlers('feedLog');
   const customSalesH = customFarmListHandlers('salesLog');
+
+  function updateCustomSale(farmId, saleId, patch) {
+    patchCustomFarm(farmId, (f) => ({ ...f, salesLog: (f.salesLog || []).map((s) => s.id === saleId ? { ...s, ...patch } : s) }));
+  }
+  function addCustomSalePayment(farmId, saleId, payment) {
+    patchCustomFarm(farmId, (f) => ({ ...f, salesLog: (f.salesLog || []).map((s) => s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s) }));
+  }
 
   function openInvoiceFromSale(sale) {
     setInvoicePrefill({
@@ -2007,7 +2020,13 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry] } }));
   }
   function addHarvest(entry) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
+  }
+  function updateHarvest(id, patch) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).map((h) => (h.id === id ? { ...h, ...patch } : h)) } }));
+  }
+  function addHarvestPayment(harvestId, payment) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).map((h) => h.id === harvestId ? { ...h, payments: [...(h.payments || []), payment] } : h) } }));
   }
 
   /* ---- Goats ---- */
@@ -2057,8 +2076,14 @@ function AppInner() {
     setData((d) => touch({ ...d, goats: { ...d.goats, weights: (d.goats.weights || []).filter((r) => r.id !== id) } }));
   }
   function addGoatSale(entry) {
-    setData((d) => touch({ ...d, goats: { ...d.goats, sales: [...(d.goats.sales || []), entry] } }));
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: [...(d.goats.sales || []), { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
     if (entry.animalId) updateGoat(entry.animalId, { status: 'sold' });
+  }
+  function updateGoatSale(id, patch) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) } }));
+  }
+  function addGoatSalePayment(saleId, payment) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).map((r) => r.id === saleId ? { ...r, payments: [...(r.payments || []), payment] } : r) } }));
   }
   function deleteGoatSale(id) {
     setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).filter((r) => r.id !== id) } }));
@@ -2364,6 +2389,8 @@ function AppInner() {
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
+          onUpdateSale={updateSale}
+          onLogPayment={addSalePayment}
         />
       )}
 
@@ -2536,6 +2563,8 @@ function AppInner() {
           onDeleteNurseryBatch={deleteNurseryBatch}
           onTransplantNurseryBatch={transplantNurseryBatch}
           onInvoiceHarvest={openInvoiceFromHarvest}
+          onUpdateHarvest={updateHarvest}
+          onHarvestPayment={addHarvestPayment}
         />
       )}
 
@@ -2562,6 +2591,8 @@ function AppInner() {
           onDeleteWeight={deleteGoatWeight}
           onAddSale={addGoatSale}
           onDeleteSale={deleteGoatSale}
+          onUpdateSale={updateGoatSale}
+          onLogPayment={addGoatSalePayment}
           onAddReminder={addReminder}
           onToggleReminder={toggleReminder}
           onDeleteReminder={deleteReminder}
@@ -2590,6 +2621,8 @@ function AppInner() {
           onDeleteFeedLog={customFeedH.delete}
           onAddSale={customSalesH.add}
           onDeleteSale={customSalesH.delete}
+          onUpdateCustomSale={updateCustomSale}
+          onAddCustomSalePayment={addCustomSalePayment}
         />
       )}
 
@@ -3989,7 +4022,7 @@ function PepperWorkspace({
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
-  onInvoiceHarvest,
+  onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -4267,6 +4300,8 @@ function PepperWorkspace({
           rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue}
           onAdd={() => setModal('harvest')}
           onInvoice={(h) => onInvoiceHarvest(h, fieldName(h.fieldId))}
+          onUpdateHarvest={onUpdateHarvest}
+          onHarvestPayment={onHarvestPayment}
         />
       )}
 
@@ -5352,7 +5387,15 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
 
 /* ---------------- Harvest & sales ---------------- */
 
-function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice }) {
+function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
+  const [payModal, setPayModal] = useState(null);
+  const totalOwed = rows.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') {
+      const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
+      s += calcOwed(r, rev);
+    }
+    return s;
+  }, 0);
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -5365,10 +5408,15 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice }) {
           revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
         </p>
       )}
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from pepper harvests.
+        </div>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => {
@@ -5382,21 +5430,46 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice }) {
                   <td className="mono">{r.pricePerKg != null ? num(r.pricePerKg, 2) : '—'}</td>
                   <td className="mono">{rev ? `GH₵ ${num(rev, 2)}` : '—'}</td>
                   <td>{r.buyer || '—'}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <CreditBadge sale={r} saleAmount={rev} />
+                      {(r.paymentStatus || 'paid') === 'paid' && onUpdateHarvest && (
+                        <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                          onClick={() => onUpdateHarvest(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                      )}
+                      {(r.paymentStatus || 'paid') === 'credit' && onHarvestPayment && (
+                        <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal({ ...r, _rev: rev })}>Log payment</button>
+                      )}
+                    </div>
+                  </td>
                   <td className="notes">{r.notes || ''}</td>
                   <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={9} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={10} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
           </tbody>
         </table>
       </div>
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={payModal._rev}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onHarvestPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateHarvest(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateHarvest(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
     </>
   );
 }
 
 function HarvestForm({ fields, defaultField, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '' });
+  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '', paymentStatus: 'paid' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const rev = (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0);
   function submit() {
@@ -5405,6 +5478,7 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
       id: newId(), date: f.date, fieldId: f.fieldId, weightKg: Number(f.weightKg),
       grade: f.grade || null, pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg),
       buyer: f.buyer || null, notes: f.notes || null,
+      paymentStatus: f.paymentStatus, payments: [],
     });
   }
   return (
@@ -5425,6 +5499,12 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
         <Field label="Price per kg (GH₵)"><input type="number" step="0.01" value={f.pricePerKg} onChange={set('pricePerKg')} /></Field>
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, etc." /></Field>
         <Field label="Revenue (auto)"><input value={rev ? `GH₵ ${num(rev, 2)}` : '—'} disabled /></Field>
+        <Field label="Payment">
+          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
+            <option value="paid">Paid (cash / transfer)</option>
+            <option value="credit">Credit (pay later)</option>
+          </select>
+        </Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -5543,10 +5623,87 @@ function FlockForm({ flock, onClose, onSave }) {
   );
 }
 
+/* ============================================================
+   CREDIT SALES — shared utilities for all 4 sections
+   ============================================================ */
+
+/** Compute how much of a sale has been paid and what's still owed */
+function calcOwed(sale, saleAmount) {
+  const paid = (sale.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return Math.max(0, (saleAmount || 0) - paid);
+}
+
+/** Small badge: Paid / Credit / Part-paid */
+function CreditBadge({ sale, saleAmount }) {
+  const status = sale.paymentStatus || 'paid';
+  const owed = calcOwed(sale, saleAmount);
+  const hasPart = status === 'credit' && owed > 0 && (sale.payments || []).length > 0;
+  const label = status === 'paid' ? '✓ Paid' : hasPart ? '⬤ Part-paid' : '○ Credit';
+  const cls = status === 'paid' ? 'tag green' : hasPart ? 'tag gold' : 'tag rust';
+  return <span className={cls} style={{ fontSize: 11 }}>{label}</span>;
+}
+
+/** Modal to log a payment toward a credit sale */
+function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, onMarkPaid }) {
+  const owed = calcOwed(sale, saleAmount);
+  const [date, setDate] = useState(todayISO());
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const num2 = (v) => (isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+  function submit() {
+    const amt = Number(amount);
+    if (!date || !amt || amt <= 0) return;
+    const payment = { id: Math.random().toString(36).slice(2, 10), date, amount: amt, note: note || null };
+    onLogPayment(payment, amt >= owed);
+    onClose();
+  }
+  function markFullyPaid() {
+    onMarkPaid();
+    onClose();
+  }
+
+  return (
+    <Modal title="Log payment" sub={`${buyerName || 'Customer'} owes GH₵ ${num2(owed)}`} onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Payment date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+        <Field label={`Amount (GH₵) — still owed: ${num2(owed)}`}>
+          <input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`max ${num2(owed)}`} />
+        </Field>
+        <Field label="Note (optional)" className="span-2"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. bank transfer" /></Field>
+      </div>
+      {(sale.payments || []).length > 0 && (
+        <div style={{ margin: '10px 0', fontSize: 12, color: '#888' }}>
+          <strong style={{ color: '#b9ad9a' }}>Payment history:</strong>
+          {[...(sale.payments || [])].sort((a, b) => a.date.localeCompare(b.date)).map((p) => (
+            <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              <span>{p.date}</span>
+              <span style={{ color: '#D4A537' }}>GH₵ {num2(p.amount)}</span>
+              <span>{p.note || ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="modal-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        {owed > 0 && <button className="btn btn-ghost" onClick={markFullyPaid} style={{ borderColor: '#7a9a66', color: '#7a9a66' }}>Mark fully paid</button>}
+        <button className="btn btn-gold" onClick={submit} disabled={!amount || Number(amount) <= 0}>Log payment</button>
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
+  const [payModal, setPayModal] = useState(null); // sale record being paid
+
+  const totalOwed = sales.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.amount) || 0);
+    return s;
+  }, 0);
+
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
@@ -5561,6 +5718,12 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
       </div>
 
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed across {sales.filter((r) => (r.paymentStatus || 'paid') === 'credit' && calcOwed(r, Number(r.amount) || 0) > 0).length} sale(s).
+        </div>
+      )}
+
       <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
         Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)}
         + coop share GH₵ {num(coopCharge || 0, 2)} + other GH₵ {num(flockRunning || 0, 2)} + setup GH₵ {num(setup, 2)}).
@@ -5574,7 +5737,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {sales.map((r) => (
@@ -5585,21 +5748,47 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                 <td className="mono">{r.unitPrice != null ? num(r.unitPrice, 2) : '—'}</td>
                 <td className="mono">GH₵ {num(r.amount, 2)}</td>
                 <td>{r.buyer || '—'}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <CreditBadge sale={r} saleAmount={Number(r.amount) || 0} />
+                    {(r.paymentStatus || 'paid') === 'paid' && onUpdateSale && (
+                      <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                        onClick={() => onUpdateSale(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                    )}
+                    {(r.paymentStatus || 'paid') === 'credit' && onLogPayment && (
+                      <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal(r)}>Log payment</button>
+                    )}
+                  </div>
+                </td>
                 <td className="notes">{r.notes || ''}</td>
                 <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
               </tr>
             ))}
-            {sales.length === 0 && <tr><td colSpan={8} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
+            {sales.length === 0 && <tr><td colSpan={9} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={Number(payModal.amount) || 0}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onLogPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateSale(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateSale(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
     </>
   );
 }
 
 function SaleForm({ flock, onClose, onSave }) {
   const layer = flock.type === 'layer';
-  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '' });
+  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', paymentStatus: 'paid' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
   const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
@@ -5610,6 +5799,7 @@ function SaleForm({ flock, onClose, onSave }) {
       quantity: f.quantity === '' ? null : Number(f.quantity),
       unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
       amount, buyer: f.buyer || null, notes: f.notes || null,
+      paymentStatus: f.paymentStatus, payments: [],
     });
   }
   return (
@@ -5625,7 +5815,13 @@ function SaleForm({ flock, onClose, onSave }) {
         <Field label="Unit price (GH₵)"><input type="number" step="0.01" value={f.unitPrice} onChange={set('unitPrice')} /></Field>
         <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
-        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+        <Field label="Payment">
+          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
+            <option value="paid">Paid (cash / transfer)</option>
+            <option value="credit">Credit (pay later)</option>
+          </select>
+        </Field>
+        <Field label="Notes"><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -7100,6 +7296,86 @@ function inbreedingBadge(level) {
   return <span className="tag green">🟢 Clear</span>;
 }
 
+function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin, activeAnimals, goatLabel, onAddSale, onDeleteSale, onUpdateSale, onLogPayment, onInvoiceSale }) {
+  const [payModal, setPayModal] = useState(null);
+  const totalOwed = sales.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.price) || 0);
+    return s;
+  }, 0);
+  return (
+    <>
+      <div className="grid grid-4" style={{ marginBottom: 18 }}>
+        <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
+        <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
+        <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
+        <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
+      </div>
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from goat sales.
+        </div>
+      )}
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Sales</h3>
+        <button className="btn btn-green" onClick={onAddSale} disabled={!activeAnimals.length}>+ Record sale</button>
+      </div>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {[...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map((s) => (
+              <tr key={s.id}>
+                <td className="mono">{fmtDate(s.date)}</td>
+                <td>{goatLabel(s.animalId)}</td>
+                <td>{s.buyer || '—'}</td>
+                <td className="mono">{s.weightKg ? num(s.weightKg, 1) : '—'}</td>
+                <td className="mono">GH₵ {num(s.price, 2)}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <CreditBadge sale={s} saleAmount={Number(s.price) || 0} />
+                    {(s.paymentStatus || 'paid') === 'paid' && onUpdateSale && (
+                      <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                        onClick={() => onUpdateSale(s.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                    )}
+                    {(s.paymentStatus || 'paid') === 'credit' && onLogPayment && (
+                      <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal(s)}>Log payment</button>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onInvoiceSale(s, goatLabel(s.animalId))}>Invoice</button>
+                    <button className="link-btn rust" onClick={() => onDeleteSale(s.id)}>Delete</button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {sales.length === 0 && <tr><td colSpan={7} className="empty">No goat sales yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 14 }}>
+        Running goat costs (housing, mineral licks, general vet visits) are logged as expenses in
+        <strong> Whole Farm → Profit &amp; loss</strong> with enterprise set to "Goats" — they flow into this
+        margin automatically. Full CSV export for every goat dataset is in <strong>Whole Farm → Export</strong>.
+      </p>
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={Number(payModal.price) || 0}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onLogPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateSale(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateSale(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
+    </>
+  );
+}
+
 function GoatWorkspace({
   goats, farmProfile, reminders, expenses,
   onAddGoat, onUpdateGoat, onDeleteGoat,
@@ -7109,7 +7385,7 @@ function GoatWorkspace({
   onAddKidMortality, onDeleteKidMortality,
   onAddHealth, onDeleteHealth,
   onAddWeight, onDeleteWeight,
-  onAddSale, onDeleteSale,
+  onAddSale, onDeleteSale, onUpdateSale, onLogPayment,
   onAddReminder, onToggleReminder, onDeleteReminder,
   onInvoiceSale,
 }) {
@@ -7526,46 +7802,15 @@ function GoatWorkspace({
       )}
 
       {gtab === 'financials' && (
-        <>
-          <div className="grid grid-4" style={{ marginBottom: 18 }}>
-            <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
-            <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
-            <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
-            <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
-          </div>
-          <div className="panel-head" style={{ marginBottom: 14 }}>
-            <h3 style={{ fontSize: 18 }}>Sales</h3>
-            <button className="btn btn-green" onClick={() => setModal('sale')} disabled={!activeAnimals.length}>+ Record sale</button>
-          </div>
-          <div className="table-wrap">
-            <table className="data">
-              <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th></th></tr></thead>
-              <tbody>
-                {[...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map((s) => (
-                  <tr key={s.id}>
-                    <td className="mono">{fmtDate(s.date)}</td>
-                    <td>{goatLabel(s.animalId)}</td>
-                    <td>{s.buyer || '—'}</td>
-                    <td className="mono">{s.weightKg ? num(s.weightKg, 1) : '—'}</td>
-                    <td className="mono">GH₵ {num(s.price, 2)}</td>
-                    <td>
-                      <span style={{ display: 'flex', gap: 8 }}>
-                        <button className="link-btn" onClick={() => onInvoiceSale(s, goatLabel(s.animalId))}>Invoice</button>
-                        <button className="link-btn rust" onClick={() => onDeleteSale(s.id)}>Delete</button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {sales.length === 0 && <tr><td colSpan={6} className="empty">No goat sales yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <p className="stat-foot" style={{ marginTop: 14 }}>
-            Running goat costs (housing, mineral licks, general vet visits) are logged as expenses in
-            <strong> Whole Farm → Profit &amp; loss</strong> with enterprise set to "Goats" — they flow into this
-            margin automatically. Full CSV export for every goat dataset is in <strong>Whole Farm → Export</strong>.
-          </p>
-        </>
+        <GoatFinancialsPanel
+          sales={sales} revenue={revenue} purchaseCost={purchaseCost} healthCost={healthCost} margin={margin}
+          activeAnimals={activeAnimals} goatLabel={goatLabel}
+          onAddSale={() => setModal('sale')}
+          onDeleteSale={onDeleteSale}
+          onUpdateSale={onUpdateSale}
+          onLogPayment={onLogPayment}
+          onInvoiceSale={onInvoiceSale}
+        />
       )}
 
       {gtab === 'reminders' && (
@@ -8215,11 +8460,11 @@ function GoatWeightForm({ animals, onClose, onSave }) {
 }
 
 function GoatSaleForm({ animals, onClose, onSave }) {
-  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '' });
+  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '', paymentStatus: 'paid' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
     if (!f.animalId || f.price === '') return;
-    onSave({ ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price: Number(f.price) });
+    onSave({ ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price: Number(f.price), paymentStatus: f.paymentStatus, payments: [] });
   }
   return (
     <Modal title="Record goat sale" sub="Ghana goat prices spike around Christmas, Easter, funerals, and Eid — this builds your own seasonal price history." onClose={onClose}>
@@ -8229,6 +8474,12 @@ function GoatSaleForm({ animals, onClose, onSave }) {
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
         <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
         <Field label="Price (GH₵)"><input type="number" step="0.01" value={f.price} onChange={set('price')} /></Field>
+        <Field label="Payment">
+          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
+            <option value="paid">Paid (cash / transfer)</option>
+            <option value="credit">Credit (pay later)</option>
+          </select>
+        </Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -8253,6 +8504,7 @@ function FarmsWorkspace({
   onAddField, onUpdateField, onDeleteField,
   onAddReminder, onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
   onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale,
+  onUpdateCustomSale, onAddCustomSalePayment,
 }) {
   const { askConfirm } = useToastConfirm();
   const [activeFarmId, setActiveFarmId] = useState(farms[0]?.id || null);
@@ -8320,6 +8572,8 @@ function FarmsWorkspace({
           onDeleteFeedLog={(id) => onDeleteFeedLog(activeFarm.id, id)}
           onAddSale={(entry) => onAddSale(activeFarm.id, entry)}
           onDeleteSale={(id) => onDeleteSale(activeFarm.id, id)}
+          onUpdateSale={onUpdateCustomSale}
+          onLogPayment={onAddCustomSalePayment}
         />
       )}
 
@@ -8567,11 +8821,16 @@ function CustomFieldForm({ field, onClose, onSave }) {
 
 /* ---------------- Livestock farm detail (generic — any species) ---------------- */
 
-function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale }) {
+function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
   const [view, setView] = useState('overview');
   const [modal, setModal] = useState(null);
+  const [payModal, setPayModal] = useState(null); // { sale, saleAmount }
+  const { askConfirm } = useToastConfirm();
   const totalFeedCost = (farm.feedLog || []).reduce((s, e) => s + (Number(e.cost) || 0), 0);
   const totalSalesRevenue = (farm.salesLog || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalOwed = (farm.salesLog || []).reduce((s, e) => s + calcOwed(e, Number(e.amount) || 0), 0);
+
+  const sortedSales = [...(farm.salesLog || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   return (
     <>
@@ -8592,10 +8851,16 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
           </p>
           <div className="grid grid-4">
             <StatCard title="Headcount" value={farm.headcount != null ? num(farm.headcount) : '—'} tone="gold" />
-            <StatCard title="Feed Cost" value={`GHS ${num(totalFeedCost, 2)}`} />
-            <StatCard title="Sales Revenue" value={`GHS ${num(totalSalesRevenue, 2)}`} tone="green" />
+            <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} />
+            <StatCard title="Sales Revenue" value={`GH₵ ${num(totalSalesRevenue, 2)}`} tone="green" />
             <StatCard title="Health Entries" value={num((farm.healthLog || []).length)} />
           </div>
+          {totalOwed > 0 && (
+            <div className="alert-banner" style={{ marginTop: 14 }}>
+              ⚠ GH₵ {num(totalOwed, 2)} outstanding in credit sales —{' '}
+              <button className="link-btn" onClick={() => setView('sales')}>view sales</button>
+            </div>
+          )}
         </>
       )}
 
@@ -8613,12 +8878,58 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
           columns={[['date', 'Date'], ['feedType', 'Feed'], ['quantityKg', 'Qty (kg)'], ['cost', 'Cost (GHS)']]}
         />
       )}
+
       {view === 'sales' && (
-        <GenericLogView
-          title="Sales" farm={farm} entries={farm.salesLog || []}
-          onAdd={() => setModal('sale')} onDelete={onDeleteSale}
-          columns={[['date', 'Date'], ['quantity', 'Qty'], ['amount', 'Amount (GHS)'], ['buyer', 'Buyer']]}
-        />
+        <>
+          <div className="panel-head" style={{ marginBottom: 6 }}>
+            <h3 style={{ fontSize: 18 }}>Sales</h3>
+            <button className="btn btn-green" onClick={() => setModal('sale')}>+ Log sale</button>
+          </div>
+          {totalOwed > 0 && (
+            <div className="alert-banner" style={{ marginBottom: 10 }}>
+              ⚠ GH₵ {num(totalOwed, 2)} outstanding across credit sales
+            </div>
+          )}
+          {sortedSales.length === 0 ? (
+            <p className="empty" style={{ padding: '18px 0' }}>No sales logged yet.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Date</th><th>Buyer</th><th>Qty</th><th>Amount (GH₵)</th><th>Status</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedSales.map((s) => {
+                    const saleAmount = Number(s.amount) || 0;
+                    const owed = calcOwed(s, saleAmount);
+                    return (
+                      <tr key={s.id}>
+                        <td className="mono">{fmtDate(s.date)}</td>
+                        <td>{s.buyer || '—'}</td>
+                        <td>{s.quantity || '—'}</td>
+                        <td>GH₵ {num(saleAmount, 2)}</td>
+                        <td><CreditBadge sale={s} saleAmount={saleAmount} /></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {s.paymentStatus === 'credit' && owed > 0 && onLogPayment && (
+                            <button className="link-btn gold" style={{ marginRight: 8 }}
+                              onClick={() => setPayModal({ sale: s, saleAmount })}>
+                              Log payment
+                            </button>
+                          )}
+                          <button className="link-btn rust" onClick={async () => {
+                            if (await askConfirm('Delete this sale record?')) onDeleteSale(s.id);
+                          }}>Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {modal === 'health' && (
@@ -8638,14 +8949,60 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
         />
       )}
       {modal === 'sale' && (
-        <SimpleLogForm
-          title="Log a sale"
-          fields={[['date', 'Date', 'date'], ['quantity', 'Quantity', 'number'], ['amount', 'Amount (GHS)', 'number'], ['buyer', 'Buyer', 'text'], ['notes', 'Notes', 'textarea']]}
+        <CustomSaleForm
           onClose={() => setModal(null)}
           onSave={(entry) => { onAddSale(entry); setModal(null); }}
         />
       )}
+
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal.sale}
+          saleAmount={payModal.saleAmount}
+          buyerName={payModal.sale.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            if (onLogPayment) onLogPayment(farm.id, payModal.sale.id, payment);
+            if (fullyPaid && onUpdateSale) onUpdateSale(farm.id, payModal.sale.id, { paymentStatus: 'paid' });
+            setPayModal(null);
+          }}
+          onMarkPaid={() => {
+            if (onUpdateSale) onUpdateSale(farm.id, payModal.sale.id, { paymentStatus: 'paid' });
+            setPayModal(null);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+function CustomSaleForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), buyer: '', quantity: '', amount: '', notes: '', paymentStatus: 'paid' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (f.amount === '') return;
+    onSave({ ...f, quantity: f.quantity === '' ? null : Number(f.quantity), amount: Number(f.amount), paymentStatus: f.paymentStatus, payments: [] });
+  }
+  return (
+    <Modal title="Log a sale" onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
+        <Field label="Quantity"><input type="number" step="1" value={f.quantity} onChange={set('quantity')} /></Field>
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
+        <Field label="Payment">
+          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
+            <option value="paid">Paid (cash / transfer)</option>
+            <option value="credit">Credit (pay later)</option>
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+      </div>
+    </Modal>
   );
 }
 
