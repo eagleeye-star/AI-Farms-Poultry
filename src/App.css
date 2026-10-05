@@ -963,5 +963,137 @@ table.data td.notes { white-space: normal; min-width: 200px; color: var(--text-f
   .invoice-print {
     position: fixed; inset: 0; padding: 14mm; box-shadow: none;
   }
+  /* ============================================================
+   AI Farms — Light theme CSS patch
+   Merge this into your App.css (or any global stylesheet) AFTER
+   the existing :root block that defines the dark-mode defaults.
+   The ThemeContext sets data-theme="light" on <html> when the
+   user switches, so these selectors activate automatically.
+   ============================================================ */
+
+/* ---------- Light mode color tokens ---------- */
+:root[data-theme="light"] {
+  --bg:          #f5f0e8;
+  --bg2:         #fff;
+  --bg3:         #ede7d9;
+  --border:      rgba(0,0,0,0.1);
+  --text:        #1a1a1a;
+  --text-faint:  #555;
+  --gold:        #B8860B;
+  --green:       #2e7d32;
+  --rust:        #b91c1c;
+  --card-bg:     #fff;
+  --panel-bg:    #faf6ef;
+  --panel-border:rgba(184,134,11,0.2);
+  --chart-grid:  #d6cebb;
+  --input-bg:    #fff;
+  --input-border:#b8a67a;
+  --tag-bg:      rgba(0,0,0,0.06);
+}
+
+/* ---------- Page background & body text ---------- */
+[data-theme="light"] body,
+[data-theme="light"] #root {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ---------- App shell ---------- */
+[data-theme="light"] .sidebar {
+  background: #ede7d9;
+  border-right: 1px solid rgba(0,0,0,0.08);
+}
+[data-theme="light"] .sidebar nav a,
+[data-theme="light"] .sidebar nav button {
+  color: #3b2e0f;
+}
+[data-theme="light"] .sidebar nav a.active,
+[data-theme="light"] .sidebar nav button.active {
+  background: rgba(184,134,11,0.12);
+  color: var(--gold);
+}
+
+/* ---------- Header bar ---------- */
+[data-theme="light"] .header-bar {
+  background: rgba(255,255,255,0.9);
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+
+/* ---------- Cards & panels ---------- */
+[data-theme="light"] .panel,
+[data-theme="light"] .stat-card,
+[data-theme="light"] .card {
+  background: var(--panel-bg);
+  border-color: var(--panel-border);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .stat-card .val { color: #1a1a1a; }
+[data-theme="light"] .stat-card .foot { color: #666; }
+
+/* ---------- Tables ---------- */
+[data-theme="light"] .data { color: #1a1a1a; }
+[data-theme="light"] .data th { background: #f0e8d0; color: #5a4010; }
+[data-theme="light"] .data td { border-bottom-color: #e8dfc8; }
+[data-theme="light"] .data tr:hover td { background: #fdf6e3; }
+
+/* ---------- Form inputs ---------- */
+[data-theme="light"] input,
+[data-theme="light"] select,
+[data-theme="light"] textarea {
+  background: var(--input-bg);
+  border-color: var(--input-border);
+  color: #1a1a1a;
+}
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder { color: #aaa; }
+[data-theme="light"] input:focus,
+[data-theme="light"] select:focus,
+[data-theme="light"] textarea:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(184,134,11,0.12);
+}
+
+/* ---------- Buttons ---------- */
+[data-theme="light"] .btn { background: #e8dfc8; color: #3b2e0f; border-color: #c8b888; }
+[data-theme="light"] .btn:hover { background: #ddd3b6; }
+[data-theme="light"] .btn-gold { background: var(--gold); color: #fff; }
+[data-theme="light"] .btn-gold:hover { background: #9a6f00; }
+[data-theme="light"] .btn-ghost { background: transparent; border-color: var(--gold); color: var(--gold); }
+[data-theme="light"] .link-btn { color: var(--gold); }
+
+/* ---------- Segment buttons ---------- */
+[data-theme="light"] .field-seg button { background: #e8dfc8; color: #5a4010; border-color: #c8b888; }
+[data-theme="light"] .field-seg button.active { background: var(--gold); color: #fff; }
+
+/* ---------- Tags ---------- */
+[data-theme="light"] .tag { background: rgba(0,0,0,0.07); color: #3b2e0f; }
+[data-theme="light"] .tag.green { background: rgba(46,125,50,0.12); color: #2e7d32; }
+[data-theme="light"] .tag.gold { background: rgba(184,134,11,0.12); color: #8a6400; }
+[data-theme="light"] .tag.rust { background: rgba(185,28,28,0.1); color: #b91c1c; }
+
+/* ---------- Banners / alerts ---------- */
+[data-theme="light"] .stale-banner {
+  background: rgba(251,191,36,0.1);
+  border-color: rgba(184,134,11,0.3);
+  color: #5a4010;
+}
+
+/* ---------- Notification bell / search ---------- */
+[data-theme="light"] .notif-panel { background: #fff; border-color: rgba(0,0,0,0.1); }
+[data-theme="light"] .search-box { background: #fff; border-color: rgba(0,0,0,0.12); color: #1a1a1a; }
+
+/* ---------- Recharts charts in light mode ---------- */
+[data-theme="light"] .recharts-cartesian-grid line { stroke: #d6cebb; }
+[data-theme="light"] .recharts-tooltip-wrapper .recharts-tooltip-item { color: #1a1a1a; }
+
+/* ---------- Modal overlays ---------- */
+[data-theme="light"] .modal-box {
+  background: #fff;
+  border-color: rgba(0,0,0,0.1);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.18);
+}
+[data-theme="light"] .modal-head { border-bottom-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .modal-actions { border-top-color: rgba(0,0,0,0.08); background: #faf6ef; }
+
   .no-print { display: none !important; }
 }
