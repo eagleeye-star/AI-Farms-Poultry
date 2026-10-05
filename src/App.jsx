@@ -197,6 +197,10 @@ function freshData() {
     bsf: { batches: [] }, // black soldier fly larvae production — manure/waste to poultry protein
     ownerLoans: { loans: [], repayments: [] }, // owner-as-banker: real loans to the business, with interest
     customFarms: [], // user-defined farms beyond poultry/pepper/goats — any crop or livestock type
+    buyers: [],           // buyer phonebook — name, phone, what they buy
+    drugStock: [],        // medicine / vaccine inventory — doses on hand, expiry
+    expenseTemplates: [], // recurring expense templates
+    revenueGoals: [],     // profit / revenue targets per section + period
     pepper: defaultPepper(),
     goats: defaultGoats(),
     farmProfile: { farmName: '', location: '', email: '', phone: '' },
@@ -222,6 +226,7 @@ function dataRichness(d) {
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
+    (d.buyers || []).length + (d.drugStock || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
     (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
@@ -317,6 +322,10 @@ function migrate(saved) {
     staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
     invoices: saved.invoices || [],
+    buyers: saved.buyers || [],
+    drugStock: saved.drugStock || [],
+    expenseTemplates: saved.expenseTemplates || [],
+    revenueGoals: saved.revenueGoals || [],
     bsf: { batches: (saved.bsf && saved.bsf.batches) || [] },
     ownerLoans: {
       loans: (saved.ownerLoans && saved.ownerLoans.loans) || [],
@@ -754,6 +763,21 @@ function useNotifications({ data, activeFlock, feedDaysLeft, vaxPending,
       }
     }
 
+    /* ── 9. Data backup reminder (every 30 days) ── */
+    try {
+      const lastBackup = localStorage.getItem('aifarms_last_backup');
+      if (!lastBackup || daysBetween(lastBackup, today) >= 30) {
+        alerts.push({
+          id: 'backup-reminder',
+          level: 'info',
+          icon: '💾',
+          title: lastBackup ? `Backup overdue — ${daysBetween(lastBackup, today)} days since last backup` : 'No backup yet — protect your farm data',
+          body: 'Download a backup file so you can restore your data if anything goes wrong.',
+          action: { label: 'Backup now', workspace: '__backup__', tab: null },
+        });
+      }
+    } catch {}
+
     // Sort: critical first, then warning, then info
     const order = { critical: 0, warning: 1, info: 2 };
     return alerts.sort((a, b) => order[a.level] - order[b.level]);
@@ -1081,11 +1105,28 @@ function GlobalSearch({ data, flocks, onNavigate }) {
   );
 }
 
+/* ── Theme ── */
+const ThemeContext = createContext({ theme: 'dark', toggleTheme: () => {} });
+function useTheme() { return useContext(ThemeContext); }
+
 export default function AppRoot() {
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('aifarms_theme') || 'dark'; } catch { return 'dark'; }
+  });
+  const toggleTheme = () => setTheme((t) => {
+    const next = t === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('aifarms_theme', next); } catch {}
+    return next;
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
   return (
-    <ToastConfirmProvider>
-      <AppInner />
-    </ToastConfirmProvider>
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      <ToastConfirmProvider>
+        <AppInner />
+      </ToastConfirmProvider>
+    </ThemeContext.Provider>
   );
 }
 
@@ -1107,6 +1148,10 @@ function AppInner() {
   const [cloudReady, setCloudReady] = useState(isCloudConfigured);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
+  const [showBuyerBook, setShowBuyerBook] = useState(false);
+  const [showDrugStock, setShowDrugStock] = useState(false);
+  const [showGoalTracker, setShowGoalTracker] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     // Kept synchronous and un-debounced on purpose: this app's core promise
@@ -1431,6 +1476,7 @@ function AppInner() {
 
   // ── Navigation handler for notifications & search results ──
   function handleNavigate({ workspace: ws, tab }) {
+    if (ws === '__backup__') { backupData(); return; }
     setWorkspace(ws);
     setModal(null);
     // Tabs inside workspaces can't be set from here directly,
@@ -1718,6 +1764,80 @@ function AppInner() {
     setData((d) => touch({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
   }
 
+  /* ---- buyer phonebook ---- */
+  function saveBuyer(buyer) {
+    setData((d) => {
+      const exists = (d.buyers || []).some((b) => b.id === buyer.id);
+      const buyers = exists
+        ? (d.buyers || []).map((b) => (b.id === buyer.id ? buyer : b))
+        : [...(d.buyers || []), buyer];
+      return touch({ ...d, buyers });
+    });
+  }
+  function deleteBuyer(id) {
+    setData((d) => touch({ ...d, buyers: (d.buyers || []).filter((b) => b.id !== id) }));
+  }
+
+  /* ---- drug / medicine stock ---- */
+  function saveDrugStock(item) {
+    setData((d) => {
+      const exists = (d.drugStock || []).some((x) => x.id === item.id);
+      const drugStock = exists
+        ? (d.drugStock || []).map((x) => (x.id === item.id ? item : x))
+        : [...(d.drugStock || []), item];
+      return touch({ ...d, drugStock });
+    });
+  }
+  function adjustDrugStock(id, delta, note) {
+    setData((d) => {
+      const drugStock = (d.drugStock || []).map((x) => {
+        if (x.id !== id) return x;
+        const newQty = Math.max(0, (Number(x.quantityOnHand) || 0) + delta);
+        const adj = { id: newId(), date: todayISO(), delta, note: note || '', balanceAfter: newQty };
+        return { ...x, quantityOnHand: newQty, adjustments: [...(x.adjustments || []), adj] };
+      });
+      return touch({ ...d, drugStock });
+    });
+  }
+  function deleteDrugStock(id) {
+    setData((d) => touch({ ...d, drugStock: (d.drugStock || []).filter((x) => x.id !== id) }));
+  }
+
+  /* ---- expense templates ---- */
+  function saveExpenseTemplate(tpl) {
+    setData((d) => {
+      const exists = (d.expenseTemplates || []).some((t) => t.id === tpl.id);
+      const expenseTemplates = exists
+        ? (d.expenseTemplates || []).map((t) => (t.id === tpl.id ? tpl : t))
+        : [...(d.expenseTemplates || []), tpl];
+      return touch({ ...d, expenseTemplates });
+    });
+  }
+  function deleteExpenseTemplate(id) {
+    setData((d) => touch({ ...d, expenseTemplates: (d.expenseTemplates || []).filter((t) => t.id !== id) }));
+  }
+  function applyExpenseTemplate(tplId) {
+    const tpl = (data.expenseTemplates || []).find((t) => t.id === tplId);
+    if (!tpl) return;
+    const entry = { id: newId(), date: todayISO(), category: tpl.category, description: tpl.description, amount: tpl.amount, scope: tpl.scope || 'whole farm', notes: `From template: ${tpl.name}` };
+    setData((d) => touch({ ...d, expenses: [...(d.expenses || []), entry] }));
+    showToast(`Expense logged: ${tpl.name} — GH₵ ${num(tpl.amount, 2)}`, 'green');
+  }
+
+  /* ---- revenue goals ---- */
+  function saveRevenueGoal(goal) {
+    setData((d) => {
+      const exists = (d.revenueGoals || []).some((g) => g.id === goal.id);
+      const revenueGoals = exists
+        ? (d.revenueGoals || []).map((g) => (g.id === goal.id ? goal : g))
+        : [...(d.revenueGoals || []), goal];
+      return touch({ ...d, revenueGoals });
+    });
+  }
+  function deleteRevenueGoal(id) {
+    setData((d) => touch({ ...d, revenueGoals: (d.revenueGoals || []).filter((g) => g.id !== id) }));
+  }
+
   /* ---- cloud sync ---- */
 
   const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
@@ -1858,6 +1978,7 @@ function AppInner() {
     a.download = `ai-farms-backup-v${SCHEMA_VERSION}-${todayISO()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    try { localStorage.setItem('aifarms_last_backup', todayISO()); } catch {}
   }
   function restoreData(file) {
     const reader = new FileReader();
@@ -1900,36 +2021,91 @@ function AppInner() {
   function exportWeeklyReport() {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 7);
-    const recent = dailyLog.filter((r) => new Date(r.date) >= cutoff);
+    const recent = dailyLog.filter((r) => new Date(r.date) >= cutoff).sort((a, b) => new Date(a.date) - new Date(b.date));
     const weekMortality = recent.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
     const weekFeed = recent.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
     const weekEggs = recent.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
-    const lines = [
-      `${data.farmProfile.farmName || 'Farm'} — ${activeFlock.flockName} — Weekly Report`,
-      `Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}`,
-      '',
-      `Current flock: ${num(currentBirds)} birds (${num(survivalRate, 1)}% survival)`,
-      `Mortality (last 7 days logged): ${num(weekMortality)}`,
-      `Feed used (last 7 days logged): ${num(weekFeed, 1)} kg`,
-      `Eggs collected (last 7 days logged): ${num(weekEggs)}`,
-      `Feed store balance: ${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}`,
-      `Total feed cost to date: ${totalFeedCost ? 'GH₵ ' + num(totalFeedCost, 2) : '—'}`,
-      `Current feed phase: ${currentFeedPhase || '—'}`,
-      `Weeks to point-of-lay (standard): ${weeksToPOL > 0 ? weeksToPOL : 'reached'}`,
-      '',
-      'Vaccination status:',
-      ...vaxStatus.map((v) => `  - ${v.disease || v.vaccine}: last given ${fmtDate(v.date)}`),
-      '',
-      `Entries logged this week: ${recent.length}`,
-      ...recent.map((r) => `  ${fmtDate(r.date)} — closing ${num(r.closing)}, deaths ${num(r.mortality)}, feed ${r.feedGiven ?? '—'}kg, eggs ${r.eggs ?? '—'}${r.notes ? ' — ' + r.notes : ''}`),
-    ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ai-farms-weekly-report-${todayISO()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const farmName = data.farmProfile.farmName || 'AI Farms';
+    const phone = data.farmProfile.phone || '';
+    const location = data.farmProfile.location || activeFlock.location || '';
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${farmName} — Weekly Report</title>
+<style>
+  body { font-family: Arial, sans-serif; color: #1a1a1a; max-width: 720px; margin: 0 auto; padding: 32px 24px; font-size: 13px; }
+  h1 { font-size: 22px; margin: 0 0 2px; color: #B8860B; }
+  .sub { color: #555; font-size: 12px; margin: 0 0 18px; }
+  .section { margin: 18px 0 8px; font-size: 14px; font-weight: 700; color: #333; border-bottom: 1px solid #D4A537; padding-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .card { background: #fdf6e3; border: 1px solid #e8d9a0; border-radius: 8px; padding: 10px 14px; }
+  .card-val { font-size: 20px; font-weight: 700; color: #B8860B; }
+  .card-lbl { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+  th { background: #f9f0d3; color: #6b5120; text-align: left; padding: 6px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td { padding: 5px 8px; border-bottom: 1px solid #f0e8cc; }
+  tr:last-child td { border-bottom: none; }
+  .footer { margin-top: 28px; font-size: 11px; color: #aaa; border-top: 1px solid #eee; padding-top: 10px; }
+  @media print { body { padding: 12px; } }
+</style>
+</head>
+<body>
+<h1>${farmName} — ${activeFlock.flockName}</h1>
+<p class="sub">Weekly Report · Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}${location ? ' · ' + location : ''}${phone ? ' · ' + phone : ''}</p>
+
+<div class="section">Flock Summary</div>
+<div class="grid">
+  <div class="card"><div class="card-val">${num(currentBirds)}</div><div class="card-lbl">Birds on hand</div></div>
+  <div class="card"><div class="card-val">${num(survivalRate, 1)}%</div><div class="card-lbl">Survival rate</div></div>
+  <div class="card"><div class="card-val">${num(weekMortality)}</div><div class="card-lbl">Deaths this week</div></div>
+  <div class="card"><div class="card-val">${num(weekFeed, 1)} kg</div><div class="card-lbl">Feed used (7d)</div></div>
+  <div class="card"><div class="card-val">${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}</div><div class="card-lbl">Feed in store</div></div>
+  <div class="card"><div class="card-val">${num(weekEggs)}</div><div class="card-lbl">Eggs collected (7d)</div></div>
+  <div class="card"><div class="card-val">${currentFeedPhase || '—'}</div><div class="card-lbl">Feed phase</div></div>
+  <div class="card"><div class="card-val">GH₵ ${totalFeedCost ? num(totalFeedCost, 2) : '—'}</div><div class="card-lbl">Total feed cost</div></div>
+  <div class="card"><div class="card-val">${weeksToPOL > 0 ? weeksToPOL + ' wks' : 'Reached'}</div><div class="card-lbl">Weeks to POL</div></div>
+</div>
+
+<div class="section">Financials</div>
+<div class="grid">
+  <div class="card"><div class="card-val">GH₵ ${num(totalRevenue, 2)}</div><div class="card-lbl">Total revenue</div></div>
+  <div class="card"><div class="card-val">GH₵ ${num(flockCost, 2)}</div><div class="card-lbl">Total cost</div></div>
+  <div class="card"><div class="card-val" style="color:${flockMargin >= 0 ? '#2e7d32' : '#c62828'}">GH₵ ${num(flockMargin, 2)}</div><div class="card-lbl">Margin</div></div>
+</div>
+
+<div class="section">Vaccination Status</div>
+<table>
+  <thead><tr><th>Vaccine / Disease</th><th>Last Given</th></tr></thead>
+  <tbody>
+    ${vaxStatus.length ? vaxStatus.map((v) => `<tr><td>${v.disease || v.vaccine || '—'}</td><td>${fmtDate(v.date)}</td></tr>`).join('') : '<tr><td colspan="2" style="color:#aaa">No vaccinations logged</td></tr>'}
+  </tbody>
+</table>
+
+<div class="section">Daily Log — Last 7 Days</div>
+<table>
+  <thead><tr><th>Date</th><th>Closing</th><th>Deaths</th><th>Feed (kg)</th><th>Eggs</th><th>Notes</th></tr></thead>
+  <tbody>
+    ${recent.length ? recent.map((r) => `<tr>
+      <td>${fmtDate(r.date)}</td>
+      <td>${num(r.closing)}</td>
+      <td style="color:${Number(r.mortality) > 0 ? '#c62828' : 'inherit'}">${num(r.mortality)}</td>
+      <td>${r.feedGiven != null ? num(r.feedGiven, 1) : '—'}</td>
+      <td>${r.eggs != null ? num(r.eggs) : '—'}</td>
+      <td style="color:#666">${r.notes || ''}</td>
+    </tr>`).join('') : '<tr><td colspan="6" style="color:#aaa">No entries in last 7 days</td></tr>'}
+  </tbody>
+</table>
+
+<div class="footer">${farmName} · AI Farms Tracker · ${fmtDate(todayISO())} · Use File → Print / Save as PDF to save this report.</div>
+</body>
+</html>`;
+    const win = window.open('', '_blank');
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+      setTimeout(() => win.print(), 400);
+    }
   }
 
   function updateField(id, patch) {
@@ -2017,7 +2193,24 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
   }
   function addSpray(entry) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry] } }));
+    setData((d) => {
+      // Auto-deduct from pepper input stock if product name matches
+      let inputs = d.pepper?.inputs || [];
+      if (entry.product) {
+        const matchIdx = inputs.findIndex(
+          (inp) => inp.name?.toLowerCase().trim() === entry.product?.toLowerCase().trim()
+        );
+        if (matchIdx !== -1) {
+          const matched = inputs[matchIdx];
+          const used = Number(entry.quantityUsed) || 0;
+          if (used > 0) {
+            const newQty = Math.max(0, (Number(matched.quantityOnHand) || 0) - used);
+            inputs = inputs.map((inp, i) => i === matchIdx ? { ...inp, quantityOnHand: newQty } : inp);
+          }
+        }
+      }
+      return touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry], inputs } });
+    });
   }
   function addHarvest(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
@@ -2133,7 +2326,7 @@ function AppInner() {
         >💰 Financials</button>
       </div>
 
-      {/* ── Global search + notification bell ── */}
+      {/* ── Global search + notification bell + tools ── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px 14px', background: 'rgba(0,0,0,0.25)',
@@ -2141,7 +2334,72 @@ function AppInner() {
       }}>
         <GlobalSearch data={data} flocks={data.flocks || []} onNavigate={handleNavigate} />
         <NotificationBell alerts={notifications} onNavigate={handleNavigate} />
+        {/* WhatsApp quick-share */}
+        <button
+          title="Share farm summary via WhatsApp"
+          onClick={() => {
+            const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 7);
+            const recent7 = data.dailyLog.filter((r) => new Date(r.date) >= cutoff);
+            const w7 = recent7.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
+            const f7 = recent7.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
+            const e7 = recent7.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+            const msg = [
+              `🌾 *${data.farmProfile.farmName || 'AI Farms'} — Weekly Summary*`,
+              `📅 ${fmtDate(todayISO())} · ${activeFlock.flockName}`,
+              ``,
+              `🐔 Birds: ${num(currentBirds)} (${num(survivalRate, 1)}% survival)`,
+              `💀 Deaths (7d): ${num(w7)}`,
+              `🌾 Feed used (7d): ${num(f7, 1)} kg`,
+              `🥚 Eggs (7d): ${num(e7)}`,
+              `📦 Feed in store: ${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}`,
+              `💰 Revenue: GH₵ ${num(totalRevenue, 2)}`,
+              `📈 Margin: GH₵ ${num(flockMargin, 2)}`,
+            ].join('\n');
+            window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+          }}
+          style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 16, flexShrink: 0, lineHeight: 1 }}
+        >💬</button>
+        {/* Theme toggle */}
+        <button
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          onClick={toggleTheme}
+          style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#D4A537', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 16, flexShrink: 0, lineHeight: 1 }}
+        >{theme === 'dark' ? '☀️' : '🌙'}</button>
+        {/* Tool shortcuts */}
+        <button title="Buyer Phonebook" onClick={() => setShowBuyerBook(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>📒</button>
+        <button title="Medicine / Drug Stock" onClick={() => setShowDrugStock(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>💊</button>
+        <button title="Revenue Goals" onClick={() => setShowGoalTracker(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>🎯</button>
       </div>
+
+      {showBuyerBook && (
+        <BuyerPhonebook
+          buyers={data.buyers || []}
+          onSave={saveBuyer}
+          onDelete={deleteBuyer}
+          onClose={() => setShowBuyerBook(false)}
+        />
+      )}
+      {showDrugStock && (
+        <DrugStockPanel
+          items={data.drugStock || []}
+          onSave={saveDrugStock}
+          onAdjust={adjustDrugStock}
+          onDelete={deleteDrugStock}
+          onClose={() => setShowDrugStock(false)}
+        />
+      )}
+      {showGoalTracker && (
+        <RevenueGoalTracker
+          goals={data.revenueGoals || []}
+          data={data}
+          onSave={saveRevenueGoal}
+          onDelete={deleteRevenueGoal}
+          onClose={() => setShowGoalTracker(false)}
+        />
+      )}
 
       <SyncBar
         sync={sync}
@@ -2371,6 +2629,8 @@ function AppInner() {
           crackedValueLost={crackedValueLost}
           layDropAlert={layDropAlert}
           growerLayerMismatch={growerLayerMismatch}
+          totalGradeA={dailyLog.reduce((s, r) => s + (Number(r.gradeA) || 0), 0)}
+          totalGradeB={dailyLog.reduce((s, r) => s + (Number(r.gradeB) || 0), 0)}
         />
       )}
 
@@ -2644,6 +2904,9 @@ function AppInner() {
           onDeleteOwnerLoan={deleteOwnerLoan}
           onAddLoanRepayment={addLoanRepayment}
           onDeleteLoanRepayment={deleteLoanRepayment}
+          onSaveExpenseTemplate={saveExpenseTemplate}
+          onDeleteExpenseTemplate={deleteExpenseTemplate}
+          onApplyExpenseTemplate={applyExpenseTemplate}
         />
       )}
 
@@ -3188,8 +3451,10 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
         <Field label="Feed given (kg)"><input type="number" step="0.01" value={f.feedGiven} onChange={set('feedGiven')} /></Field>
         <Field label="Water given (L)"><input type="number" step="0.1" value={f.waterGiven} onChange={set('waterGiven')} /></Field>
         <Field label="Light hours"><input type="number" step="0.5" value={f.lightHours} onChange={set('lightHours')} /></Field>
-        <Field label="Eggs collected"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
+        <Field label="Eggs collected (total)"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
         <Field label="Eggs cracked/broken"><input type="number" value={f.eggsCracked} onChange={set('eggsCracked')} /></Field>
+        <Field label="Grade A eggs"><input type="number" value={f.gradeA ?? ''} onChange={set('gradeA')} placeholder="Large, clean" /></Field>
+        <Field label="Grade B eggs"><input type="number" value={f.gradeB ?? ''} onChange={set('gradeB')} placeholder="Small or stained" /></Field>
         <Field label="Medication / vaccine given" span2><input value={f.medication} onChange={set('medication')} /></Field>
         <Field label="Notes / observations" span2><textarea rows={3} value={f.notes} onChange={set('notes')} /></Field>
       </div>
@@ -3677,7 +3942,7 @@ function LayingEggsTab({
   eggLedger, eggsInStock, totalEggs, totalCracked,
   eggRevenue, eggRevenueToday, eggRevenueWeek, eggRevenueMonth,
   avgEggPrice, costPerEgg, eggMarginPerEgg, crackedValueLost,
-  layDropAlert, growerLayerMismatch,
+  layDropAlert, growerLayerMismatch, totalGradeA, totalGradeB,
 }) {
   const [chartWindow, setChartWindow] = useState(90);
   const windowed = chartWindow === 0 ? layTrendData : layTrendData.slice(-chartWindow);
@@ -3820,6 +4085,27 @@ function LayingEggsTab({
         <StatCard title="Cracked" value={num(totalCracked)} tone="rust" />
         <StatCard title="Sold" value={num(totalEggs - totalCracked - eggsInStock)} foot="pieces, lifetime" />
       </div>
+
+      {(totalGradeA > 0 || totalGradeB > 0) && (
+        <>
+          <p className="section-title">Egg grading</p>
+          <div className="grid grid-4" style={{ marginBottom: 14 }}>
+            <StatCard title="Grade A" value={num(totalGradeA)} tone="green" foot="large, clean" />
+            <StatCard title="Grade B" value={num(totalGradeB)} tone="gold" foot="small or stained" />
+            <StatCard
+              title="Grade A %"
+              value={totalGradeA + totalGradeB > 0 ? `${num((totalGradeA / (totalGradeA + totalGradeB)) * 100, 1)}%` : '—'}
+              tone="green"
+              foot="of graded eggs"
+            />
+            <StatCard
+              title="Ungraded"
+              value={num(Math.max(0, totalEggs - totalGradeA - totalGradeB - totalCracked))}
+              foot="no grade recorded"
+            />
+          </div>
+        </>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead><tr><th>Date</th><th>Event</th><th>Change</th><th>Balance after</th></tr></thead>
@@ -6095,12 +6381,25 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
     : when ? `${sync.message || 'Auto-saved to cloud'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : (user ? 'Auto-sync on — saving shortly' : 'Not synced yet this session');
 
+  const isOffline = !navigator.onLine;
+  const pendingSync = configured && (sync.status === 'error' || isOffline);
+
   return (
     <div className={`sync-bar${sync.status === 'error' ? ' error' : ''}`}>
       <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
       <span className="sync-label">
         {label}
         {user && <span className="sync-user"> · {user.email}</span>}
+        {pendingSync && (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 10,
+            background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.3)',
+            borderRadius: 20, padding: '1px 8px', fontSize: 11, color: '#fbbf24',
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24', display: 'inline-block' }} />
+            {isOffline ? 'Offline — sync pending' : 'Sync pending'}
+          </span>
+        )}
       </span>
       <span className="sync-actions">
         <button className="link-btn" onClick={onEditProfile}>Farm Profile</button>
@@ -9240,9 +9539,9 @@ function SimpleLogForm({ title, fields, onClose, onSave }) {
   );
 }
 
-function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice, onAddBsfBatch, onUpdateBsfBatch, onDeleteBsfBatch, onAddOwnerLoan, onUpdateOwnerLoan, onDeleteOwnerLoan, onAddLoanRepayment, onDeleteLoanRepayment }) {
+function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice, onAddBsfBatch, onUpdateBsfBatch, onDeleteBsfBatch, onAddOwnerLoan, onUpdateOwnerLoan, onDeleteOwnerLoan, onAddLoanRepayment, onDeleteLoanRepayment, onSaveExpenseTemplate, onDeleteExpenseTemplate, onApplyExpenseTemplate }) {
   const [modal, setModal] = useState(null);
-  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel' | 'bsf' | 'loans'
+  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel' | 'bsf' | 'loans' | 'templates'
   const [editingPayment, setEditingPayment] = useState(null);
   const [editingStaff, setEditingStaff] = useState(null);
   const [editingFuel, setEditingFuel] = useState(null);
@@ -9352,6 +9651,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         <button className={view === 'fuel' ? 'active' : ''} onClick={() => setView('fuel')}>Fuel</button>
         <button className={view === 'bsf' ? 'active' : ''} onClick={() => setView('bsf')}>BSF Larvae</button>
         <button className={view === 'loans' ? 'active' : ''} onClick={() => setView('loans')}>Owner Loans</button>
+        <button className={view === 'templates' ? 'active' : ''} onClick={() => setView('templates')}>Quick expenses</button>
         <button className={view === 'export' ? 'active' : ''} onClick={() => setView('export')}>Export</button>
       </div>
 
@@ -9528,6 +9828,15 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           onDelete={onDeleteOwnerLoan}
           onRepay={(loanId) => { setRepayingLoanId(loanId); setModal('repayment'); }}
           onDeleteRepayment={onDeleteLoanRepayment}
+        />
+      )}
+
+      {view === 'templates' && (
+        <ExpenseTemplatesView
+          templates={data.expenseTemplates || []}
+          onSave={onSaveExpenseTemplate}
+          onDelete={onDeleteExpenseTemplate}
+          onApply={onApplyExpenseTemplate}
         />
       )}
 
@@ -11510,6 +11819,541 @@ function CloudSetupScreen({ onDone, onCancel }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* =================== BUYER PHONEBOOK PANEL =================== */
+/* ============================================================= */
+function BuyerPhonebook({ buyers, onSave, onDelete, onClose }) {
+  const [editing, setEditing] = useState(null); // null | {} | existing buyer
+  const CATS = ['Poultry', 'Pepper', 'Eggs', 'Goats', 'Other'];
+
+  function blank() {
+    return { id: newId(), name: '', phone: '', category: 'Poultry', notes: '' };
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!editing.name.trim()) return;
+    onSave({ ...editing, name: editing.name.trim(), phone: editing.phone.trim() });
+    setEditing(null);
+  }
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex',
+    flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        {/* header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>📒</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Buyer Phonebook</span>
+          {!editing && (
+            <button onClick={() => setEditing(blank())}
+              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>
+              + Add
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10, lineHeight: 1 }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
+          {/* Add / Edit form */}
+          {editing && (
+            <form onSubmit={submit} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
+                {editing.id && buyers.find((b) => b.id === editing.id) ? 'Edit Buyer' : 'New Buyer'}
+              </p>
+              <div className="field">
+                <label>Name *</label>
+                <input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Buyer's name" />
+              </div>
+              <div className="field">
+                <label>Phone</label>
+                <input value={editing.phone} onChange={(e) => setEditing({ ...editing, phone: e.target.value })} placeholder="0244 000 000" type="tel" />
+              </div>
+              <div className="field">
+                <label>Buys</label>
+                <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                  {CATS.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>Notes</label>
+                <input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="e.g. Prefers live birds, pays cash" />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
+                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Buyer list */}
+          {buyers.length === 0 && !editing ? (
+            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>
+              No buyers saved yet. Tap + Add to record your first buyer.
+            </p>
+          ) : (
+            buyers.map((b) => (
+              <div key={b.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'rgba(212,165,55,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>👤</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>{b.name}</p>
+                  {b.phone && (
+                    <a href={`tel:${b.phone}`} style={{ color: '#D4A537', fontSize: 12, textDecoration: 'none' }}>{b.phone}</a>
+                  )}
+                  <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>
+                    {b.category}{b.notes ? ` · ${b.notes}` : ''}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  {b.phone && (
+                    <a href={`https://wa.me/${b.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer"
+                      style={{ background: '#25D366', color: '#fff', border: 'none', borderRadius: 7, padding: '5px 9px', fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>💬</a>
+                  )}
+                  <button onClick={() => setEditing({ ...b })}
+                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                  <button onClick={() => onDelete(b.id)}
+                    style={{ background: 'rgba(220,38,38,0.15)', border: '1px solid rgba(220,38,38,0.3)', color: '#f87171', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* =================== DRUG / VACCINE STOCK ==================== */
+/* ============================================================= */
+function DrugStockPanel({ items, onSave, onAdjust, onDelete, onClose }) {
+  const [editing, setEditing] = useState(null);
+  const [adjusting, setAdjusting] = useState(null); // { item, delta:'', note:'' }
+
+  function blankItem() {
+    return { id: newId(), name: '', category: 'Vaccine', quantityOnHand: '', unit: 'doses', reorderLevel: 5, expiryDate: '', notes: '', adjustments: [] };
+  }
+
+  function submitItem(e) {
+    e.preventDefault();
+    if (!editing.name.trim()) return;
+    onSave({ ...editing, quantityOnHand: Number(editing.quantityOnHand) || 0, reorderLevel: Number(editing.reorderLevel) || 5 });
+    setEditing(null);
+  }
+
+  function submitAdjust(e) {
+    e.preventDefault();
+    const delta = Number(adjusting.delta);
+    if (!delta) return;
+    onAdjust(adjusting.item.id, delta, adjusting.note);
+    setAdjusting(null);
+  }
+
+  function expiryColor(date) {
+    if (!date) return '#666';
+    const days = Math.ceil((new Date(date) - new Date()) / 86400000);
+    if (days < 0) return '#f87171';
+    if (days <= 30) return '#fbbf24';
+    return '#4ade80';
+  }
+
+  const CATS = ['Vaccine', 'Antibiotic', 'Vitamin', 'Dewormer', 'Disinfectant', 'Other'];
+  const UNITS = ['doses', 'ml', 'tablets', 'g', 'kg', 'sachets', 'bottles'];
+
+  const modal = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 1200 };
+  const sheet = { background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0', width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)', border: '1px solid rgba(212,165,55,0.2)' };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>💊</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Medicine & Vaccine Stock</span>
+          {!editing && !adjusting && (
+            <button onClick={() => setEditing(blankItem())}
+              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>+ Add</button>
+          )}
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10 }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
+          {/* Adjust form */}
+          {adjusting && (
+            <form onSubmit={submitAdjust} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>Adjust: {adjusting.item.name}</p>
+              <p style={{ margin: '0 0 10px', color: '#aaa', fontSize: 12 }}>Current: {adjusting.item.quantityOnHand} {adjusting.item.unit}</p>
+              <div className="field">
+                <label>Amount (+ to add, - to use)</label>
+                <input required type="number" value={adjusting.delta}
+                  onChange={(e) => setAdjusting({ ...adjusting, delta: e.target.value })}
+                  placeholder="e.g. -10 or +50" />
+              </div>
+              <div className="field">
+                <label>Note</label>
+                <input value={adjusting.note} onChange={(e) => setAdjusting({ ...adjusting, note: e.target.value })}
+                  placeholder="e.g. Vaccinated batch A" />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Apply</button>
+                <button type="button" className="btn" onClick={() => setAdjusting(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Add/Edit form */}
+          {editing && (
+            <form onSubmit={submitItem} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
+                {items.find((x) => x.id === editing.id) ? 'Edit Item' : 'New Item'}
+              </p>
+              <div className="field"><label>Name *</label><input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Newcastle Vaccine" /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div className="field">
+                  <label>Category</label>
+                  <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                    {CATS.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Unit</label>
+                  <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })}>
+                    {UNITS.map((u) => <option key={u}>{u}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div className="field"><label>Qty on hand</label><input type="number" min="0" value={editing.quantityOnHand} onChange={(e) => setEditing({ ...editing, quantityOnHand: e.target.value })} /></div>
+                <div className="field"><label>Reorder at</label><input type="number" min="0" value={editing.reorderLevel} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} /></div>
+              </div>
+              <div className="field"><label>Expiry date</label><input type="date" value={editing.expiryDate} onChange={(e) => setEditing({ ...editing, expiryDate: e.target.value })} /></div>
+              <div className="field"><label>Notes</label><input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Storage instructions, supplier…" /></div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
+                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Stock list */}
+          {items.length === 0 && !editing ? (
+            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>No medicines or vaccines tracked yet.</p>
+          ) : (
+            items.map((item) => {
+              const low = Number(item.quantityOnHand) <= Number(item.reorderLevel);
+              const expired = item.expiryDate && new Date(item.expiryDate) < new Date();
+              return (
+                <div key={item.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, color: '#fff', fontSize: 14 }}>{item.name}</span>
+                        <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.08)', color: '#aaa', borderRadius: 4, padding: '1px 6px' }}>{item.category}</span>
+                        {low && <span style={{ fontSize: 11, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', borderRadius: 4, padding: '1px 6px' }}>⚠ Low stock</span>}
+                        {expired && <span style={{ fontSize: 11, background: 'rgba(248,113,113,0.15)', color: '#f87171', borderRadius: 4, padding: '1px 6px' }}>Expired</span>}
+                      </div>
+                      <p style={{ margin: '3px 0 0', color: '#D4A537', fontWeight: 700, fontSize: 16 }}>
+                        {num(item.quantityOnHand)} <span style={{ fontSize: 12, color: '#888', fontWeight: 400 }}>{item.unit}</span>
+                      </p>
+                      {item.expiryDate && (
+                        <p style={{ margin: '2px 0 0', fontSize: 12, color: expiryColor(item.expiryDate) }}>
+                          Expires: {fmtDate(item.expiryDate)}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      <button onClick={() => setAdjusting({ item, delta: '', note: '' })}
+                        style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.25)', color: '#4ade80', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>±</button>
+                      <button onClick={() => setEditing({ ...item })}
+                        style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                      <button onClick={() => onDelete(item.id)}
+                        style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* ================== REVENUE GOAL TRACKER ==================== */
+/* ============================================================= */
+function RevenueGoalTracker({ goals, data, onSave, onDelete, onClose }) {
+  const [editing, setEditing] = useState(null);
+
+  const SECTIONS = ['Whole Farm', 'Poultry', 'Pepper', 'Goats', 'My Farms'];
+  const PERIODS = ['Monthly', 'Quarterly', 'Yearly'];
+
+  function blank() {
+    return { id: newId(), section: 'Whole Farm', period: 'Monthly', targetAmount: '', label: '', notes: '' };
+  }
+
+  // Compute actual revenue for each section from data
+  function getActual(section) {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+
+    switch (section) {
+      case 'Poultry': {
+        const sales = (data.salesLog || []).filter((s) => s.date >= monthStart);
+        return sales.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      }
+      case 'Pepper': {
+        const harvests = (data.pepper?.harvests || []).filter((h) => h.date >= monthStart);
+        return harvests.reduce((sum, h) => sum + ((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)), 0);
+      }
+      case 'Goats': {
+        const sales = [];
+        (data.goats?.herds || []).forEach((herd) => (herd.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) sales.push(s); }));
+        return sales.reduce((sum, s) => sum + (Number(s.price) || 0), 0);
+      }
+      case 'My Farms': {
+        const items = [];
+        (data.customLivestock || []).forEach((ls) => (ls.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) items.push(s); }));
+        return items.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      }
+      default: { // Whole Farm
+        const pSales = (data.salesLog || []).filter((s) => s.date >= monthStart).reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+        const pepRev = (data.pepper?.harvests || []).filter((h) => h.date >= monthStart).reduce((sum, h) => sum + ((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)), 0);
+        let goatRev = 0;
+        (data.goats?.herds || []).forEach((herd) => (herd.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) goatRev += Number(s.price) || 0; }));
+        let myFarmRev = 0;
+        (data.customLivestock || []).forEach((ls) => (ls.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) myFarmRev += Number(s.amount) || 0; }));
+        return pSales + pepRev + goatRev + myFarmRev;
+      }
+    }
+  }
+
+  function pct(actual, target) {
+    if (!target) return 0;
+    return Math.min(100, Math.round((actual / target) * 100));
+  }
+
+  function barColor(p) {
+    if (p >= 100) return '#4ade80';
+    if (p >= 60) return '#D4A537';
+    return '#f87171';
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!editing.targetAmount) return;
+    onSave({ ...editing, targetAmount: Number(editing.targetAmount) });
+    setEditing(null);
+  }
+
+  const modal = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 1200 };
+  const sheet = { background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0', width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)', border: '1px solid rgba(212,165,55,0.2)' };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>🎯</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Revenue Goals</span>
+          {!editing && (
+            <button onClick={() => setEditing(blank())}
+              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>+ Goal</button>
+          )}
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10 }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
+          {/* Goal form */}
+          {editing && (
+            <form onSubmit={submit} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
+                {goals.find((g) => g.id === editing.id) ? 'Edit Goal' : 'New Goal'}
+              </p>
+              <div className="field"><label>Label</label><input value={editing.label} onChange={(e) => setEditing({ ...editing, label: e.target.value })} placeholder="e.g. Q1 Broiler Target" /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div className="field">
+                  <label>Section</label>
+                  <select value={editing.section} onChange={(e) => setEditing({ ...editing, section: e.target.value })}>
+                    {SECTIONS.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Period</label>
+                  <select value={editing.period} onChange={(e) => setEditing({ ...editing, period: e.target.value })}>
+                    {PERIODS.map((p) => <option key={p}>{p}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="field"><label>Target (GH₵) *</label><input required type="number" min="0" value={editing.targetAmount} onChange={(e) => setEditing({ ...editing, targetAmount: e.target.value })} placeholder="e.g. 5000" /></div>
+              <div className="field"><label>Notes</label><input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Optional" /></div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
+                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {goals.length === 0 && !editing ? (
+            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>No goals set yet. Tap + Goal to add your first revenue target.</p>
+          ) : (
+            goals.map((goal) => {
+              const actual = getActual(goal.section);
+              const p = pct(actual, goal.targetAmount);
+              const color = barColor(p);
+              return (
+                <div key={goal.id} style={{ padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>
+                        {goal.label || `${goal.section} (${goal.period})`}
+                      </p>
+                      <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>{goal.section} · {goal.period}</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      <button onClick={() => setEditing({ ...goal })}
+                        style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                      <button onClick={() => onDelete(goal.id)}
+                        style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+                    </div>
+                  </div>
+                  {/* Progress bar */}
+                  <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 6, height: 8, marginBottom: 4, overflow: 'hidden' }}>
+                    <div style={{ width: `${p}%`, height: '100%', background: color, borderRadius: 6, transition: 'width 0.4s' }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                    <span style={{ color }}>{p}% achieved</span>
+                    <span style={{ color: '#888' }}>GH₵ {num(actual, 2)} / {num(goal.targetAmount, 2)}</span>
+                  </div>
+                  {goal.notes && <p style={{ margin: '4px 0 0', color: '#666', fontSize: 11 }}>{goal.notes}</p>}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* ================ EXPENSE TEMPLATES VIEW ==================== */
+/* ============================================================= */
+function ExpenseTemplatesView({ templates, onSave, onDelete, onApply }) {
+  const [editing, setEditing] = useState(null);
+  const CATS = ['Feed', 'Medicine', 'Fuel', 'Labour', 'Utilities', 'Maintenance', 'Supplies', 'Other'];
+  const SCOPES = ['whole farm', 'poultry', 'pepper', 'goats'];
+
+  function blank() {
+    return { id: newId(), name: '', category: 'Feed', description: '', amount: '', scope: 'whole farm', notes: '' };
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!editing.name.trim() || !editing.amount) return;
+    onSave({ ...editing, amount: Number(editing.amount) });
+    setEditing(null);
+  }
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <p className="section-title" style={{ margin: 0 }}>Quick Expense Templates</p>
+          <p className="stat-foot" style={{ margin: '4px 0 0' }}>Save recurring expenses so you can log them in one tap — no need to re-enter the details each time.</p>
+        </div>
+        {!editing && (
+          <button className="btn btn-gold" onClick={() => setEditing(blank())} style={{ flexShrink: 0 }}>+ Template</button>
+        )}
+      </div>
+
+      {editing && (
+        <form onSubmit={submit} className="panel" style={{ padding: 16, marginBottom: 18 }}>
+          <p style={{ margin: '0 0 12px', fontWeight: 700, color: '#D4A537', fontSize: 14 }}>
+            {templates.find((t) => t.id === editing.id) ? 'Edit Template' : 'New Template'}
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="field" style={{ gridColumn: '1/-1' }}>
+              <label>Template name *</label>
+              <input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Weekly feed top-up" />
+            </div>
+            <div className="field">
+              <label>Category</label>
+              <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                {CATS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Charge to</label>
+              <select value={editing.scope} onChange={(e) => setEditing({ ...editing, scope: e.target.value })}>
+                {SCOPES.map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ gridColumn: '1/-1' }}>
+              <label>Description</label>
+              <input value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="What it covers" />
+            </div>
+            <div className="field">
+              <label>Amount (GH₵) *</label>
+              <input required type="number" min="0" step="0.01" value={editing.amount} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
+            </div>
+            <div className="field">
+              <label>Notes</label>
+              <input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Optional" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save template</button>
+            <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {templates.length === 0 && !editing ? (
+        <div className="panel" style={{ padding: '32px 20px', textAlign: 'center' }}>
+          <p style={{ color: '#666', margin: 0, fontSize: 14 }}>No templates yet. Create one for any expense you log regularly.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {templates.map((tpl) => (
+            <div key={tpl.id} className="panel" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>{tpl.name}</p>
+                <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>
+                  {tpl.category} · {tpl.scope} · GH₵ {num(tpl.amount, 2)}
+                  {tpl.description ? ` — ${tpl.description}` : ''}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button
+                  onClick={() => onApply(tpl.id)}
+                  style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+                  + Log
+                </button>
+                <button onClick={() => setEditing({ ...tpl })}
+                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '6px 10px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                <button onClick={() => onDelete(tpl.id)}
+                  style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '6px 10px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
