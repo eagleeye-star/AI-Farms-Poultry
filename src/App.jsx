@@ -4647,6 +4647,7 @@ function PepperWorkspace({
       {modal === 'spray' && (
         <SprayForm
           fields={fields}
+          inputStock={pepper.inputs || []}
           defaultField={sprayPrefill?.fieldId || (scope === 'all' ? fields[0].id : scope)}
           prefill={sprayPrefill}
           onClose={() => { setModal(null); setSprayPrefill(null); }}
@@ -5619,23 +5620,39 @@ function SprayTab({ rows, fieldName, scopePhi, scopeResistance, onAdd }) {
   );
 }
 
-function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
+function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, onSave }) {
   const [f, setF] = useState({
     date: todayISO(), fieldId: defaultField, type: prefill?.type || 'Insecticide',
     product: prefill?.product || '', activeIngredient: '', rate: prefill?.rate || '',
-    cost: '', phiDays: '', notes: prefill?.notes || '',
+    quantityUsed: '', cost: '', phiDays: '', notes: prefill?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const safePreview = f.phiDays !== '' ? addDaysISO(f.date, f.phiDays) : null;
+
+  // When a stock product is selected, auto-fill active ingredient if available
+  function handleProductSelect(e) {
+    const name = e.target.value;
+    const matched = inputStock.find((i) => i.name === name);
+    setF((prev) => ({
+      ...prev,
+      product: name,
+      activeIngredient: matched?.activeIngredient || matched?.notes || prev.activeIngredient,
+    }));
+  }
+
   function submit() {
     if (!f.date || !f.fieldId) return;
     onSave({
       id: newId(), date: f.date, fieldId: f.fieldId, type: f.type,
       product: f.product || null, activeIngredient: f.activeIngredient || null, rate: f.rate || null,
+      quantityUsed: f.quantityUsed === '' ? null : Number(f.quantityUsed),
       cost: f.cost === '' ? null : Number(f.cost),
       phiDays: f.phiDays === '' ? null : Number(f.phiDays), notes: f.notes || null,
     });
   }
+
+  const stockNames = inputStock.map((i) => i.name).filter(Boolean);
+
   return (
     <Modal
       title={prefill ? 'Log spray — from programme' : 'Log spray / feed'}
@@ -5656,9 +5673,36 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
             {SPRAY_TYPES.map((t) => <option key={t}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Product"><input value={f.product} onChange={set('product')} placeholder="e.g. Imida Super" /></Field>
+        <Field label="Product">
+          {stockNames.length > 0 ? (
+            <select value={f.product} onChange={handleProductSelect}>
+              <option value="">— choose from stock —</option>
+              {stockNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              <option value="__other__">Other (type below)</option>
+            </select>
+          ) : null}
+          {(f.product === '__other__' || stockNames.length === 0) && (
+            <input
+              value={f.product === '__other__' ? '' : f.product}
+              onChange={(e) => setF({ ...f, product: e.target.value })}
+              placeholder="e.g. Priazox Plus"
+              style={{ marginTop: stockNames.length > 0 ? 6 : 0 }}
+            />
+          )}
+          {stockNames.length > 0 && f.product && f.product !== '__other__' && (() => {
+            const inp = inputStock.find((i) => i.name === f.product);
+            if (!inp) return null;
+            const qty = Number(inp.quantityOnHand) || 0;
+            return (
+              <span style={{ fontSize: 12, color: qty < 50 ? 'var(--rust)' : 'var(--text-faint)', marginTop: 4, display: 'block' }}>
+                Stock: {qty} {inp.unit || 'ml'} remaining
+              </span>
+            );
+          })()}
+        </Field>
         <Field label="Active ingredient"><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="e.g. Imidacloprid" /></Field>
         <Field label="Rate"><input value={f.rate} onChange={set('rate')} placeholder="e.g. 5ml / 15L" /></Field>
+        <Field label="Qty used (ml/g)"><input type="number" step="0.01" value={f.quantityUsed} onChange={set('quantityUsed')} placeholder="deducts from input stock" /></Field>
         <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
         <Field label="Pre-harvest interval (days)"><input type="number" value={f.phiDays} onChange={set('phiDays')} placeholder="from label" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
