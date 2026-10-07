@@ -12864,158 +12864,441 @@ function DrugStockPanel({ items, onSave, onAdjust, onDelete, onClose }) {
 }
 
 /* ============================================================= */
-/* ================== REVENUE GOAL TRACKER ==================== */
-/* ============================================================= */
+/* ═══════════════════════════════════════════════════════════════
+   ProfitGoalTracker  —  per-farm × per-period profit targets
+   ─ Period toggle: Month | Quarter | Year
+   ─ Per-farm cards: Poultry / Pepper / Goats
+   ─ Combined card at top aggregates all farms
+   ─ Costs include feed, meds, spray, purchases + petty costs
+   ─ Goals stored as { id, farm, period, target, notes }
+   ═══════════════════════════════════════════════════════════════ */
 function RevenueGoalTracker({ goals, data, onSave, onDelete, onClose }) {
-  const [editing, setEditing] = useState(null);
+  const now = new Date();
 
-  const SECTIONS = ['Whole Farm', 'Poultry', 'Pepper', 'Goats', 'My Farms'];
-  const PERIODS = ['Monthly', 'Quarterly', 'Yearly'];
+  // ── Period helpers ────────────────────────────────────────────
+  const PERIODS = [
+    { key: 'month',   label: 'Month' },
+    { key: 'quarter', label: 'Quarter' },
+    { key: 'year',    label: 'Year' },
+  ];
+  const [period, setPeriod] = useState('month');
+  const [editingFarm, setEditingFarm] = useState(null); // 'poultry'|'pepper'|'goat'|'combined'
+  const [editingPeriod, setEditingPeriod] = useState('month');
+  const [editTarget, setEditTarget] = useState('');
+  const [editNotes, setEditNotes] = useState('');
 
-  function blank() {
-    return { id: newId(), section: 'Whole Farm', period: 'Monthly', targetAmount: '', label: '', notes: '' };
-  }
-
-  // Compute actual revenue for each section from data
-  function getActual(section) {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-
-    switch (section) {
-      case 'Poultry': {
-        const sales = (data.salesLog || []).filter((s) => s.date >= monthStart);
-        return sales.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-      }
-      case 'Pepper': {
-        const harvests = (data.pepper?.harvests || []).filter((h) => h.date >= monthStart);
-        return harvests.reduce((sum, h) => sum + ((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)), 0);
-      }
-      case 'Goats': {
-        const sales = [];
-        (data.goats?.herds || []).forEach((herd) => (herd.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) sales.push(s); }));
-        return sales.reduce((sum, s) => sum + (Number(s.price) || 0), 0);
-      }
-      case 'My Farms': {
-        const items = [];
-        (data.customLivestock || []).forEach((ls) => (ls.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) items.push(s); }));
-        return items.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-      }
-      default: { // Whole Farm
-        const pSales = (data.salesLog || []).filter((s) => s.date >= monthStart).reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-        const pepRev = (data.pepper?.harvests || []).filter((h) => h.date >= monthStart).reduce((sum, h) => sum + ((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)), 0);
-        let goatRev = 0;
-        (data.goats?.herds || []).forEach((herd) => (herd.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) goatRev += Number(s.price) || 0; }));
-        let myFarmRev = 0;
-        (data.customLivestock || []).forEach((ls) => (ls.salesLog || []).forEach((s) => { if ((s.date || '') >= monthStart) myFarmRev += Number(s.amount) || 0; }));
-        return pSales + pepRev + goatRev + myFarmRev;
-      }
+  function periodRange(p) {
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-based
+    const q = Math.floor(m / 3); // 0-based quarter
+    if (p === 'month') {
+      const start = new Date(y, m, 1).toISOString().slice(0, 10);
+      const end   = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+      return { start, end };
     }
+    if (p === 'quarter') {
+      const start = new Date(y, q * 3, 1).toISOString().slice(0, 10);
+      const end   = new Date(y, q * 3 + 3, 0).toISOString().slice(0, 10);
+      return { start, end };
+    }
+    // year
+    return { start: `${y}-01-01`, end: `${y}-12-31` };
   }
 
-  function pct(actual, target) {
-    if (!target) return 0;
-    return Math.min(100, Math.round((actual / target) * 100));
+  function periodLabel(p) {
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const q = Math.floor(m / 3) + 1;
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (p === 'month') return `${monthNames[m]} ${y}`;
+    if (p === 'quarter') return `Q${q} ${y}`;
+    return `${y}`;
   }
 
+  const inRange = (date, p) => {
+    const { start, end } = periodRange(p);
+    return date >= start && date <= end;
+  };
+
+  // ── Petty cost helper ─────────────────────────────────────────
+  // pettyCosts use keys: 'poultry', 'goat', 'pepper__<fieldId>'
+  const pettyCostForFarm = (farmKey, p) => {
+    const { start, end } = periodRange(p);
+    return (data.pettyCosts || [])
+      .filter((c) => {
+        const d = c.date || '';
+        if (d < start || d > end) return false;
+        if (farmKey === 'poultry') return c.farm === 'poultry';
+        if (farmKey === 'goat')    return c.farm === 'goat';
+        if (farmKey === 'pepper')  return c.farm === 'pepper' || (c.farm || '').startsWith('pepper__');
+        return false;
+      })
+      .reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  };
+
+  // ── Actual figures per farm ───────────────────────────────────
+  function poultryFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const revenue = (data.sales || []).filter((s) => inP(s.date || '')).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const feedCost = (data.feed || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const medCost  = (data.meds || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const litterCost = (data.litter || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const expCost  = (data.expenses || []).filter((e) => e.scope === 'poultry' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('poultry', p);
+    const cost = feedCost + medCost + litterCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, feedCost, medCost, pettyCost };
+  }
+
+  function pepperFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const pp = data.pepper || {};
+    const revenue = (pp.harvests || []).filter((h) => inP(h.date || '')).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+    const sprayCost = (pp.sprays || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const expCost   = (data.expenses || []).filter((e) => e.scope === 'pepper' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('pepper', p);
+    const cost = sprayCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, sprayCost, pettyCost };
+  }
+
+  function goatFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const g = data.goats || {};
+    const revenue = (g.sales || []).filter((s) => inP(s.date || '')).reduce((s, r) => s + (Number(r.price) || 0), 0);
+    const healthCost = (g.health || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const purchaseCost = (g.animals || []).filter((a) => a.source === 'Purchased' && inP(a.dateIn || '')).reduce((s, a) => s + (Number(a.cost) || 0), 0);
+    const expCost   = (data.expenses || []).filter((e) => e.scope === 'goats' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('goat', p);
+    const cost = healthCost + purchaseCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, healthCost, purchaseCost, pettyCost };
+  }
+
+  // ── Goals lookup helpers ──────────────────────────────────────
+  function getGoal(farm, p) {
+    return (goals || []).find((g) => g.farm === farm && g.period === p) || null;
+  }
+  function goalTarget(farm, p) {
+    return getGoal(farm, p)?.target || 0;
+  }
+
+  // ── Progress helpers ──────────────────────────────────────────
+  function pct(profit, target) {
+    if (!target) return null;
+    return Math.min(150, Math.round((profit / target) * 100));
+  }
   function barColor(p) {
+    if (p === null) return '#444';
     if (p >= 100) return '#4ade80';
-    if (p >= 60) return '#D4A537';
+    if (p >= 60)  return '#D4A537';
     return '#f87171';
   }
 
-  function submit(e) {
-    e.preventDefault();
-    if (!editing.targetAmount) return;
-    onSave({ ...editing, targetAmount: Number(editing.targetAmount) });
-    setEditing(null);
+  // ── Save / delete ─────────────────────────────────────────────
+  function saveGoal(farm, p) {
+    const amt = parseFloat(editTarget);
+    if (isNaN(amt) || amt < 0) return;
+    const existing = getGoal(farm, p);
+    onSave({
+      id: existing?.id || newId(),
+      farm, period: p,
+      target: amt,
+      notes: editNotes.trim(),
+    });
+    setEditingFarm(null);
   }
 
-  const modal = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 1200 };
-  const sheet = { background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0', width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)', border: '1px solid rgba(212,165,55,0.2)' };
+  function openEdit(farm, p) {
+    const g = getGoal(farm, p);
+    setEditingFarm(farm);
+    setEditingPeriod(p);
+    setEditTarget(g?.target != null ? String(g.target) : '');
+    setEditNotes(g?.notes || '');
+  }
 
-  return (
-    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div style={sheet}>
-        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <span style={{ fontSize: 20, marginRight: 8 }}>🎯</span>
-          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Revenue Goals</span>
-          {!editing && (
-            <button onClick={() => setEditing(blank())}
-              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>+ Goal</button>
-          )}
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10 }}>✕</button>
+  // ── Farm config ───────────────────────────────────────────────
+  const FARMS = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537', getFigs: poultryFigures },
+    { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66', getFigs: pepperFigures },
+    { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8', getFigs: goatFigures },
+  ];
+
+  // Current period figures for all farms
+  const figures = {};
+  FARMS.forEach((f) => { figures[f.key] = f.getFigs(period); });
+  const combinedRevenue = FARMS.reduce((s, f) => s + figures[f.key].revenue, 0);
+  const combinedCost    = FARMS.reduce((s, f) => s + figures[f.key].cost, 0);
+  const combinedProfit  = combinedRevenue - combinedCost;
+  const combinedTarget  = goalTarget('combined', period);
+  const combinedPct     = pct(combinedProfit, combinedTarget);
+
+  // ── Sub-component: progress bar ───────────────────────────────
+  function ProgressBar({ profit, target, color }) {
+    const p = pct(profit, target);
+    const c = barColor(p);
+    return (
+      <div>
+        <div style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, height: 7, overflow: 'hidden', marginBottom: 4 }}>
+          <div style={{ width: `${Math.max(0, Math.min(100, p ?? 0))}%`, height: '100%', background: c, borderRadius: 6, transition: 'width 0.4s' }} />
         </div>
-
-        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
-          {/* Goal form */}
-          {editing && (
-            <form onSubmit={submit} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
-              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
-                {goals.find((g) => g.id === editing.id) ? 'Edit Goal' : 'New Goal'}
-              </p>
-              <div className="field"><label>Label</label><input value={editing.label} onChange={(e) => setEditing({ ...editing, label: e.target.value })} placeholder="e.g. Q1 Broiler Target" /></div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div className="field">
-                  <label>Section</label>
-                  <select value={editing.section} onChange={(e) => setEditing({ ...editing, section: e.target.value })}>
-                    {SECTIONS.map((s) => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Period</label>
-                  <select value={editing.period} onChange={(e) => setEditing({ ...editing, period: e.target.value })}>
-                    {PERIODS.map((p) => <option key={p}>{p}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="field"><label>Target (GH₵) *</label><input required type="number" min="0" value={editing.targetAmount} onChange={(e) => setEditing({ ...editing, targetAmount: e.target.value })} placeholder="e.g. 5000" /></div>
-              <div className="field"><label>Notes</label><input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Optional" /></div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
-                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
-              </div>
-            </form>
-          )}
-
-          {goals.length === 0 && !editing ? (
-            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>No goals set yet. Tap + Goal to add your first revenue target.</p>
-          ) : (
-            goals.map((goal) => {
-              const actual = getActual(goal.section);
-              const p = pct(actual, goal.targetAmount);
-              const color = barColor(p);
-              return (
-                <div key={goal.id} style={{ padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>
-                        {goal.label || `${goal.section} (${goal.period})`}
-                      </p>
-                      <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>{goal.section} · {goal.period}</p>
-                    </div>
-                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
-                      <button onClick={() => setEditing({ ...goal })}
-                        style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
-                      <button onClick={() => onDelete(goal.id)}
-                        style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
-                    </div>
-                  </div>
-                  {/* Progress bar */}
-                  <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 6, height: 8, marginBottom: 4, overflow: 'hidden' }}>
-                    <div style={{ width: `${p}%`, height: '100%', background: color, borderRadius: 6, transition: 'width 0.4s' }} />
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                    <span style={{ color }}>{p}% achieved</span>
-                    <span style={{ color: '#888' }}>GH₵ {num(actual, 2)} / {num(goal.targetAmount, 2)}</span>
-                  </div>
-                  {goal.notes && <p style={{ margin: '4px 0 0', color: '#666', fontSize: 11 }}>{goal.notes}</p>}
-                </div>
-              );
-            })
-          )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+          <span style={{ color: c }}>{p !== null ? `${p}% of target` : 'No target set'}</span>
+          {target > 0 && <span style={{ color: '#777' }}>GH₵ {num(profit, 2)} / {num(target, 2)}</span>}
         </div>
       </div>
-    </div>
+    );
+  }
+
+  // ── Edit modal ────────────────────────────────────────────────
+  function EditModal() {
+    if (!editingFarm) return null;
+    const farmObj = editingFarm === 'combined' ? { label: '🎯 Combined', color: '#D4A537' } : FARMS.find((f) => f.key === editingFarm);
+    const existing = getGoal(editingFarm, editingPeriod);
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+        onClick={(e) => { if (e.target === e.currentTarget) setEditingFarm(null); }}>
+        <div style={{ background: '#222', borderRadius: 14, padding: 20, width: '100%', maxWidth: 360, border: `1px solid ${farmObj?.color || '#D4A537'}44` }}>
+          <div style={{ fontWeight: 700, color: farmObj?.color || '#D4A537', fontSize: 15, marginBottom: 4 }}>
+            {farmObj?.label} — {PERIODS.find((p) => p.key === editingPeriod)?.label} Target
+          </div>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 14 }}>{periodLabel(editingPeriod)}</div>
+
+          <div className="field" style={{ marginBottom: 10 }}>
+            <label>Profit target (GH₵)</label>
+            <input type="number" min="0" step="0.01" placeholder="e.g. 5000"
+              value={editTarget} onChange={(e) => setEditTarget(e.target.value)}
+              autoFocus
+              style={{ width: '100%', background: '#2a2a2a', border: `1px solid ${farmObj?.color || '#D4A537'}44`, borderRadius: 7, padding: '8px 10px', color: '#fff', fontSize: 14, boxSizing: 'border-box' }}
+            />
+          </div>
+          <div className="field" style={{ marginBottom: 16 }}>
+            <label>Notes (optional)</label>
+            <input type="text" placeholder="e.g. After feed deductions"
+              value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
+              style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, padding: '8px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => saveGoal(editingFarm, editingPeriod)}
+              disabled={!(parseFloat(editTarget) >= 0)}
+              style={{ flex: 1, padding: '9px 0', borderRadius: 8, border: 'none', background: farmObj?.color || '#D4A537', color: '#000', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+              Save target
+            </button>
+            {existing && (
+              <button onClick={() => { onDelete(existing.id); setEditingFarm(null); }}
+                style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.1)', color: '#f87171', fontSize: 13, cursor: 'pointer' }}>
+                Remove
+              </button>
+            )}
+            <button onClick={() => setEditingFarm(null)}
+              style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#aaa', fontSize: 13, cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <EditModal />
+      <div style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1200,
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div style={{
+          background: '#1e1e1e', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 680,
+          maxHeight: '93vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          boxShadow: '0 -8px 32px rgba(0,0,0,0.6)',
+        }}>
+          {/* ── Header ── */}
+          <div style={{ padding: '16px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#D4A537' }}>🎯 Profit Goals</h2>
+              <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', padding: '2px 6px' }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#777', marginTop: 2 }}>
+              Revenue − costs (feed · meds · spray · running expenses)
+            </div>
+          </div>
+
+          {/* ── Period toggle ── */}
+          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+            {PERIODS.map((p) => (
+              <button key={p.key} onClick={() => setPeriod(p.key)} style={{
+                flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
+                background: period === p.key ? 'rgba(212,165,55,0.1)' : 'transparent',
+                borderBottom: period === p.key ? '2px solid #D4A537' : '2px solid transparent',
+                color: period === p.key ? '#D4A537' : '#666',
+                fontWeight: period === p.key ? 700 : 400, fontSize: 13,
+              }}>
+                {p.label}
+                <span style={{ display: 'block', fontSize: 10, color: period === p.key ? '#D4A537aa' : '#444', fontWeight: 400, marginTop: 1 }}>
+                  {periodLabel(p.key)}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* ── Scrollable body ── */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 24px' }}>
+
+            {/* ── Combined card ── */}
+            <div style={{
+              background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.25)',
+              borderRadius: 12, padding: '14px 16px', marginBottom: 14,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#D4A537', fontSize: 15 }}>🎯 All Farms Combined</div>
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{periodLabel(period)}</div>
+                </div>
+                <button onClick={() => openEdit('combined', period)} style={{
+                  background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.3)',
+                  color: '#D4A537', borderRadius: 7, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                }}>
+                  {combinedTarget > 0 ? '✏️ Edit target' : '+ Set target'}
+                </button>
+              </div>
+
+              {/* 3-column stat row */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+                {[
+                  { label: 'Revenue', value: combinedRevenue, color: '#4ade80' },
+                  { label: 'Total Costs', value: combinedCost, color: '#f87171' },
+                  { label: 'Profit', value: combinedProfit, color: combinedProfit >= 0 ? '#4ade80' : '#f87171' },
+                ].map((s) => (
+                  <div key={s.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, color: '#777', marginBottom: 3 }}>{s.label}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: s.color }}>GH₵ {num(s.value, 2)}</div>
+                  </div>
+                ))}
+              </div>
+
+              <ProgressBar profit={combinedProfit} target={combinedTarget} />
+              {combinedTarget > 0 && (
+                <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
+                  Target: GH₵ {num(combinedTarget, 2)} · Remaining: GH₵ {num(Math.max(0, combinedTarget - combinedProfit), 2)}
+                </div>
+              )}
+            </div>
+
+            {/* ── Per-farm cards ── */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {FARMS.map((farm) => {
+                const figs = figures[farm.key];
+                const target = goalTarget(farm.key, period);
+                const p = pct(figs.profit, target);
+                return (
+                  <div key={farm.key} style={{
+                    background: 'rgba(255,255,255,0.03)', border: `1px solid ${farm.color}22`,
+                    borderRadius: 12, padding: '14px 16px',
+                    borderLeft: `3px solid ${farm.color}`,
+                  }}>
+                    {/* Farm header */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: farm.color, fontSize: 14 }}>{farm.label}</div>
+                        <div style={{ fontSize: 11, color: '#555', marginTop: 1 }}>{periodLabel(period)}</div>
+                      </div>
+                      <button onClick={() => openEdit(farm.key, period)} style={{
+                        background: `${farm.color}18`, border: `1px solid ${farm.color}33`,
+                        color: farm.color, borderRadius: 7, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                      }}>
+                        {target > 0 ? '✏️ Edit' : '+ Target'}
+                      </button>
+                    </div>
+
+                    {/* Stat row */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 10 }}>
+                      {[
+                        { label: 'Revenue', value: figs.revenue, color: '#4ade80' },
+                        { label: 'Costs', value: figs.cost, color: '#f87171' },
+                        { label: 'Profit', value: figs.profit, color: figs.profit >= 0 ? '#4ade80' : '#f87171' },
+                      ].map((s) => (
+                        <div key={s.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 7, padding: '7px 8px', textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: '#666', marginBottom: 2 }}>{s.label}</div>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: s.color }}>GH₵ {num(s.value, 2)}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Cost breakdown (collapsible via hover — just show inline small) */}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                      {farm.key === 'poultry' && [
+                        { label: 'Feed', val: figs.feedCost },
+                        { label: 'Meds', val: figs.medCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                      {farm.key === 'pepper' && [
+                        { label: 'Spray', val: figs.sprayCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                      {farm.key === 'goat' && [
+                        { label: 'Purchases', val: figs.purchaseCost },
+                        { label: 'Health', val: figs.healthCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Progress bar */}
+                    <ProgressBar profit={figs.profit} target={target} />
+
+                    {/* Notes */}
+                    {getGoal(farm.key, period)?.notes && (
+                      <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>📝 {getGoal(farm.key, period).notes}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── All-period targets summary ── */}
+            <div style={{ marginTop: 20, padding: '14px 16px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12 }}>
+              <div style={{ fontSize: 12, color: '#777', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>All targets at a glance</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
+                <div style={{ fontSize: 10, color: '#555', padding: '4px 6px', fontWeight: 700 }}></div>
+                {PERIODS.map((p) => <div key={p.key} style={{ fontSize: 10, color: '#D4A537', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>{p.label}</div>)}
+              </div>
+              {[{ key: 'combined', label: '🎯 Combined' }, ...FARMS.map((f) => ({ key: f.key, label: f.label }))].map((row, i) => (
+                <div key={row.key} style={{
+                  display: 'grid', gridTemplateColumns: '1fr repeat(3, 1fr)',
+                  background: i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent',
+                  borderRadius: 6,
+                }}>
+                  <div style={{ fontSize: 12, color: '#aaa', padding: '6px 6px', fontWeight: 600 }}>{row.label}</div>
+                  {PERIODS.map((p) => {
+                    const t = goalTarget(row.key, p.key);
+                    return (
+                      <div key={p.key} onClick={() => openEdit(row.key, p.key)}
+                        style={{ fontSize: 11, color: t > 0 ? '#D4A537' : '#444', padding: '6px 4px', textAlign: 'center', cursor: 'pointer', borderRadius: 4 }}
+                        title={`Edit ${row.label} ${p.label} target`}>
+                        {t > 0 ? `GH₵ ${num(t, 0)}` : '—'}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              <div style={{ fontSize: 10, color: '#555', marginTop: 8 }}>Tap any cell to set or edit that target.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
