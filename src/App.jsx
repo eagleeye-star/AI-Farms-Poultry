@@ -202,6 +202,7 @@ function freshData() {
     expenseTemplates: [], // recurring expense templates
     revenueGoals: [],     // profit / revenue targets per section + period
     dailyTasks: [],       // farm day-plan tasks — date, text, done flag
+    pettyCosts: [],       // petty / running costs per farm — date, farm, item, amount
     pepper: defaultPepper(),
     goats: defaultGoats(),
     farmProfile: { farmName: '', location: '', email: '', phone: '' },
@@ -227,7 +228,7 @@ function dataRichness(d) {
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
-    (d.buyers || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length +
+    (d.buyers || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length + (d.pettyCosts || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
     (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
@@ -328,6 +329,7 @@ function migrate(saved) {
     expenseTemplates: saved.expenseTemplates || [],
     revenueGoals: saved.revenueGoals || [],
     dailyTasks: saved.dailyTasks || [],
+    pettyCosts: saved.pettyCosts || [],
     bsf: { batches: (saved.bsf && saved.bsf.batches) || [] },
     ownerLoans: {
       loans: (saved.ownerLoans && saved.ownerLoans.loans) || [],
@@ -1154,6 +1156,7 @@ function AppInner() {
   const [showDrugStock, setShowDrugStock] = useState(false);
   const [showGoalTracker, setShowGoalTracker] = useState(false);
   const [showDailyTasks, setShowDailyTasks] = useState(false);
+  const [showPettyCosts, setShowPettyCosts] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -1863,6 +1866,14 @@ function AppInner() {
     setData((d) => touch({ ...d, dailyTasks: (d.dailyTasks || []).filter((t) => t.id !== id) }));
   }
 
+  /* ---- petty / running costs ---- */
+  function addPettyCost(entry) {
+    setData((d) => touch({ ...d, pettyCosts: [...(d.pettyCosts || []), { ...entry, id: newId() }] }));
+  }
+  function deletePettyCost(id) {
+    setData((d) => touch({ ...d, pettyCosts: (d.pettyCosts || []).filter((c) => c.id !== id) }));
+  }
+
   /* ---- cloud sync ---- */
 
   const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
@@ -2427,6 +2438,15 @@ function AppInner() {
             </button>
           );
         })()}
+        {/* Running / Petty Costs */}
+        <button
+          title="Running Costs — petty expenses per farm"
+          onClick={() => setShowPettyCosts(true)}
+          style={{
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+          }}
+        >🧾</button>
       </div>
 
       {showBuyerBook && (
@@ -2462,6 +2482,14 @@ function AppInner() {
           onToggle={toggleDailyTask}
           onDelete={deleteDailyTask}
           onClose={() => setShowDailyTasks(false)}
+        />
+      )}
+      {showPettyCosts && (
+        <PettyCostPanel
+          costs={data.pettyCosts || []}
+          onAdd={addPettyCost}
+          onDelete={deletePettyCost}
+          onClose={() => setShowPettyCosts(false)}
         />
       )}
 
@@ -4817,6 +4845,12 @@ function PepperDashboard({
         <StatCard title="Avg Price" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="per kg sold" />
       </div>
 
+      {/* Payment mode breakdown — pepper */}
+      {(() => {
+        const pm = calcPayModeTotals(harvestScoped, (h) => (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0));
+        return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />;
+      })()}
+
       <div className="panel" style={{ marginTop: 20 }}>
         <div className="panel-head"><h3>Alerts &amp; actions</h3></div>
         {alerts.length === 0 ? (
@@ -5882,16 +5916,27 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
 }
 
 function HarvestForm({ fields, defaultField, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '', paymentStatus: 'paid' });
+  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const rev = (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0);
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - rev) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
   function submit() {
     if (!f.date || !f.fieldId || f.weightKg === '') return;
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
     onSave({
       id: newId(), date: f.date, fieldId: f.fieldId, weightKg: Number(f.weightKg),
       grade: f.grade || null, pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg),
       buyer: f.buyer || null, notes: f.notes || null,
-      paymentStatus: f.paymentStatus, payments: [],
+      cashAmount: hasAnySplit ? cash : rev,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
     });
   }
   return (
@@ -5912,17 +5957,25 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
         <Field label="Price per kg (GH₵)"><input type="number" step="0.01" value={f.pricePerKg} onChange={set('pricePerKg')} /></Field>
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, etc." /></Field>
         <Field label="Revenue (auto)"><input value={rev ? `GH₵ ${num(rev, 2)}` : '—'} disabled /></Field>
-        <Field label="Payment">
-          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
-            <option value="paid">Paid (cash / transfer)</option>
-            <option value="credit">Credit (pay later)</option>
-          </select>
-        </Field>
+      </div>
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ revenue GH₵ {num(rev, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" onClick={submit}>Save harvest</button>
+        <button className="btn btn-green" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save harvest</button>
       </div>
     </Modal>
   );
@@ -6137,6 +6190,54 @@ function calcOwed(sale, saleAmount) {
   return Math.max(0, (saleAmount || 0) - paid);
 }
 
+/**
+ * Sum cash / momo / credit across an array of sale or harvest records.
+ * Works for both old records (paymentStatus 'paid'/'credit') and new ones
+ * with explicit cashAmount / momoAmount / creditAmount fields.
+ * `getTotal(r)` extracts the total sale value from one record.
+ */
+function calcPayModeTotals(records, getTotal) {
+  let cash = 0, momo = 0, credit = 0;
+  records.forEach((r) => {
+    const total = Number(getTotal(r)) || 0;
+    if (r.cashAmount != null || r.momoAmount != null || r.creditAmount != null) {
+      // New-style: explicit split
+      cash   += Number(r.cashAmount)   || 0;
+      momo   += Number(r.momoAmount)   || 0;
+      credit += Number(r.creditAmount) || 0;
+    } else {
+      // Old-style: paymentStatus binary
+      if ((r.paymentStatus || 'paid') === 'credit') credit += total;
+      else cash += total; // treat old "paid" as cash
+    }
+  });
+  return { cash, momo, credit };
+}
+
+/** A row of Cash / MoMo / Credit breakdown tiles */
+function PayModeBreakdown({ cash, momo, credit }) {
+  const total = cash + momo + credit;
+  if (total === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+      {[
+        { label: '💵 Cash', val: cash, color: '#6abf6a' },
+        { label: '📱 MoMo', color: '#D4A537', val: momo },
+        { label: '📋 Credit', val: credit, color: credit > 0 ? '#e05c5c' : '#6abf6a' },
+      ].map(({ label, val, color }) => (
+        <div key={label} style={{
+          flex: 1, minWidth: 110, background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${color}44`, borderRadius: 8, padding: '8px 12px',
+        }}>
+          <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>{label}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color }}>{`GH₵ ${num(val, 2)}`}</div>
+          {total > 0 && <div style={{ fontSize: 10, color: '#555' }}>{Math.round((val/total)*100)}% of revenue</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Small badge: Paid / Credit / Part-paid */
 function CreditBadge({ sale, saleAmount }) {
   const status = sale.paymentStatus || 'paid';
@@ -6228,6 +6329,9 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
       </div>
 
+      {/* Payment mode breakdown */}
+      {(() => { const pm = calcPayModeTotals(sales, (r) => r.amount); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
+
       {totalOwed > 0 && (
         <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
           ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed across {sales.filter((r) => (r.paymentStatus || 'paid') === 'credit' && calcOwed(r, Number(r.amount) || 0) > 0).length} sale(s).
@@ -6309,18 +6413,29 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
 
 function SaleForm({ flock, onClose, onSave }) {
   const layer = flock.type === 'layer';
-  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', paymentStatus: 'paid' });
+  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
   const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - amount) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
   function submit() {
     if (!f.date || (f.quantity === '' && f.amount === '')) return;
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
     onSave({
       id: newId(), date: f.date, item: f.item,
       quantity: f.quantity === '' ? null : Number(f.quantity),
       unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
       amount, buyer: f.buyer || null, notes: f.notes || null,
-      paymentStatus: f.paymentStatus, payments: [],
+      cashAmount: hasAnySplit ? cash : amount,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
     });
   }
   return (
@@ -6336,17 +6451,25 @@ function SaleForm({ flock, onClose, onSave }) {
         <Field label="Unit price (GH₵)"><input type="number" step="0.01" value={f.unitPrice} onChange={set('unitPrice')} /></Field>
         <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
-        <Field label="Payment">
-          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
-            <option value="paid">Paid (cash / transfer)</option>
-            <option value="credit">Credit (pay later)</option>
-          </select>
-        </Field>
+      </div>
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split the total across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
         <Field label="Notes"><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ sale amount GH₵ {num(amount, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save sale</button>
       </div>
     </Modal>
   );
@@ -7853,6 +7976,10 @@ function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin,
         <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
         <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
       </div>
+
+      {/* Payment mode breakdown */}
+      {(() => { const pm = calcPayModeTotals(sales, (r) => r.price); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
+
       {totalOwed > 0 && (
         <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
           ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from goat sales.
@@ -9013,11 +9140,26 @@ function GoatWeightForm({ animals, onClose, onSave }) {
 }
 
 function GoatSaleForm({ animals, onClose, onSave }) {
-  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '', paymentStatus: 'paid' });
+  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const price = Number(f.price) || 0;
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - price) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
   function submit() {
     if (!f.animalId || f.price === '') return;
-    onSave({ ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price: Number(f.price), paymentStatus: f.paymentStatus, payments: [] });
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
+    onSave({
+      ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price,
+      cashAmount: hasAnySplit ? cash : price,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
+    });
   }
   return (
     <Modal title="Record goat sale" sub="Ghana goat prices spike around Christmas, Easter, funerals, and Eid — this builds your own seasonal price history." onClose={onClose}>
@@ -9027,17 +9169,25 @@ function GoatSaleForm({ animals, onClose, onSave }) {
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
         <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
         <Field label="Price (GH₵)"><input type="number" step="0.01" value={f.price} onChange={set('price')} /></Field>
-        <Field label="Payment">
-          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
-            <option value="paid">Paid (cash / transfer)</option>
-            <option value="credit">Credit (pay later)</option>
-          </select>
-        </Field>
+      </div>
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ price GH₵ {num(price, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save sale</button>
       </div>
     </Modal>
   );
@@ -12150,6 +12300,207 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
           </div>
         </form>
 
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PettyCostPanel — quick running / petty costs per farm section
+   ─ Bottom-sheet modal matching the other panels
+   ─ Quick-add: farm selector, description, amount, date
+   ─ Shows costs grouped by farm with per-farm totals
+   ═══════════════════════════════════════════════════════════════ */
+function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
+  const FARMS = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537' },
+    { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66' },
+    { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
+  ];
+
+  const [farm, setFarm] = useState('poultry');
+  const [desc, setDesc] = useState('');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [filterFarm, setFilterFarm] = useState('all');
+  const inputRef = useRef(null);
+
+  function handleAdd() {
+    const amt = parseFloat(amount);
+    if (!desc.trim() || isNaN(amt) || amt <= 0) return;
+    onAdd({ farm, desc: desc.trim(), amount: amt, date });
+    setDesc('');
+    setAmount('');
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  const visible = (costs || [])
+    .filter((c) => filterFarm === 'all' || c.farm === filterFarm)
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const totalAll = (costs || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const farmTotals = FARMS.map((f) => ({
+    ...f,
+    total: (costs || []).filter((c) => c.farm === f.key).reduce((s, c) => s + (Number(c.amount) || 0), 0),
+  }));
+
+  const activeFarm = FARMS.find((f) => f.key === farm);
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1200,
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: '#1e1e1e', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 680,
+        maxHeight: '92vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 -8px 32px rgba(0,0,0,0.6)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '16px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#D4A537' }}>🧾 Running Costs</h2>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 6px' }}>×</button>
+          </div>
+          <div style={{ fontSize: 12, color: '#777' }}>Petty / day-to-day expenses per farm section</div>
+        </div>
+
+        {/* Farm totals summary strip */}
+        <div style={{ display: 'flex', gap: 8, padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, overflowX: 'auto' }}>
+          {farmTotals.map((f) => (
+            <div key={f.key} style={{
+              flex: '1 1 120px', minWidth: 110, background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${f.color}33`, borderRadius: 8, padding: '8px 12px',
+            }}>
+              <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>{f.label}</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: f.color }}>GH₵ {num(f.total, 2)}</div>
+            </div>
+          ))}
+          <div style={{
+            flex: '1 1 120px', minWidth: 110, background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px',
+          }}>
+            <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>📊 Total</div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#ccc' }}>GH₵ {num(totalAll, 2)}</div>
+          </div>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+
+          {/* Quick-add form */}
+          <div style={{ background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#D4A537', marginBottom: 12 }}>+ Add expense</div>
+
+            {/* Farm picker */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+              {FARMS.map((f) => (
+                <button key={f.key} onClick={() => setFarm(f.key)} style={{
+                  padding: '5px 12px', borderRadius: 20, border: `1px solid ${farm === f.key ? f.color : 'rgba(255,255,255,0.12)'}`,
+                  background: farm === f.key ? `${f.color}22` : 'rgba(255,255,255,0.04)',
+                  color: farm === f.key ? f.color : '#999', fontSize: 12, cursor: 'pointer', fontWeight: farm === f.key ? 600 : 400,
+                }}>{f.label}</button>
+              ))}
+            </div>
+
+            {/* Date */}
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>Date</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }} />
+            </div>
+
+            {/* Description + Amount row */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>What was bought / reason</label>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  placeholder={`e.g. bought rope, fuel for pump…`}
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+                  style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ width: 120 }}>
+                <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>GH₵ Amount</label>
+                <input
+                  type="number" min="0" step="0.01"
+                  placeholder="0.00"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+                  style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+              <button
+                onClick={handleAdd}
+                disabled={!desc.trim() || !(parseFloat(amount) > 0)}
+                style={{
+                  padding: '8px 18px', borderRadius: 7, border: 'none',
+                  background: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#333' : '#D4A537',
+                  color: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#555' : '#000',
+                  fontWeight: 700, fontSize: 13, cursor: (!desc.trim() || !(parseFloat(amount) > 0)) ? 'default' : 'pointer',
+                  whiteSpace: 'nowrap', height: 36,
+                }}
+              >Add</button>
+            </div>
+          </div>
+
+          {/* Filter tabs */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {[{ key: 'all', label: 'All farms' }, ...FARMS.map((f) => ({ key: f.key, label: f.label }))].map(({ key, label }) => {
+              const fObj = FARMS.find((f) => f.key === key);
+              const active = filterFarm === key;
+              return (
+                <button key={key} onClick={() => setFilterFarm(key)} style={{
+                  padding: '5px 12px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
+                  border: `1px solid ${active ? (fObj?.color || '#D4A537') : 'rgba(255,255,255,0.1)'}`,
+                  background: active ? `${fObj?.color || '#D4A537'}22` : 'rgba(255,255,255,0.04)',
+                  color: active ? (fObj?.color || '#D4A537') : '#888', fontWeight: active ? 600 : 400,
+                }}>{label}</button>
+              );
+            })}
+          </div>
+
+          {/* Cost list */}
+          {visible.length === 0 ? (
+            <div style={{ textAlign: 'center', color: '#555', padding: '28px 0', fontSize: 14 }}>
+              No expenses logged yet. Use the form above to add your first entry.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {visible.map((c) => {
+                const f = FARMS.find((x) => x.key === c.farm) || FARMS[0];
+                return (
+                  <div key={c.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+                    borderRadius: 8, padding: '9px 12px',
+                  }}>
+                    <div style={{
+                      fontSize: 10, fontWeight: 600, color: f.color,
+                      background: `${f.color}18`, border: `1px solid ${f.color}33`,
+                      borderRadius: 4, padding: '2px 6px', whiteSpace: 'nowrap', flexShrink: 0,
+                    }}>{f.label}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.desc}</div>
+                      <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{fmtDate(c.date)}</div>
+                    </div>
+                    <div style={{ fontWeight: 700, color: '#e07070', fontSize: 14, flexShrink: 0 }}>
+                      − GH₵ {num(Number(c.amount), 2)}
+                    </div>
+                    <button onClick={() => onDelete(c.id)} style={{
+                      background: 'none', border: 'none', color: '#555', fontSize: 16, cursor: 'pointer', padding: '2px 4px', flexShrink: 0,
+                    }} title="Delete">🗑</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
