@@ -1157,6 +1157,7 @@ function AppInner() {
   const [showGoalTracker, setShowGoalTracker] = useState(false);
   const [showDailyTasks, setShowDailyTasks] = useState(false);
   const [showPettyCosts, setShowPettyCosts] = useState(false);
+  const [showWeeklySummary, setShowWeeklySummary] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -1865,6 +1866,49 @@ function AppInner() {
   function deleteDailyTask(id) {
     setData((d) => touch({ ...d, dailyTasks: (d.dailyTasks || []).filter((t) => t.id !== id) }));
   }
+  function sendSprayEventToTask(ev) {
+    // Build a daily task from a spray programme event
+    const taskText = ev.rate
+      ? `${ev.title} — ${ev.rate}`
+      : ev.title;
+    const task = {
+      id: newId(),
+      date: ev.date,           // the event's resolved date
+      farm: 'pepper',
+      text: taskText,
+      priority: 'normal',
+      done: false,
+      createdAt: new Date().toISOString(),
+      fieldId: ev.fieldId || null,
+      chemical: ev.title || null,
+    };
+    saveDailyTask(task);
+  }
+
+  function sendTaskToSpray(task) {
+    // Build a spray record from the task's saved data
+    const spray = {
+      id: newId(),
+      date: task.date || todayISO(),
+      fieldId: task.fieldId || null,
+      type: 'spray',
+      product: task.chemical || task.text || null,
+      activeIngredient: null,
+      rate: null,
+      quantityUsed: null,
+      cost: null,
+      phiDays: null,
+      notes: task.text || null,
+    };
+    addSpray(spray);
+    // Mark the task as sent so the button turns into a badge
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === task.id ? { ...t, sentToSpray: true } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
 
   /* ---- petty / running costs ---- */
   function addPettyCost(entry) {
@@ -2447,6 +2491,15 @@ function AppInner() {
             color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
           }}
         >🧾</button>
+        {/* Weekly Farm Summary */}
+        <button
+          title="Week in Review — farm summary report"
+          onClick={() => setShowWeeklySummary(true)}
+          style={{
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+          }}
+        >📊</button>
       </div>
 
       {showBuyerBook && (
@@ -2478,9 +2531,11 @@ function AppInner() {
       {showDailyTasks && (
         <DailyTasksPanel
           tasks={data.dailyTasks || []}
+          pepperFields={data.pepper?.fields || []}
           onSave={saveDailyTask}
           onToggle={toggleDailyTask}
           onDelete={deleteDailyTask}
+          onSendToSpray={sendTaskToSpray}
           onClose={() => setShowDailyTasks(false)}
         />
       )}
@@ -2491,6 +2546,12 @@ function AppInner() {
           onAdd={addPettyCost}
           onDelete={deletePettyCost}
           onClose={() => setShowPettyCosts(false)}
+        />
+      )}
+      {showWeeklySummary && (
+        <WeeklySummaryPanel
+          data={data}
+          onClose={() => setShowWeeklySummary(false)}
         />
       )}
 
@@ -2918,6 +2979,7 @@ function AppInner() {
           onInvoiceHarvest={openInvoiceFromHarvest}
           onUpdateHarvest={updateHarvest}
           onHarvestPayment={addHarvestPayment}
+          onSendEventToTask={sendSprayEventToTask}
         />
       )}
 
@@ -4402,6 +4464,7 @@ function PepperWorkspace({
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
   onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
+  onSendEventToTask,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -4646,6 +4709,7 @@ function PepperWorkspace({
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: ((fld.sprayProgramme && fld.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } });
           }}
+          onSendEventToTask={onSendEventToTask}
         />
       )}
 
@@ -5167,6 +5231,7 @@ function parseSprayCsv(rows) {
 function SprayProgrammeTab({
   field, reminders, onAddReminder, onLogNow, showPepperRules,
   onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent,
+  onSendEventToTask,
 }) {
   const { showToast, askConfirm } = useToastConfirm();
   const [filter, setFilter] = useState('all');
@@ -5269,6 +5334,26 @@ function SprayProgrammeTab({
                   >
                     ⤓ Log this spray now
                   </button>
+                  {onSendEventToTask && ev.resolvedDate && (
+                    <button
+                      className="btn"
+                      style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66', fontWeight: 700 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSendEventToTask({
+                          date: ev.resolvedDate,
+                          fieldId: field.id,
+                          fieldName: field.name,
+                          title: ev.title,
+                          cat: ev.cat,
+                          rate: ev.rate || null,
+                          week: ev.week,
+                        });
+                      }}
+                    >
+                      → Task List
+                    </button>
+                  )}
                   <button
                     className="link-btn rust"
                     onClick={async (e) => { e.stopPropagation(); if (await askConfirm('Remove this event from the programme?')) onDeleteEvent(ev.id); }}
@@ -12097,17 +12182,21 @@ const FARM_TABS = [
   { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
 ];
 
-function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
+function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSendToSpray, onClose }) {
   const [viewDate, setViewDate] = useState(todayISO());
   const [activeFarm, setActiveFarm] = useState('poultry');
   const [newText, setNewText] = useState('');
   const [newPriority, setNewPriority] = useState('normal');
+  // Pepper-specific extra fields on the add form
+  const [newFieldId, setNewFieldId] = useState('');
+  const [newChemical, setNewChemical] = useState('');
   const inputRef = useRef(null);
 
   const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
   const PRIORITY_LABELS = { high: '🔴 High', normal: '🟡 Normal', low: '🟢 Low' };
 
   const activeFarmObj = FARM_TABS.find((f) => f.key === activeFarm) || FARM_TABS[0];
+  const isPepper = activeFarm === 'pepper';
 
   // Tasks for the current farm+date, sorted by priority then creation
   const dayTasks = tasks
@@ -12130,11 +12219,16 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
     return pending;
   };
 
+  function fieldName(fieldId) {
+    const f = (pepperFields || []).find((f) => f.id === fieldId);
+    return f ? (f.name || 'Field') : fieldId;
+  }
+
   function addTask(e) {
     e.preventDefault();
     const text = newText.trim();
     if (!text) return;
-    onSave({
+    const task = {
       id: newId(),
       date: viewDate,
       farm: activeFarm,
@@ -12142,8 +12236,14 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
       priority: newPriority,
       done: false,
       createdAt: new Date().toISOString(),
-    });
+    };
+    if (isPepper) {
+      if (newFieldId) task.fieldId = newFieldId;
+      if (newChemical.trim()) task.chemical = newChemical.trim();
+    }
+    onSave(task);
     setNewText('');
+    if (isPepper) { setNewFieldId(''); setNewChemical(''); }
     setTimeout(() => inputRef.current?.focus(), 30);
   }
 
@@ -12193,7 +12293,7 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
             const badge = farmBadge(f.key);
             const isActive = activeFarm === f.key;
             return (
-              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); }}
+              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); setNewFieldId(''); setNewChemical(''); }}
                 style={{
                   flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
                   background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
@@ -12290,20 +12390,47 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
                 }}
               >{t.done ? '✓' : ''}</button>
 
-              {/* Text + priority badge */}
+              {/* Text + priority badge + pepper spray meta */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
                   fontSize: 14, color: t.done ? '#666' : '#e8e8e8',
                   textDecoration: t.done ? 'line-through' : 'none',
                   lineHeight: 1.4, wordBreak: 'break-word',
                 }}>{t.text}</div>
+                {/* Show field + chemical if saved with task */}
+                {t.farm === 'pepper' && (t.fieldId || t.chemical) && (
+                  <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {t.fieldId && <span>📍 {fieldName(t.fieldId)}</span>}
+                    {t.chemical && <span>🧪 {t.chemical}</span>}
+                  </div>
+                )}
                 {t.priority && t.priority !== 'normal' && (
                   <span style={{
                     fontSize: 10, color: PRIORITY_COLORS[t.priority], fontWeight: 700,
                     marginTop: 2, display: 'inline-block',
                   }}>{PRIORITY_LABELS[t.priority]}</span>
                 )}
+                {/* Sent-to-spray badge */}
+                {t.sentToSpray && (
+                  <span style={{
+                    fontSize: 10, color: '#6abf6a', fontWeight: 700,
+                    marginTop: 2, marginLeft: 4, display: 'inline-block',
+                  }}>✓ Sent to Spray Log</span>
+                )}
               </div>
+
+              {/* → Spray Log button (pepper tasks only, not yet sent) */}
+              {t.farm === 'pepper' && !t.sentToSpray && onSendToSpray && (
+                <button
+                  onClick={() => onSendToSpray(t)}
+                  title="Push to Pepper Spray Log"
+                  style={{
+                    background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655',
+                    color: '#7A9A66', borderRadius: 7, padding: '3px 7px',
+                    cursor: 'pointer', fontSize: 11, fontWeight: 700, flexShrink: 0,
+                    lineHeight: 1.4, whiteSpace: 'nowrap',
+                  }}>→ Spray Log</button>
+              )}
 
               {/* Delete */}
               <button onClick={() => onDelete(t.id)}
@@ -12330,6 +12457,33 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
               >{PRIORITY_LABELS[p]}</button>
             ))}
           </div>
+          {/* Pepper-only: field selector + chemical input */}
+          {isPepper && (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <select
+                value={newFieldId}
+                onChange={(e) => setNewFieldId(e.target.value)}
+                style={{
+                  flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid #7A9A6644',
+                  color: newFieldId ? '#fff' : '#666', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none',
+                }}>
+                <option value="">📍 Field (optional)</option>
+                {(pepperFields || []).map((f, i) => (
+                  <option key={f.id} value={f.id}>{f.name || `Field ${i + 1}`}</option>
+                ))}
+              </select>
+              <input
+                value={newChemical}
+                onChange={(e) => setNewChemical(e.target.value)}
+                placeholder="🧪 Chemical (optional)"
+                style={{
+                  flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid #7A9A6644',
+                  color: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none',
+                }}
+              />
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               ref={inputRef}
@@ -12352,6 +12506,284 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
           </div>
         </form>
 
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WeeklySummaryPanel — one-tap farm week-in-review report
+   Covers poultry eggs + feed, pepper sprays, tasks, petty costs.
+   Shareable text ready for YouTube / WhatsApp.
+   ═══════════════════════════════════════════════════════════════ */
+function WeeklySummaryPanel({ data, onClose }) {
+  const today = todayISO();
+
+  // Week selector — default to current week (Mon–Sun)
+  const getWeekStart = (iso) => {
+    const d = new Date(iso);
+    const day = d.getDay(); // 0=Sun
+    const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+    d.setDate(d.getDate() + diff);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+  const addDays = (iso, n) => {
+    const d = new Date(iso); d.setDate(d.getDate() + n);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const [weekStart, setWeekStart] = useState(() => getWeekStart(today));
+  const weekEnd = addDays(weekStart, 6);
+  const inW = (d) => d >= weekStart && d <= weekEnd;
+
+  function shiftWeek(n) {
+    setWeekStart((ws) => addDays(ws, n * 7));
+  }
+
+  function fmtWeekLabel() {
+    const s = new Date(weekStart + 'T00:00:00');
+    const e = new Date(weekEnd + 'T00:00:00');
+    const mo = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    if (s.getMonth() === e.getMonth()) return `${s.getDate()}–${e.getDate()} ${s.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`;
+    return `${mo(s)} – ${mo(e)} ${e.getFullYear()}`;
+  }
+
+  const isCurrentWeek = weekStart === getWeekStart(today);
+
+  // ── Poultry ──
+  const dailyLog = [];
+  (data.flocks || []).forEach((fl) => {
+    (fl.dailyLog || []).forEach((r) => { if (inW(r.date || '')) dailyLog.push(r); });
+  });
+  const eggsCollected = dailyLog.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+  const eggDays = dailyLog.filter((r) => (Number(r.eggs) || 0) > 0).length;
+  const feedPurchases = (data.feed || []).filter((r) => inW(r.date || ''));
+  const feedKg = feedPurchases.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+  const feedCost = feedPurchases.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const medCost = (data.meds || []).filter((r) => inW(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const poultryRevenue = (data.sales || []).filter((r) => inW(r.date || '')).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const poultryPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Pepper ──
+  const pepperSprays = (data.pepper?.sprays || []).filter((r) => inW(r.date || ''));
+  const pepperHarvests = (data.pepper?.harvests || []).filter((h) => inW(h.date || ''));
+  const pepperHarvestKg = pepperHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
+  const pepperRevenue = pepperHarvests.reduce((s, h) => s + ((Number(h.weightKg)||0) * (Number(h.pricePerKg)||0)), 0);
+  const pepperSprayCost = pepperSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const pepperExpenses = (data.expenses || []).filter((e) => e.scope === 'pepper' && inW(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const pepperPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && (c.farm === 'pepper' || (c.farm || '').startsWith('pepper__'))).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Goats ──
+  const goatSales = ((data.goats?.sales) || []).filter((r) => inW(r.date || ''));
+  const goatRevenue = goatSales.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const goatHealth = ((data.goats?.health) || []).filter((r) => inW(r.date || ''));
+  const goatPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && c.farm === 'goat').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Tasks ──
+  const weekTasks = (data.dailyTasks || []).filter((t) => inW(t.date || ''));
+  const tasksDone = weekTasks.filter((t) => t.done).length;
+  const tasksTotal = weekTasks.length;
+  const tasksByFarm = {
+    poultry: weekTasks.filter((t) => (t.farm || 'poultry') === 'poultry'),
+    pepper: weekTasks.filter((t) => t.farm === 'pepper'),
+    goat: weekTasks.filter((t) => t.farm === 'goat'),
+  };
+
+  // ── Total petty costs ──
+  const totalPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '')).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Totals ──
+  const totalRevenue = poultryRevenue + pepperRevenue + goatRevenue;
+  const totalCosts = feedCost + medCost + pepperSprayCost + pepperExpenses + goatPettyCost + totalPettyCost;
+
+  const gh = (n) => `GH₵ ${Number(n).toFixed(2)}`;
+  const num = (n, d = 0) => Number(n).toLocaleString('en-GH', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  // ── Shareable text generator ──
+  function buildShareText() {
+    const lines = [
+      `📊 AI Farms — Week in Review`,
+      `📅 ${fmtWeekLabel()}`,
+      ``,
+      `🐔 POULTRY`,
+      `  🥚 Eggs collected: ${num(eggsCollected)} eggs (${eggDays} day${eggDays !== 1 ? 's' : ''} recorded)`,
+      feedKg > 0 ? `  🌾 Feed purchased: ${num(feedKg, 1)} kg — ${gh(feedCost)}` : null,
+      medCost > 0 ? `  💊 Meds: ${gh(medCost)}` : null,
+      poultryRevenue > 0 ? `  💰 Sales: ${gh(poultryRevenue)}` : null,
+      ``,
+      `🌶️ PEPPER`,
+      pepperSprays.length > 0 ? `  🧪 Sprays done: ${pepperSprays.length}` : `  🧪 No sprays this week`,
+      pepperHarvestKg > 0 ? `  🧺 Harvest: ${num(pepperHarvestKg, 1)} kg — ${gh(pepperRevenue)}` : null,
+      ``,
+      `✅ TASKS`,
+      `  ${tasksDone} of ${tasksTotal} tasks completed`,
+      tasksTotal > 0 ? `  🐔 Poultry: ${tasksByFarm.poultry.filter(t=>t.done).length}/${tasksByFarm.poultry.length}  🌶️ Pepper: ${tasksByFarm.pepper.filter(t=>t.done).length}/${tasksByFarm.pepper.length}  🐐 Goats: ${tasksByFarm.goat.filter(t=>t.done).length}/${tasksByFarm.goat.length}` : null,
+      ``,
+      totalPettyCost > 0 ? `🧾 Running costs: ${gh(totalPettyCost)}` : null,
+      totalRevenue > 0 ? `💵 Total revenue: ${gh(totalRevenue)}` : null,
+      ``,
+      `#AIFarms #GhanaFarming #FarmLife`,
+    ].filter((l) => l !== null);
+    return lines.join('\n');
+  }
+
+  const [copied, setCopied] = useState(false);
+  function copyText() {
+    const txt = buildShareText();
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(txt).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    }
+  }
+
+  const SectionHead = ({ emoji, label, color }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18, marginBottom: 8 }}>
+      <span style={{ fontSize: 18 }}>{emoji}</span>
+      <span style={{ fontWeight: 700, fontSize: 14, color: color || '#fff', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: `${color || '#444'}44`, marginLeft: 6 }} />
+    </div>
+  );
+
+  const Row = ({ icon, label, value, sub, tone }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      {icon && <span style={{ fontSize: 15, width: 22, textAlign: 'center', flexShrink: 0 }}>{icon}</span>}
+      <span style={{ flex: 1, fontSize: 13, color: '#ccc' }}>{label}</span>
+      <div style={{ textAlign: 'right' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: tone === 'gold' ? '#D4A537' : tone === 'green' ? '#6abf6a' : tone === 'rust' ? '#e05c5c' : '#fff' }}>{value}</span>
+        {sub && <div style={{ fontSize: 11, color: '#666' }}>{sub}</div>}
+      </div>
+    </div>
+  );
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: '#1a1a1a', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 580, maxHeight: '92vh',
+    display: 'flex', flexDirection: 'column',
+    boxShadow: '0 -4px 40px rgba(0,0,0,0.7)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>📊</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Week in Review</span>
+          <button onClick={copyText} style={{
+            background: copied ? 'rgba(106,191,106,0.2)' : 'rgba(212,165,55,0.15)',
+            border: `1px solid ${copied ? '#6abf6a55' : '#D4A53755'}`,
+            color: copied ? '#6abf6a' : '#D4A537',
+            borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 700, marginRight: 10,
+          }}>{copied ? '✓ Copied!' : '📋 Copy'}</button>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Week navigator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+          <button onClick={() => shiftWeek(-1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>‹</button>
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: isCurrentWeek ? '#D4A537' : '#fff' }}>{fmtWeekLabel()}</div>
+            {!isCurrentWeek && (
+              <div style={{ fontSize: 11, color: '#555' }}>Mon – Sun</div>
+            )}
+          </div>
+          <button onClick={() => shiftWeek(1)} disabled={isCurrentWeek}
+            style={{ background: isCurrentWeek ? 'transparent' : 'rgba(255,255,255,0.07)', border: `1px solid ${isCurrentWeek ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.12)'}`, color: isCurrentWeek ? '#333' : '#ccc', borderRadius: 8, padding: '5px 10px', cursor: isCurrentWeek ? 'default' : 'pointer', fontSize: 15 }}>›</button>
+          {!isCurrentWeek && (
+            <button onClick={() => setWeekStart(getWeekStart(today))}
+              style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid #D4A53755', color: '#D4A537', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>This week</button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '4px 18px 20px' }}>
+
+          {/* ── Poultry ── */}
+          <SectionHead emoji="🐔" label="Poultry" color="#D4A537" />
+          <Row icon="🥚" label="Eggs collected" value={`${num(eggsCollected)} eggs`} sub={eggDays > 0 ? `${eggDays} day${eggDays !== 1 ? 's' : ''} of data` : 'no data'} tone="gold" />
+          <Row icon="🌾" label="Feed purchased" value={feedKg > 0 ? `${num(feedKg, 1)} kg` : '—'} sub={feedKg > 0 ? gh(feedCost) : null} />
+          {medCost > 0 && <Row icon="💊" label="Medications" value={gh(medCost)} tone="rust" />}
+          {poultryRevenue > 0 && <Row icon="💰" label="Sales revenue" value={gh(poultryRevenue)} tone="green" />}
+          {poultryPettyCost > 0 && <Row icon="🧾" label="Running costs" value={gh(poultryPettyCost)} />}
+
+          {/* ── Pepper ── */}
+          <SectionHead emoji="🌶️" label="Pepper" color="#7A9A66" />
+          <Row icon="🧪" label="Sprays done" value={pepperSprays.length > 0 ? `${pepperSprays.length} spray${pepperSprays.length !== 1 ? 's' : ''}` : 'None'} sub={pepperSprayCost > 0 ? gh(pepperSprayCost) : null} tone={pepperSprays.length > 0 ? 'green' : null} />
+          {pepperHarvestKg > 0
+            ? <Row icon="🧺" label="Harvest" value={`${num(pepperHarvestKg, 1)} kg`} sub={gh(pepperRevenue)} tone="green" />
+            : <Row icon="🧺" label="Harvest" value="None this week" />}
+          {(pepperExpenses + pepperPettyCost) > 0 && <Row icon="🧾" label="Running costs" value={gh(pepperExpenses + pepperPettyCost)} />}
+
+          {/* ── Goats ── */}
+          <SectionHead emoji="🐐" label="Goats" color="#8fa8c8" />
+          {goatHealth.length > 0
+            ? <Row icon="🩺" label="Health events" value={`${goatHealth.length} logged`} />
+            : <Row icon="🩺" label="Health events" value="None" />}
+          {goatSales.length > 0
+            ? <Row icon="💰" label="Sales" value={gh(goatRevenue)} sub={`${goatSales.length} animal${goatSales.length !== 1 ? 's' : ''}`} tone="green" />
+            : <Row icon="💰" label="Sales" value="None this week" />}
+          {goatPettyCost > 0 && <Row icon="🧾" label="Running costs" value={gh(goatPettyCost)} />}
+
+          {/* ── Tasks ── */}
+          <SectionHead emoji="✅" label="Tasks" color="#ccc" />
+          {tasksTotal === 0
+            ? <Row icon="📋" label="No tasks logged this week" value="" />
+            : <>
+                <Row icon="📋" label="Tasks completed" value={`${tasksDone} / ${tasksTotal}`}
+                  sub={tasksTotal > 0 ? `${Math.round((tasksDone/tasksTotal)*100)}% done` : null}
+                  tone={tasksDone === tasksTotal && tasksTotal > 0 ? 'green' : 'gold'} />
+                <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                  {[
+                    { key: 'poultry', emoji: '🐔', color: '#D4A537' },
+                    { key: 'pepper',  emoji: '🌶️', color: '#7A9A66' },
+                    { key: 'goat',    emoji: '🐐', color: '#8fa8c8' },
+                  ].map(({ key, emoji, color }) => {
+                    const ft = tasksByFarm[key];
+                    const fd = ft.filter((t) => t.done).length;
+                    return (
+                      <div key={key} style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', border: `1px solid ${color}22` }}>
+                        <div style={{ fontSize: 16 }}>{emoji}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color }}>{fd}/{ft.length}</div>
+                        <div style={{ fontSize: 10, color: '#666' }}>done</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+          }
+
+          {/* ── Summary totals ── */}
+          <SectionHead emoji="💵" label="Week Totals" color="#D4A537" />
+          {totalRevenue > 0 && <Row icon="💵" label="Total revenue" value={gh(totalRevenue)} tone="green" />}
+          {totalCosts > 0 && <Row icon="📤" label="Total costs tracked" value={gh(totalCosts)} tone="rust" />}
+          {(totalRevenue > 0 || totalCosts > 0) && (
+            <div style={{ marginTop: 10, padding: '10px 14px', background: (totalRevenue - totalCosts) >= 0 ? 'rgba(106,191,106,0.08)' : 'rgba(224,92,92,0.08)', borderRadius: 10, border: `1px solid ${(totalRevenue - totalCosts) >= 0 ? 'rgba(106,191,106,0.25)' : 'rgba(224,92,92,0.25)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13, color: '#aaa' }}>Net this week</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: (totalRevenue - totalCosts) >= 0 ? '#6abf6a' : '#e05c5c' }}>
+                {(totalRevenue - totalCosts) >= 0 ? '+' : ''}{gh(totalRevenue - totalCosts)}
+              </span>
+            </div>
+          )}
+
+          {/* Share hint */}
+          <div style={{ marginTop: 18, padding: '10px 14px', background: 'rgba(212,165,55,0.07)', borderRadius: 10, border: '1px solid rgba(212,165,55,0.15)' }}>
+            <div style={{ fontSize: 12, color: '#888' }}>Tap <strong style={{ color: '#D4A537' }}>📋 Copy</strong> to get a ready-made summary for your YouTube / WhatsApp.</div>
+          </div>
+
+        </div>
       </div>
     </div>
   );
