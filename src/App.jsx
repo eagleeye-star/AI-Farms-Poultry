@@ -2487,6 +2487,7 @@ function AppInner() {
       {showPettyCosts && (
         <PettyCostPanel
           costs={data.pettyCosts || []}
+          pepperFields={data.pepper?.fields || []}
           onAdd={addPettyCost}
           onDelete={deletePettyCost}
           onClose={() => setShowPettyCosts(false)}
@@ -12086,19 +12087,32 @@ function CloudSetupScreen({ onDone, onCancel }) {
 /* ============================================================= */
 /* ═══════════════════════════════════════════════════════════════
    DAILY FARM TASKS PANEL
-   ─ Create tasks for the day before heading to the farm
-   ─ Check them off as you complete each one on site
+   ─ Tabbed by farm: 🐔 Poultry | 🌶️ Pepper | 🐐 Goats
+   ─ Each farm has its own independent task list per day
+   ─ Date navigator + progress bar per farm tab
    ═══════════════════════════════════════════════════════════════ */
+const FARM_TABS = [
+  { key: 'poultry', label: '🐔 Poultry', color: '#D4A537' },
+  { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66' },
+  { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
+];
+
 function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
   const [viewDate, setViewDate] = useState(todayISO());
+  const [activeFarm, setActiveFarm] = useState('poultry');
   const [newText, setNewText] = useState('');
-  const [newPriority, setNewPriority] = useState('normal'); // 'high' | 'normal' | 'low'
+  const [newPriority, setNewPriority] = useState('normal');
   const inputRef = useRef(null);
 
+  const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
+  const PRIORITY_LABELS = { high: '🔴 High', normal: '🟡 Normal', low: '🟢 Low' };
+
+  const activeFarmObj = FARM_TABS.find((f) => f.key === activeFarm) || FARM_TABS[0];
+
+  // Tasks for the current farm+date, sorted by priority then creation
   const dayTasks = tasks
-    .filter((t) => t.date === viewDate)
+    .filter((t) => t.date === viewDate && (t.farm || 'poultry') === activeFarm)
     .sort((a, b) => {
-      // high priority first, then by creation order
       const po = { high: 0, normal: 1, low: 2 };
       const pd = (po[a.priority] ?? 1) - (po[b.priority] ?? 1);
       return pd !== 0 ? pd : (a.createdAt || '').localeCompare(b.createdAt || '');
@@ -12108,6 +12122,14 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
   const done = dayTasks.filter((t) => t.done).length;
   const allDone = total > 0 && done === total;
 
+  // Per-farm pending badge counts for tab indicators
+  const todayStr = todayISO();
+  const farmBadge = (farmKey) => {
+    const ft = tasks.filter((t) => t.date === todayStr && (t.farm || 'poultry') === farmKey);
+    const pending = ft.filter((t) => !t.done).length;
+    return pending;
+  };
+
   function addTask(e) {
     e.preventDefault();
     const text = newText.trim();
@@ -12115,13 +12137,14 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
     onSave({
       id: newId(),
       date: viewDate,
+      farm: activeFarm,
       text,
       priority: newPriority,
       done: false,
       createdAt: new Date().toISOString(),
     });
     setNewText('');
-    if (inputRef.current) inputRef.current.focus();
+    setTimeout(() => inputRef.current?.focus(), 30);
   }
 
   function shiftDay(delta) {
@@ -12140,9 +12163,6 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
     return fmtDate(iso);
   }
 
-  const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
-  const PRIORITY_LABELS = { high: '🔴 High', normal: '🟡 Normal', low: '🟢 Low' };
-
   const modal = {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)',
     display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
@@ -12150,7 +12170,7 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
   };
   const sheet = {
     background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0',
-    width: '100%', maxWidth: 520, maxHeight: '88vh', display: 'flex',
+    width: '100%', maxWidth: 560, maxHeight: '90vh', display: 'flex',
     flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)',
     border: '1px solid rgba(212,165,55,0.2)',
   };
@@ -12160,19 +12180,48 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
       <div style={sheet}>
 
         {/* ── Header ── */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
           <span style={{ fontSize: 20, marginRight: 8 }}>✅</span>
           <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Daily Farm Tasks</span>
           <button onClick={onClose}
             style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
         </div>
 
+        {/* ── Farm tabs ── */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          {FARM_TABS.map((f) => {
+            const badge = farmBadge(f.key);
+            const isActive = activeFarm === f.key;
+            return (
+              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); }}
+                style={{
+                  flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
+                  background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+                  borderBottom: isActive ? `2px solid ${f.color}` : '2px solid transparent',
+                  color: isActive ? f.color : '#666',
+                  fontWeight: isActive ? 700 : 400, fontSize: 13,
+                  position: 'relative', transition: 'all 0.15s',
+                }}>
+                {f.label}
+                {badge > 0 && (
+                  <span style={{
+                    position: 'absolute', top: 5, right: '50%', transform: 'translateX(24px)',
+                    background: f.color, color: '#000', borderRadius: '50%',
+                    fontSize: 9, fontWeight: 700, width: 14, height: 14,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}>{badge}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
         {/* ── Date navigator ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(0,0,0,0.15)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(0,0,0,0.15)', flexShrink: 0 }}>
           <button onClick={() => shiftDay(-1)}
             style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>‹</button>
           <div style={{ flex: 1, textAlign: 'center' }}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: viewDate === todayISO() ? '#D4A537' : '#fff' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: viewDate === todayISO() ? activeFarmObj.color : '#fff' }}>
               {fmtDayLabel(viewDate)}
             </div>
             {viewDate !== todayISO() && (
@@ -12183,7 +12232,7 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
             style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>›</button>
           {viewDate !== todayISO() && (
             <button onClick={() => setViewDate(todayISO())}
-              style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.35)', color: '#D4A537', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+              style={{ background: `${activeFarmObj.color}22`, border: `1px solid ${activeFarmObj.color}55`, color: activeFarmObj.color, borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
               Today
             </button>
           )}
@@ -12191,20 +12240,20 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
 
         {/* ── Progress bar ── */}
         {total > 0 && (
-          <div style={{ padding: '8px 16px 0' }}>
+          <div style={{ padding: '8px 16px 0', flexShrink: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, color: '#aaa' }}>
-                {allDone ? '🎉 All tasks done!' : `${done} of ${total} completed`}
+                {allDone ? '🎉 All done!' : `${done} of ${total} completed`}
               </span>
-              <span style={{ fontSize: 12, color: allDone ? '#6abf6a' : '#D4A537', fontWeight: 700 }}>
-                {total > 0 ? Math.round((done/total)*100) : 0}%
+              <span style={{ fontSize: 12, color: allDone ? '#6abf6a' : activeFarmObj.color, fontWeight: 700 }}>
+                {Math.round((done/total)*100)}%
               </span>
             </div>
-            <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
               <div style={{
                 height: '100%', borderRadius: 4,
-                width: `${total > 0 ? (done/total)*100 : 0}%`,
-                background: allDone ? '#6abf6a' : 'linear-gradient(90deg,#D4A537,#e8c04a)',
+                width: `${(done/total)*100}%`,
+                background: allDone ? '#6abf6a' : `linear-gradient(90deg,${activeFarmObj.color},${activeFarmObj.color}cc)`,
                 transition: 'width 0.3s ease',
               }} />
             </div>
@@ -12215,9 +12264,9 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
         <div style={{ overflowY: 'auto', flex: 1, padding: '10px 14px 12px' }}>
           {dayTasks.length === 0 && (
             <div style={{ textAlign: 'center', color: '#555', padding: '28px 0', fontSize: 14 }}>
-              <div style={{ fontSize: 36, marginBottom: 8 }}>📋</div>
-              <div>No tasks for {fmtDayLabel(viewDate).toLowerCase()}.</div>
-              <div style={{ fontSize: 12, color: '#444', marginTop: 4 }}>Add tasks below before heading to the farm.</div>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>{activeFarmObj.label.split(' ')[0]}</div>
+              <div style={{ color: '#666' }}>No {activeFarmObj.label.split(' ').slice(1).join(' ')} tasks for {fmtDayLabel(viewDate).toLowerCase()}.</div>
+              <div style={{ fontSize: 12, color: '#444', marginTop: 4 }}>Add tasks below to plan your day.</div>
             </div>
           )}
 
@@ -12234,7 +12283,7 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
                 onClick={() => onToggle(t.id)}
                 style={{
                   width: 24, height: 24, flexShrink: 0, borderRadius: 6, cursor: 'pointer',
-                  border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || '#D4A537'}`,
+                  border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || activeFarmObj.color}`,
                   background: t.done ? '#6abf6a' : 'transparent',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 13, color: '#000', marginTop: 1,
@@ -12265,7 +12314,10 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
         </div>
 
         {/* ── Add task form ── */}
-        <form onSubmit={addTask} style={{ padding: '10px 14px 16px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)' }}>
+        <form onSubmit={addTask} style={{ padding: '10px 14px 16px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)', flexShrink: 0 }}>
+          <div style={{ fontSize: 11, color: activeFarmObj.color, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {activeFarmObj.label} — {fmtDayLabel(viewDate)}
+          </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
             {['high','normal','low'].map((p) => (
               <button key={p} type="button" onClick={() => setNewPriority(p)}
@@ -12283,15 +12335,15 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
               ref={inputRef}
               value={newText}
               onChange={(e) => setNewText(e.target.value)}
-              placeholder="Add a task for this day…"
+              placeholder={`Add a task for ${activeFarmObj.label.split(' ').slice(1).join(' ')}…`}
               style={{
-                flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+                flex: 1, background: 'rgba(255,255,255,0.06)', border: `1px solid ${activeFarmObj.color}44`,
                 color: '#fff', borderRadius: 8, padding: '8px 12px', fontSize: 14, outline: 'none',
               }}
             />
             <button type="submit" disabled={!newText.trim()}
               style={{
-                background: newText.trim() ? 'var(--gold,#D4A537)' : 'rgba(255,255,255,0.07)',
+                background: newText.trim() ? activeFarmObj.color : 'rgba(255,255,255,0.07)',
                 border: 'none', color: newText.trim() ? '#000' : '#555',
                 borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: newText.trim() ? 'pointer' : 'default',
                 fontSize: 14, flexShrink: 0,
@@ -12307,15 +12359,27 @@ function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
 
 /* ═══════════════════════════════════════════════════════════════
    PettyCostPanel — quick running / petty costs per farm section
-   ─ Bottom-sheet modal matching the other panels
-   ─ Quick-add: farm selector, description, amount, date
-   ─ Shows costs grouped by farm with per-farm totals
+   ─ Poultry and Goats are single buckets
+   ─ Pepper is broken into individual fields — new fields auto-appear
+   ─ pepperFields prop: array of { id, name } from data.pepper.fields
    ═══════════════════════════════════════════════════════════════ */
-function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
+function PettyCostPanel({ costs, pepperFields, onAdd, onDelete, onClose }) {
+  // Build the dynamic FARMS list:
+  // 🐔 Poultry | one entry per pepper field | 🐐 Goats
+  const pepperEntries = (pepperFields || []).map((f, i) => ({
+    key: `pepper__${f.id}`,
+    label: `🌶️ ${f.name || `Field ${i + 1}`}`,
+    color: '#7A9A66',
+    isField: true,
+    fieldId: f.id,
+  }));
+  const noPepperFields = pepperEntries.length === 0;
   const FARMS = [
     { key: 'poultry', label: '🐔 Poultry', color: '#D4A537' },
-    { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66' },
-    { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
+    ...(noPepperFields
+      ? [{ key: 'pepper', label: '🌶️ Pepper', color: '#7A9A66' }]  // fallback if no fields yet
+      : pepperEntries),
+    { key: 'goat', label: '🐐 Goats', color: '#8fa8c8' },
   ];
 
   const [farm, setFarm] = useState('poultry');
@@ -12325,26 +12389,50 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
   const [filterFarm, setFilterFarm] = useState('all');
   const inputRef = useRef(null);
 
+  // If selected farm no longer exists (e.g. field deleted), reset to poultry
+  const farmObj = FARMS.find((f) => f.key === farm) || FARMS[0];
+  const safeFarm = farmObj.key;
+
   function handleAdd() {
     const amt = parseFloat(amount);
     if (!desc.trim() || isNaN(amt) || amt <= 0) return;
-    onAdd({ farm, desc: desc.trim(), amount: amt, date });
+    onAdd({ farm: safeFarm, desc: desc.trim(), amount: amt, date });
     setDesc('');
     setAmount('');
     setTimeout(() => inputRef.current?.focus(), 50);
   }
 
+  // For filter: "all pepper fields" grouping
+  const isPepperKey = (key) => key === 'pepper' || key.startsWith('pepper__');
+
   const visible = (costs || [])
-    .filter((c) => filterFarm === 'all' || c.farm === filterFarm)
+    .filter((c) => {
+      if (filterFarm === 'all') return true;
+      if (filterFarm === 'pepper_group') return isPepperKey(c.farm);
+      return c.farm === filterFarm;
+    })
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const totalAll = (costs || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-  const farmTotals = FARMS.map((f) => ({
-    ...f,
-    total: (costs || []).filter((c) => c.farm === f.key).reduce((s, c) => s + (Number(c.amount) || 0), 0),
-  }));
+  const pepperTotal = (costs || []).filter((c) => isPepperKey(c.farm)).reduce((s, c) => s + (Number(c.amount) || 0), 0);
 
-  const activeFarm = FARMS.find((f) => f.key === farm);
+  // Summary tiles: Poultry, Pepper (combined), Goats, Total
+  const summaryTiles = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537',
+      total: (costs || []).filter((c) => c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0) },
+    { key: 'pepper_group', label: '🌶️ Pepper', color: '#7A9A66', total: pepperTotal },
+    { key: 'goat', label: '🐐 Goats', color: '#8fa8c8',
+      total: (costs || []).filter((c) => c.farm === 'goat').reduce((s, c) => s + (Number(c.amount) || 0), 0) },
+    { key: 'all', label: '📊 Total', color: '#ccc', total: totalAll },
+  ];
+
+  // Resolve display label for a cost row (handles both old 'pepper' key and new 'pepper__fieldId')
+  function costFarmLabel(c) {
+    const f = FARMS.find((x) => x.key === c.farm);
+    if (f) return { label: f.label, color: f.color };
+    if (isPepperKey(c.farm)) return { label: '🌶️ Pepper', color: '#7A9A66' };
+    return { label: c.farm, color: '#888' };
+  }
 
   return (
     <div style={{
@@ -12362,27 +12450,21 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
             <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#D4A537' }}>🧾 Running Costs</h2>
             <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 6px' }}>×</button>
           </div>
-          <div style={{ fontSize: 12, color: '#777' }}>Petty / day-to-day expenses per farm section</div>
+          <div style={{ fontSize: 12, color: '#777' }}>Petty / day-to-day expenses · Pepper costs are per field</div>
         </div>
 
-        {/* Farm totals summary strip */}
+        {/* Summary tiles */}
         <div style={{ display: 'flex', gap: 8, padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, overflowX: 'auto' }}>
-          {farmTotals.map((f) => (
-            <div key={f.key} style={{
-              flex: '1 1 120px', minWidth: 110, background: 'rgba(255,255,255,0.04)',
-              border: `1px solid ${f.color}33`, borderRadius: 8, padding: '8px 12px',
-            }}>
-              <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>{f.label}</div>
-              <div style={{ fontWeight: 700, fontSize: 15, color: f.color }}>GH₵ {num(f.total, 2)}</div>
+          {summaryTiles.map((t) => (
+            <div key={t.key} style={{
+              flex: '1 1 110px', minWidth: 100, background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${t.color}33`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer',
+              outline: filterFarm === t.key ? `1px solid ${t.color}88` : 'none',
+            }} onClick={() => setFilterFarm(filterFarm === t.key ? 'all' : t.key)}>
+              <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>{t.label}</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: t.color }}>GH₵ {num(t.total, 2)}</div>
             </div>
           ))}
-          <div style={{
-            flex: '1 1 120px', minWidth: 110, background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px',
-          }}>
-            <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>📊 Total</div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: '#ccc' }}>GH₵ {num(totalAll, 2)}</div>
-          </div>
         </div>
 
         {/* Scrollable body */}
@@ -12390,15 +12472,17 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
 
           {/* Quick-add form */}
           <div style={{ background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#D4A537', marginBottom: 12 }}>+ Add expense</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#D4A537', marginBottom: 10 }}>+ Add expense</div>
 
-            {/* Farm picker */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+            {/* Section picker — wrapping pill buttons */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
               {FARMS.map((f) => (
                 <button key={f.key} onClick={() => setFarm(f.key)} style={{
-                  padding: '5px 12px', borderRadius: 20, border: `1px solid ${farm === f.key ? f.color : 'rgba(255,255,255,0.12)'}`,
+                  padding: '5px 12px', borderRadius: 20,
+                  border: `1px solid ${farm === f.key ? f.color : 'rgba(255,255,255,0.12)'}`,
                   background: farm === f.key ? `${f.color}22` : 'rgba(255,255,255,0.04)',
-                  color: farm === f.key ? f.color : '#999', fontSize: 12, cursor: 'pointer', fontWeight: farm === f.key ? 600 : 400,
+                  color: farm === f.key ? f.color : '#888', fontSize: 12, cursor: 'pointer',
+                  fontWeight: farm === f.key ? 600 : 400,
                 }}>{f.label}</button>
               ))}
             </div>
@@ -12410,25 +12494,24 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
                 style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }} />
             </div>
 
-            {/* Description + Amount row */}
+            {/* Description + Amount */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
               <div style={{ flex: 1 }}>
                 <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>What was bought / reason</label>
                 <input
                   ref={inputRef}
                   type="text"
-                  placeholder={`e.g. bought rope, fuel for pump…`}
+                  placeholder="e.g. bought rope, fuel for pump…"
                   value={desc}
                   onChange={(e) => setDesc(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-                  style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+                  style={{ width: '100%', background: '#2a2a2a', border: `1px solid ${farmObj.color}44`, borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
                 />
               </div>
               <div style={{ width: 120 }}>
                 <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>GH₵ Amount</label>
                 <input
-                  type="number" min="0" step="0.01"
-                  placeholder="0.00"
+                  type="number" min="0" step="0.01" placeholder="0.00"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
@@ -12440,7 +12523,7 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
                 disabled={!desc.trim() || !(parseFloat(amount) > 0)}
                 style={{
                   padding: '8px 18px', borderRadius: 7, border: 'none',
-                  background: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#333' : '#D4A537',
+                  background: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#333' : farmObj.color,
                   color: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#555' : '#000',
                   fontWeight: 700, fontSize: 13, cursor: (!desc.trim() || !(parseFloat(amount) > 0)) ? 'default' : 'pointer',
                   whiteSpace: 'nowrap', height: 36,
@@ -12449,21 +12532,26 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
             </div>
           </div>
 
-          {/* Filter tabs */}
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-            {[{ key: 'all', label: 'All farms' }, ...FARMS.map((f) => ({ key: f.key, label: f.label }))].map(({ key, label }) => {
-              const fObj = FARMS.find((f) => f.key === key);
-              const active = filterFarm === key;
-              return (
-                <button key={key} onClick={() => setFilterFarm(key)} style={{
-                  padding: '5px 12px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
-                  border: `1px solid ${active ? (fObj?.color || '#D4A537') : 'rgba(255,255,255,0.1)'}`,
-                  background: active ? `${fObj?.color || '#D4A537'}22` : 'rgba(255,255,255,0.04)',
-                  color: active ? (fObj?.color || '#D4A537') : '#888', fontWeight: active ? 600 : 400,
-                }}>{label}</button>
-              );
-            })}
-          </div>
+          {/* Per-pepper-field breakdown (shown when any pepper costs exist) */}
+          {pepperEntries.length > 1 && pepperTotal > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: '#7A9A66', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>🌶️ Pepper — by field</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {pepperEntries.map((f) => {
+                  const fieldTotal = (costs || []).filter((c) => c.farm === f.key).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+                  return (
+                    <div key={f.key} style={{
+                      background: 'rgba(122,154,102,0.08)', border: '1px solid rgba(122,154,102,0.2)',
+                      borderRadius: 7, padding: '6px 12px', minWidth: 120,
+                    }}>
+                      <div style={{ fontSize: 11, color: '#7A9A66', marginBottom: 2 }}>{f.label}</div>
+                      <div style={{ fontWeight: 700, color: '#a8c87a', fontSize: 14 }}>GH₵ {num(fieldTotal, 2)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Cost list */}
           {visible.length === 0 ? (
@@ -12473,7 +12561,7 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {visible.map((c) => {
-                const f = FARMS.find((x) => x.key === c.farm) || FARMS[0];
+                const { label, color } = costFarmLabel(c);
                 return (
                   <div key={c.id} style={{
                     display: 'flex', alignItems: 'center', gap: 10,
@@ -12481,10 +12569,10 @@ function PettyCostPanel({ costs, onAdd, onDelete, onClose }) {
                     borderRadius: 8, padding: '9px 12px',
                   }}>
                     <div style={{
-                      fontSize: 10, fontWeight: 600, color: f.color,
-                      background: `${f.color}18`, border: `1px solid ${f.color}33`,
+                      fontSize: 10, fontWeight: 600, color,
+                      background: `${color}18`, border: `1px solid ${color}33`,
                       borderRadius: 4, padding: '2px 6px', whiteSpace: 'nowrap', flexShrink: 0,
-                    }}>{f.label}</div>
+                    }}>{label}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, color: '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.desc}</div>
                       <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{fmtDate(c.date)}</div>
