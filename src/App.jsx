@@ -201,6 +201,7 @@ function freshData() {
     drugStock: [],        // medicine / vaccine inventory — doses on hand, expiry
     expenseTemplates: [], // recurring expense templates
     revenueGoals: [],     // profit / revenue targets per section + period
+    dailyTasks: [],       // farm day-plan tasks — date, text, done flag
     pepper: defaultPepper(),
     goats: defaultGoats(),
     farmProfile: { farmName: '', location: '', email: '', phone: '' },
@@ -226,7 +227,7 @@ function dataRichness(d) {
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
-    (d.buyers || []).length + (d.drugStock || []).length +
+    (d.buyers || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
     (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
@@ -326,6 +327,7 @@ function migrate(saved) {
     drugStock: saved.drugStock || [],
     expenseTemplates: saved.expenseTemplates || [],
     revenueGoals: saved.revenueGoals || [],
+    dailyTasks: saved.dailyTasks || [],
     bsf: { batches: (saved.bsf && saved.bsf.batches) || [] },
     ownerLoans: {
       loans: (saved.ownerLoans && saved.ownerLoans.loans) || [],
@@ -1151,6 +1153,7 @@ function AppInner() {
   const [showBuyerBook, setShowBuyerBook] = useState(false);
   const [showDrugStock, setShowDrugStock] = useState(false);
   const [showGoalTracker, setShowGoalTracker] = useState(false);
+  const [showDailyTasks, setShowDailyTasks] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -1838,6 +1841,28 @@ function AppInner() {
     setData((d) => touch({ ...d, revenueGoals: (d.revenueGoals || []).filter((g) => g.id !== id) }));
   }
 
+  /* ---- daily farm tasks ---- */
+  function saveDailyTask(task) {
+    setData((d) => {
+      const exists = (d.dailyTasks || []).some((t) => t.id === task.id);
+      const dailyTasks = exists
+        ? (d.dailyTasks || []).map((t) => (t.id === task.id ? task : t))
+        : [...(d.dailyTasks || []), task];
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function toggleDailyTask(id) {
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === id ? { ...t, done: !t.done } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function deleteDailyTask(id) {
+    setData((d) => touch({ ...d, dailyTasks: (d.dailyTasks || []).filter((t) => t.id !== id) }));
+  }
+
   /* ---- cloud sync ---- */
 
   const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
@@ -2372,6 +2397,36 @@ function AppInner() {
           style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>💊</button>
         <button title="Revenue Goals" onClick={() => setShowGoalTracker(true)}
           style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>🎯</button>
+        {/* Daily Farm Tasks */}
+        {(() => {
+          const today = todayISO();
+          const todayTasks = (data.dailyTasks || []).filter((t) => t.date === today);
+          const doneCnt = todayTasks.filter((t) => t.done).length;
+          const hasPending = todayTasks.length > 0 && doneCnt < todayTasks.length;
+          return (
+            <button
+              title={`Daily Farm Tasks${todayTasks.length > 0 ? ` — ${doneCnt}/${todayTasks.length} done today` : ''}`}
+              onClick={() => setShowDailyTasks(true)}
+              style={{
+                background: hasPending ? 'rgba(212,165,55,0.18)' : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${hasPending ? 'rgba(212,165,55,0.5)' : 'rgba(255,255,255,0.1)'}`,
+                color: hasPending ? '#D4A537' : '#ccc',
+                borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+                position: 'relative',
+              }}
+            >
+              ✅
+              {hasPending && (
+                <span style={{
+                  position: 'absolute', top: -4, right: -4,
+                  background: '#D4A537', color: '#000', borderRadius: '50%',
+                  fontSize: 10, fontWeight: 700, width: 16, height: 16,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+                }}>{todayTasks.length - doneCnt}</span>
+              )}
+            </button>
+          );
+        })()}
       </div>
 
       {showBuyerBook && (
@@ -2398,6 +2453,15 @@ function AppInner() {
           onSave={saveRevenueGoal}
           onDelete={deleteRevenueGoal}
           onClose={() => setShowGoalTracker(false)}
+        />
+      )}
+      {showDailyTasks && (
+        <DailyTasksPanel
+          tasks={data.dailyTasks || []}
+          onSave={saveDailyTask}
+          onToggle={toggleDailyTask}
+          onDelete={deleteDailyTask}
+          onClose={() => setShowDailyTasks(false)}
         />
       )}
 
@@ -11870,6 +11934,227 @@ function CloudSetupScreen({ onDone, onCancel }) {
 /* ============================================================= */
 /* =================== BUYER PHONEBOOK PANEL =================== */
 /* ============================================================= */
+/* ═══════════════════════════════════════════════════════════════
+   DAILY FARM TASKS PANEL
+   ─ Create tasks for the day before heading to the farm
+   ─ Check them off as you complete each one on site
+   ═══════════════════════════════════════════════════════════════ */
+function DailyTasksPanel({ tasks, onSave, onToggle, onDelete, onClose }) {
+  const [viewDate, setViewDate] = useState(todayISO());
+  const [newText, setNewText] = useState('');
+  const [newPriority, setNewPriority] = useState('normal'); // 'high' | 'normal' | 'low'
+  const inputRef = useRef(null);
+
+  const dayTasks = tasks
+    .filter((t) => t.date === viewDate)
+    .sort((a, b) => {
+      // high priority first, then by creation order
+      const po = { high: 0, normal: 1, low: 2 };
+      const pd = (po[a.priority] ?? 1) - (po[b.priority] ?? 1);
+      return pd !== 0 ? pd : (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+
+  const total = dayTasks.length;
+  const done = dayTasks.filter((t) => t.done).length;
+  const allDone = total > 0 && done === total;
+
+  function addTask(e) {
+    e.preventDefault();
+    const text = newText.trim();
+    if (!text) return;
+    onSave({
+      id: newId(),
+      date: viewDate,
+      text,
+      priority: newPriority,
+      done: false,
+      createdAt: new Date().toISOString(),
+    });
+    setNewText('');
+    if (inputRef.current) inputRef.current.focus();
+  }
+
+  function shiftDay(delta) {
+    const d = new Date(viewDate);
+    d.setDate(d.getDate() + delta);
+    setViewDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`);
+  }
+
+  function fmtDayLabel(iso) {
+    const today = todayISO();
+    const tomorrow = (() => { const d = new Date(today); d.setDate(d.getDate()+1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    const yesterday = (() => { const d = new Date(today); d.setDate(d.getDate()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    if (iso === today) return 'Today';
+    if (iso === tomorrow) return 'Tomorrow';
+    if (iso === yesterday) return 'Yesterday';
+    return fmtDate(iso);
+  }
+
+  const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
+  const PRIORITY_LABELS = { high: '🔴 High', normal: '🟡 Normal', low: '🟢 Low' };
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 520, maxHeight: '88vh', display: 'flex',
+    flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+
+        {/* ── Header ── */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>✅</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Daily Farm Tasks</span>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* ── Date navigator ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(0,0,0,0.15)' }}>
+          <button onClick={() => shiftDay(-1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>‹</button>
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: viewDate === todayISO() ? '#D4A537' : '#fff' }}>
+              {fmtDayLabel(viewDate)}
+            </div>
+            {viewDate !== todayISO() && (
+              <div style={{ fontSize: 11, color: '#888' }}>{fmtDate(viewDate)}</div>
+            )}
+          </div>
+          <button onClick={() => shiftDay(1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>›</button>
+          {viewDate !== todayISO() && (
+            <button onClick={() => setViewDate(todayISO())}
+              style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.35)', color: '#D4A537', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+              Today
+            </button>
+          )}
+        </div>
+
+        {/* ── Progress bar ── */}
+        {total > 0 && (
+          <div style={{ padding: '8px 16px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: '#aaa' }}>
+                {allDone ? '🎉 All tasks done!' : `${done} of ${total} completed`}
+              </span>
+              <span style={{ fontSize: 12, color: allDone ? '#6abf6a' : '#D4A537', fontWeight: 700 }}>
+                {total > 0 ? Math.round((done/total)*100) : 0}%
+              </span>
+            </div>
+            <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 4,
+                width: `${total > 0 ? (done/total)*100 : 0}%`,
+                background: allDone ? '#6abf6a' : 'linear-gradient(90deg,#D4A537,#e8c04a)',
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* ── Task list ── */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '10px 14px 12px' }}>
+          {dayTasks.length === 0 && (
+            <div style={{ textAlign: 'center', color: '#555', padding: '28px 0', fontSize: 14 }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📋</div>
+              <div>No tasks for {fmtDayLabel(viewDate).toLowerCase()}.</div>
+              <div style={{ fontSize: 12, color: '#444', marginTop: 4 }}>Add tasks below before heading to the farm.</div>
+            </div>
+          )}
+
+          {dayTasks.map((t) => (
+            <div key={t.id} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              padding: '10px 12px', marginBottom: 6, borderRadius: 10,
+              background: t.done ? 'rgba(106,191,106,0.06)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${t.done ? 'rgba(106,191,106,0.2)' : `rgba(${t.priority==='high'?'224,92,92':t.priority==='low'?'106,191,106':'212,165,55'},0.18)`}`,
+              transition: 'all 0.2s',
+            }}>
+              {/* Checkbox */}
+              <button
+                onClick={() => onToggle(t.id)}
+                style={{
+                  width: 24, height: 24, flexShrink: 0, borderRadius: 6, cursor: 'pointer',
+                  border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || '#D4A537'}`,
+                  background: t.done ? '#6abf6a' : 'transparent',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, color: '#000', marginTop: 1,
+                }}
+              >{t.done ? '✓' : ''}</button>
+
+              {/* Text + priority badge */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 14, color: t.done ? '#666' : '#e8e8e8',
+                  textDecoration: t.done ? 'line-through' : 'none',
+                  lineHeight: 1.4, wordBreak: 'break-word',
+                }}>{t.text}</div>
+                {t.priority && t.priority !== 'normal' && (
+                  <span style={{
+                    fontSize: 10, color: PRIORITY_COLORS[t.priority], fontWeight: 700,
+                    marginTop: 2, display: 'inline-block',
+                  }}>{PRIORITY_LABELS[t.priority]}</span>
+                )}
+              </div>
+
+              {/* Delete */}
+              <button onClick={() => onDelete(t.id)}
+                style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 16, padding: '0 2px', lineHeight: 1, flexShrink: 0 }}
+                title="Remove task">🗑</button>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Add task form ── */}
+        <form onSubmit={addTask} style={{ padding: '10px 14px 16px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            {['high','normal','low'].map((p) => (
+              <button key={p} type="button" onClick={() => setNewPriority(p)}
+                style={{
+                  flex: 1, padding: '5px 4px', borderRadius: 7, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                  border: `1px solid ${newPriority === p ? PRIORITY_COLORS[p] : 'rgba(255,255,255,0.1)'}`,
+                  background: newPriority === p ? `${PRIORITY_COLORS[p]}22` : 'transparent',
+                  color: newPriority === p ? PRIORITY_COLORS[p] : '#666',
+                }}
+              >{PRIORITY_LABELS[p]}</button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              ref={inputRef}
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              placeholder="Add a task for this day…"
+              style={{
+                flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+                color: '#fff', borderRadius: 8, padding: '8px 12px', fontSize: 14, outline: 'none',
+              }}
+            />
+            <button type="submit" disabled={!newText.trim()}
+              style={{
+                background: newText.trim() ? 'var(--gold,#D4A537)' : 'rgba(255,255,255,0.07)',
+                border: 'none', color: newText.trim() ? '#000' : '#555',
+                borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: newText.trim() ? 'pointer' : 'default',
+                fontSize: 14, flexShrink: 0,
+              }}
+            >+ Add</button>
+          </div>
+        </form>
+
+      </div>
+    </div>
+  );
+}
+
 function BuyerPhonebook({ buyers, onSave, onDelete, onClose }) {
   const [editing, setEditing] = useState(null); // null | {} | existing buyer
   const CATS = ['Poultry', 'Pepper', 'Eggs', 'Goats', 'Other'];
