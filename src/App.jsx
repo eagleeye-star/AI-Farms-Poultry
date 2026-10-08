@@ -14,7 +14,46 @@ import {
 import './App.css';
 import FinancialsModule from './FinancialsModule';
 
-const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
+const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
+
+/* ─── Multi-user profile system ───────────────────────────────────────────
+   Each profile gets its own localStorage key and Supabase row.
+   The user never needs an email/password — just a name + 4-digit PIN.
+   ─────────────────────────────────────────────────────────────────────── */
+const PROFILES_KEY      = 'aifarms_profiles_v1';      // array of { id, name, farmName, pinHash }
+const ACTIVE_PROFILE_KEY = 'aifarms_active_profile';  // id of the currently unlocked profile
+const PROFILE_DATA_KEY  = (uid) => `aifarms_data_${uid}`; // per-profile data key
+
+/** Simple non-cryptographic PIN hash — good enough for local farm data. */
+function hashPin(pin) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < pin.length; i++) {
+    h ^= pin.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+function loadProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function saveProfiles(profiles) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)); } catch {}
+}
+function getActiveProfileId() {
+  try { return localStorage.getItem(ACTIVE_PROFILE_KEY) || null; } catch { return null; }
+}
+function setActiveProfileId(id) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+    else localStorage.removeItem(ACTIVE_PROFILE_KEY);
+  } catch {}
+}
+function getActiveProfile() {
+  const id = getActiveProfileId();
+  if (!id) return null;
+  return loadProfiles().find((p) => p.id === id) || null;
+}
 
 /**
  * Bump this whenever the shape of `data` changes in a way old code
@@ -363,12 +402,28 @@ function migrate(saved) {
   };
 }
 
-function loadData() {
+function loadData(profileId) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return migrate(JSON.parse(raw));
+    // Try profile-specific key first
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : null;
+    if (key) {
+      const raw = localStorage.getItem(key);
+      if (raw) return migrate(JSON.parse(raw));
+    }
+    // Fall back to legacy key (migration path — owner claims existing data)
+    const legacy = localStorage.getItem(STORAGE_KEY);
+    if (legacy) return migrate(JSON.parse(legacy));
   } catch (e) { /* ignore corrupt storage */ }
   return freshData();
+}
+
+function saveData(profileId, dataObj) {
+  try {
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : STORAGE_KEY;
+    localStorage.setItem(key, JSON.stringify(dataObj));
+  } catch (e) {
+    console.warn('Local save failed:', e);
+  }
 }
 
 const FEED_STANDARD = SEED.feedStandard;
@@ -1113,7 +1168,258 @@ function GlobalSearch({ data, flocks, onNavigate }) {
 const ThemeContext = createContext({ theme: 'dark', toggleTheme: () => {} });
 function useTheme() { return useContext(ThemeContext); }
 
+/* ═══════════════════════════════════════════════════════════════
+   ProfileGate — shown on app start when no profile is active.
+   Screens: 'list' → pick a profile or create new
+            'unlock' → enter PIN for chosen profile
+            'create' → enter name + farm name + PIN for new profile
+   ═══════════════════════════════════════════════════════════════ */
+function PinPad({ value, onChange, onSubmit, label, error }) {
+  const digits = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, '⌫'];
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {label && <div style={{ fontSize: 13, color: '#aaa', marginBottom: 10 }}>{label}</div>}
+      {/* PIN dots */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 18 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} style={{
+            width: 16, height: 16, borderRadius: '50%',
+            background: value.length > i ? '#D4A537' : 'rgba(255,255,255,0.15)',
+            border: '2px solid rgba(255,255,255,0.2)', transition: 'background 0.15s',
+          }} />
+        ))}
+      </div>
+      {/* Numpad */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, maxWidth: 220, margin: '0 auto' }}>
+        {digits.map((d, i) => {
+          if (d === null) return <div key={i} />;
+          const isBack = d === '⌫';
+          return (
+            <button key={i} type="button"
+              onClick={() => {
+                if (isBack) { onChange(value.slice(0, -1)); return; }
+                const next = value.length < 4 ? value + String(d) : value;
+                onChange(next);
+                if (next.length === 4) setTimeout(() => onSubmit(next), 120);
+              }}
+              style={{
+                height: 52, borderRadius: 12, fontSize: isBack ? 18 : 20, fontWeight: 700,
+                background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+                color: isBack ? '#888' : '#fff', cursor: 'pointer',
+              }}>{d}</button>
+          );
+        })}
+      </div>
+      {error && <div style={{ color: '#e05c5c', fontSize: 13, marginTop: 12 }}>{error}</div>}
+    </div>
+  );
+}
+
+function ProfileGate({ onUnlocked }) {
+  const [profiles, setProfiles] = useState(loadProfiles);
+  const [screen, setScreen] = useState(() => loadProfiles().length === 0 ? 'create' : 'list'); // 'list' | 'unlock' | 'create'
+  const [selectedId, setSelectedId] = useState(null);
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  // Create form state
+  const [cName, setCName]       = useState('');
+  const [cFarm, setCFarm]       = useState('');
+  const [cPin, setCPin]         = useState('');
+  const [cPin2, setCPin2]       = useState('');
+  const [cStep, setCStep]       = useState(1); // 1=details, 2=pin, 3=confirm
+  const [cError, setCError]     = useState('');
+
+  const hasMigrationData = (() => {
+    try { return !!localStorage.getItem(STORAGE_KEY); } catch { return false; }
+  })();
+
+  function handleUnlock(enteredPin) {
+    const profile = profiles.find((p) => p.id === selectedId);
+    if (!profile) return;
+    if (hashPin(enteredPin) === profile.pinHash) {
+      setActiveProfileId(profile.id);
+      onUnlocked(profile);
+    } else {
+      setPin('');
+      setPinError('Wrong PIN — try again');
+      setTimeout(() => setPinError(''), 2000);
+    }
+  }
+
+  function handleCreate() {
+    if (!cName.trim() || !cFarm.trim()) { setCError('Please fill in your name and farm name.'); return; }
+    setCStep(2); setCError('');
+  }
+
+  function handlePinSet(p) {
+    setCPin(p);
+    if (p.length === 4) { setCStep(3); setCPin2(''); }
+  }
+
+  function handlePinConfirm(p) {
+    setCPin2(p);
+    if (p.length === 4) {
+      if (p !== cPin) {
+        setCError('PINs don\'t match — try again');
+        setCPin(''); setCPin2(''); setCStep(2);
+        setTimeout(() => setCError(''), 2500);
+      } else {
+        finalizeCreate(p);
+      }
+    }
+  }
+
+  function finalizeCreate(confirmedPin) {
+    const id = Math.random().toString(36).slice(2, 12);
+    const profile = { id, name: cName.trim(), farmName: cFarm.trim(), pinHash: hashPin(confirmedPin), createdAt: new Date().toISOString() };
+    const updated = [...profiles, profile];
+    saveProfiles(updated);
+    setProfiles(updated);
+    setActiveProfileId(id);
+
+    // If there is legacy data in the old key and this is the FIRST profile,
+    // migrate it to the new profile key automatically.
+    if (hasMigrationData && profiles.length === 0) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) localStorage.setItem(PROFILE_DATA_KEY(id), raw);
+        // Keep the legacy key for now (don't delete) so there's a backup.
+      } catch {}
+    }
+
+    onUnlocked(profile);
+  }
+
+  const selectedProfile = profiles.find((p) => p.id === selectedId);
+
+  /* ── Render ── */
+  const cardStyle = {
+    background: 'rgba(30,30,30,0.98)', borderRadius: 20, padding: '32px 28px',
+    boxShadow: '0 24px 60px rgba(0,0,0,0.6)', width: '100%', maxWidth: 360,
+    border: '1px solid rgba(255,255,255,0.08)',
+  };
+
+  if (screen === 'unlock') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 40 }}>🌾</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>{selectedProfile?.farmName || 'AI Farms'}</div>
+            <div style={{ fontSize: 14, color: '#888', marginTop: 2 }}>Welcome back, {selectedProfile?.name}</div>
+          </div>
+          <PinPad value={pin} onChange={(v) => { setPin(v); setPinError(''); }} onSubmit={handleUnlock} label="Enter your 4-digit PIN" error={pinError} />
+          <button type="button" onClick={() => { setScreen('list'); setPin(''); setPinError(''); setSelectedId(null); }}
+            style={{ display: 'block', margin: '20px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+            ← Switch profile
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'create') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 36 }}>🌾</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+            <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+              {profiles.length === 0 ? 'Set up your farm profile to get started' : 'Create a new farm profile'}
+            </div>
+          </div>
+
+          {cStep === 1 && (
+            <div>
+              {hasMigrationData && profiles.length === 0 && (
+                <div style={{ background: 'rgba(212,165,55,0.1)', border: '1px solid rgba(212,165,55,0.3)', borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#D4A537', lineHeight: 1.5 }}>
+                  ✅ We found your existing farm data. It will be linked to your new profile automatically.
+                </div>
+              )}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Your Name</div>
+                <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. Gilbert"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Farm Name</div>
+                <input value={cFarm} onChange={(e) => setCFarm(e.target.value)} placeholder="e.g. AI Farms"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              {cError && <div style={{ color: '#e05c5c', fontSize: 13, marginBottom: 10 }}>{cError}</div>}
+              <button type="button" onClick={handleCreate}
+                style={{ width: '100%', padding: '13px', borderRadius: 12, background: '#D4A537', border: 'none', color: '#000', fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>
+                Next →
+              </button>
+            </div>
+          )}
+
+          {cStep === 2 && (
+            <div>
+              <PinPad value={cPin} onChange={handlePinSet} onSubmit={() => {}} label="Choose a 4-digit PIN" error={cError} />
+            </div>
+          )}
+
+          {cStep === 3 && (
+            <div>
+              <PinPad value={cPin2} onChange={handlePinConfirm} onSubmit={() => {}} label="Confirm your PIN" error={cError} />
+            </div>
+          )}
+
+          {profiles.length > 0 && (
+            <button type="button" onClick={() => { setScreen('list'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+              style={{ display: 'block', margin: '18px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+              ← Back
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // screen === 'list'
+  return (
+    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+      <div style={cardStyle}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ fontSize: 36 }}>🌾</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+          <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>Select your farm profile</div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+          {profiles.map((p) => (
+            <button key={p.id} type="button"
+              onClick={() => { setSelectedId(p.id); setPin(''); setPinError(''); setScreen('unlock'); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 14,
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                color: '#fff', cursor: 'pointer', textAlign: 'left',
+              }}>
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(212,165,55,0.2)', border: '2px solid rgba(212,165,55,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+                🧑‍🌾
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{p.farmName}</div>
+              </div>
+              <div style={{ marginLeft: 'auto', color: '#555', fontSize: 18 }}>›</div>
+            </button>
+          ))}
+        </div>
+
+        <button type="button" onClick={() => { setScreen('create'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+          style={{ width: '100%', padding: '12px', borderRadius: 12, background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.3)', color: '#D4A537', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+          + Add new farm profile
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AppRoot() {
+  const [activeProfile, setActiveProfile] = useState(getActiveProfile);
   const [theme, setTheme] = useState(() => {
     try { return localStorage.getItem('aifarms_theme') || 'dark'; } catch { return 'dark'; }
   });
@@ -1125,18 +1431,35 @@ export default function AppRoot() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  if (!activeProfile) {
+    return (
+      <ThemeContext.Provider value={{ theme, toggleTheme }}>
+        <ProfileGate onUnlocked={(profile) => setActiveProfile(profile)} />
+      </ThemeContext.Provider>
+    );
+  }
+
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
       <ToastConfirmProvider>
-        <AppInner />
+        <AppInner
+          profileId={activeProfile.id}
+          profileName={activeProfile.name}
+          farmName={activeProfile.farmName}
+          onSwitchProfile={() => {
+            setActiveProfileId(null);
+            setActiveProfile(null);
+          }}
+        />
       </ToastConfirmProvider>
     </ThemeContext.Provider>
   );
 }
 
-function AppInner() {
+function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   const { showToast, askConfirm } = useToastConfirm();
-  const [data, setData] = useState(loadData);
+  const [data, setData] = useState(() => loadData(profileId));
   const [workspace, setWorkspace] = useState('poultry');
   const [tab, setTab] = useState('dashboard');
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
@@ -1166,12 +1489,8 @@ function AppInner() {
     // window is exactly where an edit could vanish if the tab closes before
     // it fires. Only real gap was the missing guard against Safari private
     // mode / storage quota throwing here.
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) {
-      console.warn('Local save failed (storage full or unavailable):', e);
-    }
-  }, [data]);
+    saveData(profileId, data);
+  }, [data, profileId]);
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
   const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
@@ -2576,10 +2895,13 @@ function AppInner() {
         sync={sync}
         user={user}
         cloudReady={cloudReady}
+        profileName={profileName}
+        farmName={farmName}
         onSetupCloud={() => setShowCloudSetup(true)}
         onSync={() => syncNow('auto')}
         onPull={() => syncNow('pull')}
         onSignOut={handleSignOut}
+        onSwitchProfile={onSwitchProfile}
         onEditProfile={() => setShowProfileForm(true)}
       />
 
@@ -6888,7 +7210,7 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut, onEditProfile }) {
+function SyncBar({ sync, user, cloudReady, profileName, farmName, onSetupCloud, onSync, onPull, onSignOut, onSwitchProfile, onEditProfile }) {
   const configured = cloudReady;
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
@@ -6906,7 +7228,8 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
       <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
       <span className="sync-label">
         {label}
-        {user && <span className="sync-user"> · {user.email}</span>}
+        {profileName && <span className="sync-user"> · 🧑‍🌾 {profileName}</span>}
+        {user && !profileName && <span className="sync-user"> · {user.email}</span>}
         {pendingSync && (
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 10,
@@ -6920,6 +7243,9 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
       </span>
       <span className="sync-actions">
         <button className="link-btn" onClick={onEditProfile}>Farm Profile</button>
+        {onSwitchProfile && (
+          <button className="link-btn" onClick={onSwitchProfile}>Switch profile</button>
+        )}
         {!configured && (
           <button className="link-btn" onClick={onSetupCloud}>Set up cloud sync</button>
         )}
