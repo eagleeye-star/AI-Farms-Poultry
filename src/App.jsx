@@ -1866,6 +1866,21 @@ function AppInner() {
   function deleteDailyTask(id) {
     setData((d) => touch({ ...d, dailyTasks: (d.dailyTasks || []).filter((t) => t.id !== id) }));
   }
+  function updateDailyTask(id, patch) {
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) => t.id === id ? { ...t, ...patch } : t);
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function pushDailyTask(task, toDate) {
+    // Push: update the task's date (move it) and mark not done
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === task.id ? { ...t, date: toDate, done: false, pushedFrom: task.date } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
   function sendSprayEventToTask(ev) {
     // Build a daily task from a spray programme event
     const taskText = ev.rate
@@ -2535,6 +2550,8 @@ function AppInner() {
           onSave={saveDailyTask}
           onToggle={toggleDailyTask}
           onDelete={deleteDailyTask}
+          onUpdate={updateDailyTask}
+          onPush={pushDailyTask}
           onSendToSpray={sendTaskToSpray}
           onClose={() => setShowDailyTasks(false)}
         />
@@ -2708,6 +2725,31 @@ function AppInner() {
           onAdd={() => { setEditingLog(null); setModal('log'); }}
           onEdit={(entry) => { setEditingLog(entry); setModal('log'); }}
           onDelete={deleteDailyLog}
+          onLogDestroyed={({ date, count, cause, matchEntry }) => {
+            if (matchEntry) {
+              // patch the existing entry — add to any existing cracked count
+              const prev = Number(matchEntry.eggsCracked) || 0;
+              updateDailyLog(matchEntry.id, {
+                eggsCracked: prev + count,
+                crackedCause: cause,
+              });
+            } else {
+              // no log entry for that date — store as a standalone destroyed-eggs note
+              addDailyLog({
+                id: newId(),
+                date,
+                flockId: activeFlock.id,
+                opening: latest ? latest.closing : activeFlock.initialBirds,
+                mortality: 0,
+                culls: 0,
+                closing: latest ? latest.closing : activeFlock.initialBirds,
+                eggs: null,
+                eggsCracked: count,
+                crackedCause: cause,
+                notes: `Destroyed eggs logged: ${cause}`,
+              });
+            }
+          }}
         />
       )}
 
@@ -3438,9 +3480,119 @@ function DashboardTab({
   );
 }
 
+/* ---------------- Destroyed Eggs quick-log modal ---------------- */
+
+function DestroyedEggsModal({ dailyLog, onSave, onClose }) {
+  const yesterday = todayISO(); // default to today; user can change to yesterday
+  const [date, setDate] = useState(() => {
+    // default to most recent log date that has eggs
+    const last = [...dailyLog].reverse().find((r) => (Number(r.eggs) || 0) > 0);
+    return last ? last.date : todayISO();
+  });
+  const [count, setCount] = useState('');
+  const [cause, setCause] = useState('Mouse/rat eaten');
+
+  // find the matching log entry for the chosen date
+  const matchEntry = dailyLog.find((r) => r.date === date);
+  const existingCracked = matchEntry ? (Number(matchEntry.eggsCracked) || 0) : 0;
+  const newTotal = existingCracked + (Number(count) || 0);
+
+  function submit() {
+    const n = Number(count);
+    if (!n || n < 1) return;
+    onSave({ date, count: n, cause, matchEntry });
+  }
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: '#1e1e1e', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 480, padding: '20px 20px 32px',
+    boxShadow: '0 -4px 40px rgba(0,0,0,0.7)',
+    border: '1px solid rgba(224,92,92,0.25)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 18 }}>
+          <span style={{ fontSize: 22, marginRight: 10 }}>🐭</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#fff' }}>Log Destroyed Eggs</div>
+            <div style={{ fontSize: 12, color: '#888' }}>Eaten or broken — deducted from stock for that day</div>
+          </div>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#666', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Date */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>Which day?</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
+          {matchEntry
+            ? <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 4 }}>✓ Found log entry for this day — {Number(matchEntry.eggs) || 0} eggs collected{existingCracked > 0 ? `, ${existingCracked} already marked destroyed` : ''}</div>
+            : <div style={{ fontSize: 11, color: '#D4A537', marginTop: 4 }}>⚠ No log entry found for this day — destruction will be recorded as a note</div>
+          }
+        </div>
+
+        {/* Count */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>How many eggs destroyed?</label>
+          <input type="number" min="1" value={count} onChange={(e) => setCount(e.target.value)}
+            placeholder="e.g. 3"
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 20, fontWeight: 700, outline: 'none', boxSizing: 'border-box' }} />
+          {Number(count) > 0 && matchEntry && (
+            <div style={{ fontSize: 11, color: '#e05c5c', marginTop: 4 }}>
+              Total destroyed for {date}: {newTotal} egg{newTotal !== 1 ? 's' : ''}
+              {existingCracked > 0 ? ` (was ${existingCracked}, adding ${count})` : ''}
+            </div>
+          )}
+        </div>
+
+        {/* Cause */}
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>Cause</label>
+          <select value={cause} onChange={(e) => setCause(e.target.value)}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 14, outline: 'none', boxSizing: 'border-box' }}>
+            <option value="Mouse/rat eaten">🐭 Mouse / rat eaten</option>
+            <option value="Broken in crate">📦 Broken in crate</option>
+            <option value="Broken at collection">🤲 Broken at collection</option>
+            <option value="Trampled by birds">🐔 Trampled by birds</option>
+            <option value="Thin shell">🥚 Thin shell</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={onClose}
+            style={{ flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+              color: '#aaa', borderRadius: 10, padding: '11px', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
+            Cancel
+          </button>
+          <button onClick={submit} disabled={!count || Number(count) < 1}
+            style={{ flex: 2, background: Number(count) >= 1 ? 'rgba(224,92,92,0.2)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${Number(count) >= 1 ? 'rgba(224,92,92,0.5)' : 'rgba(255,255,255,0.08)'}`,
+              color: Number(count) >= 1 ? '#e05c5c' : '#444',
+              borderRadius: 10, padding: '11px', cursor: Number(count) >= 1 ? 'pointer' : 'default',
+              fontSize: 14, fontWeight: 700 }}>
+            🐭 Record {count ? `${count} destroyed` : 'destroyed eggs'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Daily Log tab ---------------- */
 
-function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
+function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete, onLogDestroyed }) {
   const { askConfirm } = useToastConfirm();
   // A layer flock racks up hundreds of rows a year — render a page at a
   // time instead of the whole table, which gets sluggish to scroll well
@@ -3450,11 +3602,32 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
   const visible = dailyLog.slice(0, visibleCount);
   const hasMore = dailyLog.length > visibleCount;
 
+  const [showDestroyedModal, setShowDestroyedModal] = useState(false);
+
   return (
     <>
+      {showDestroyedModal && (
+        <DestroyedEggsModal
+          dailyLog={dailyLog}
+          onClose={() => setShowDestroyedModal(false)}
+          onSave={(payload) => {
+            onLogDestroyed && onLogDestroyed(payload);
+            setShowDestroyedModal(false);
+          }}
+        />
+      )}
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Daily Log</h3>
-        <button className="btn btn-gold" onClick={onAdd}>+ Log today's entry</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setShowDestroyedModal(true)}
+            style={{ background: 'rgba(224,92,92,0.15)', border: '1px solid rgba(224,92,92,0.4)',
+              color: '#e05c5c', borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+              fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}>
+            🐭 Destroyed eggs
+          </button>
+          <button className="btn btn-gold" onClick={onAdd}>+ Log today's entry</button>
+        </div>
       </div>
       <div className="table-wrap">
         <table className="data">
@@ -3484,7 +3657,10 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
                 <td className="mono">{r.waterGiven != null ? num(r.waterGiven, 1) : '—'}</td>
                 <td className="mono">{r.lightHours != null ? num(r.lightHours, 1) : '—'}</td>
                 <td className="mono">{num(r.eggs)}</td>
-                <td className="mono">{num(r.eggsCracked)}</td>
+                <td className="mono">
+                  {num(r.eggsCracked)}
+                  {r.crackedCause && <div style={{ fontSize: 10, color: '#e05c5c', opacity: 0.8, whiteSpace: 'nowrap' }}>{r.crackedCause}</div>}
+                </td>
                 <td>{r.medication || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
                 <td>
@@ -3533,6 +3709,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
     lightHours: entry?.lightHours ?? '',
     eggs: entry?.eggs ?? '',
     eggsCracked: entry?.eggsCracked ?? '',
+    crackedCause: entry?.crackedCause || '',
     medication: entry?.medication || '',
     notes: entry?.notes || '',
   });
@@ -3567,6 +3744,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
       lightHours: f.lightHours === '' ? null : Number(f.lightHours),
       eggs: f.eggs === '' ? null : Number(f.eggs),
       eggsCracked: f.eggsCracked === '' ? null : Number(f.eggsCracked),
+      crackedCause: (f.eggsCracked && Number(f.eggsCracked) > 0 && f.crackedCause) ? f.crackedCause : null,
       medication: f.medication || null,
       notes: f.notes || null,
     });
@@ -3607,7 +3785,29 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
         <Field label="Water given (L)"><input type="number" step="0.1" value={f.waterGiven} onChange={set('waterGiven')} /></Field>
         <Field label="Light hours"><input type="number" step="0.5" value={f.lightHours} onChange={set('lightHours')} /></Field>
         <Field label="Eggs collected (total)"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
-        <Field label="Eggs cracked/broken"><input type="number" value={f.eggsCracked} onChange={set('eggsCracked')} /></Field>
+        <Field label="🐭 Destroyed / lost eggs" span2>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="number" min="0" value={f.eggsCracked} onChange={set('eggsCracked')}
+              placeholder="0"
+              style={{ flex: '0 0 90px' }} />
+            <select value={f.crackedCause || ''} onChange={set('crackedCause')}
+              style={{ flex: 1, opacity: Number(f.eggsCracked) > 0 ? 1 : 0.45 }}
+              disabled={!Number(f.eggsCracked)}>
+              <option value="">— cause (optional) —</option>
+              <option value="Mouse/rat eaten">🐭 Mouse / rat eaten</option>
+              <option value="Broken in crate">📦 Broken in crate</option>
+              <option value="Broken at collection">🤲 Broken at collection</option>
+              <option value="Trampled by birds">🐔 Trampled by birds</option>
+              <option value="Thin shell">🥚 Thin shell</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          {Number(f.eggsCracked) > 0 && (
+            <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--rust)', opacity: 0.8 }}>
+              ⚠ {f.eggsCracked} egg{Number(f.eggsCracked) !== 1 ? 's' : ''} will be deducted from your stock
+            </p>
+          )}
+        </Field>
         <Field label="Grade A eggs"><input type="number" value={f.gradeA ?? ''} onChange={set('gradeA')} placeholder="Large, clean" /></Field>
         <Field label="Grade B eggs"><input type="number" value={f.gradeB ?? ''} onChange={set('gradeB')} placeholder="Small or stained" /></Field>
         <Field label="Medication / vaccine given" span2><input value={f.medication} onChange={set('medication')} /></Field>
@@ -12182,14 +12382,18 @@ const FARM_TABS = [
   { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
 ];
 
-function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSendToSpray, onClose }) {
+function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onUpdate, onPush, onSendToSpray, onClose }) {
   const [viewDate, setViewDate] = useState(todayISO());
   const [activeFarm, setActiveFarm] = useState('poultry');
   const [newText, setNewText] = useState('');
   const [newPriority, setNewPriority] = useState('normal');
+  const [newEndDate, setNewEndDate] = useState(''); // for multi-day tasks
+  const [isMultiDay, setIsMultiDay] = useState(false);
   // Pepper-specific extra fields on the add form
   const [newFieldId, setNewFieldId] = useState('');
   const [newChemical, setNewChemical] = useState('');
+  // Push-to-day state: { taskId, currentDate }
+  const [pushState, setPushState] = useState(null); // null or { task, toDate }
   const inputRef = useRef(null);
 
   const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
@@ -12237,12 +12441,18 @@ function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSe
       done: false,
       createdAt: new Date().toISOString(),
     };
+    if (isMultiDay && newEndDate && newEndDate > viewDate) {
+      task.endDate = newEndDate;
+      task.multiDay = true;
+    }
     if (isPepper) {
       if (newFieldId) task.fieldId = newFieldId;
       if (newChemical.trim()) task.chemical = newChemical.trim();
     }
     onSave(task);
     setNewText('');
+    setIsMultiDay(false);
+    setNewEndDate('');
     if (isPepper) { setNewFieldId(''); setNewChemical(''); }
     setTimeout(() => inputRef.current?.focus(), 30);
   }
@@ -12293,7 +12503,7 @@ function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSe
             const badge = farmBadge(f.key);
             const isActive = activeFarm === f.key;
             return (
-              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); setNewFieldId(''); setNewChemical(''); }}
+              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); setNewFieldId(''); setNewChemical(''); setIsMultiDay(false); setNewEndDate(''); }}
                 style={{
                   flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
                   background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
@@ -12370,74 +12580,168 @@ function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSe
             </div>
           )}
 
-          {dayTasks.map((t) => (
+          {dayTasks.map((t) => {
+            const isPushing = pushState?.task?.id === t.id;
+            // multi-day progress
+            const mdStart = t.date;
+            const mdEnd = t.endDate;
+            const mdTotal = mdEnd ? Math.max(1, Math.round((new Date(mdEnd) - new Date(mdStart)) / 86400000) + 1) : null;
+            const mdElapsed = mdEnd ? Math.max(0, Math.round((new Date(viewDate) - new Date(mdStart)) / 86400000) + 1) : null;
+            const mdPct = mdTotal ? Math.min(100, Math.round((mdElapsed / mdTotal) * 100)) : null;
+
+            return (
             <div key={t.id} style={{
-              display: 'flex', alignItems: 'flex-start', gap: 10,
-              padding: '10px 12px', marginBottom: 6, borderRadius: 10,
+              marginBottom: 6, borderRadius: 10,
               background: t.done ? 'rgba(106,191,106,0.06)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${t.done ? 'rgba(106,191,106,0.2)' : `rgba(${t.priority==='high'?'224,92,92':t.priority==='low'?'106,191,106':'212,165,55'},0.18)`}`,
-              transition: 'all 0.2s',
+              transition: 'all 0.2s', overflow: 'hidden',
             }}>
-              {/* Checkbox */}
-              <button
-                onClick={() => onToggle(t.id)}
-                style={{
-                  width: 24, height: 24, flexShrink: 0, borderRadius: 6, cursor: 'pointer',
-                  border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || activeFarmObj.color}`,
-                  background: t.done ? '#6abf6a' : 'transparent',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, color: '#000', marginTop: 1,
-                }}
-              >{t.done ? '✓' : ''}</button>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px' }}>
+                {/* Checkbox */}
+                <button
+                  onClick={() => onToggle(t.id)}
+                  style={{
+                    width: 24, height: 24, flexShrink: 0, borderRadius: 6, cursor: 'pointer',
+                    border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || activeFarmObj.color}`,
+                    background: t.done ? '#6abf6a' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, color: '#000', marginTop: 1,
+                  }}
+                >{t.done ? '✓' : ''}</button>
 
-              {/* Text + priority badge + pepper spray meta */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontSize: 14, color: t.done ? '#666' : '#e8e8e8',
-                  textDecoration: t.done ? 'line-through' : 'none',
-                  lineHeight: 1.4, wordBreak: 'break-word',
-                }}>{t.text}</div>
-                {/* Show field + chemical if saved with task */}
-                {t.farm === 'pepper' && (t.fieldId || t.chemical) && (
-                  <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {t.fieldId && <span>📍 {fieldName(t.fieldId)}</span>}
-                    {t.chemical && <span>🧪 {t.chemical}</span>}
+                {/* Text + badges */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 14, color: t.done ? '#666' : '#e8e8e8',
+                    textDecoration: t.done ? 'line-through' : 'none',
+                    lineHeight: 1.4, wordBreak: 'break-word',
+                  }}>{t.text}</div>
+
+                  {/* Multi-day span label */}
+                  {t.multiDay && t.endDate && (
+                    <div style={{ fontSize: 11, color: '#8fa8c8', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>📅 {fmtDate(t.date)} → {fmtDate(t.endDate)}</span>
+                      <span style={{ color: '#555' }}>·</span>
+                      <span>{mdTotal} day{mdTotal !== 1 ? 's' : ''}</span>
+                      {mdPct !== null && !t.done && (
+                        <span style={{ color: mdPct >= 100 ? '#6abf6a' : '#D4A537' }}>Day {Math.min(mdElapsed, mdTotal)}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Pushed-from note */}
+                  {t.pushedFrom && (
+                    <div style={{ fontSize: 10, color: '#8fa8c8', marginTop: 2 }}>
+                      ↩ Pushed from {fmtDate(t.pushedFrom)}
+                    </div>
+                  )}
+
+                  {/* Pepper meta */}
+                  {t.farm === 'pepper' && (t.fieldId || t.chemical) && (
+                    <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {t.fieldId && <span>📍 {fieldName(t.fieldId)}</span>}
+                      {t.chemical && <span>🧪 {t.chemical}</span>}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+                    {t.priority && t.priority !== 'normal' && (
+                      <span style={{ fontSize: 10, color: PRIORITY_COLORS[t.priority], fontWeight: 700 }}>
+                        {PRIORITY_LABELS[t.priority]}
+                      </span>
+                    )}
+                    {t.sentToSpray && (
+                      <span style={{ fontSize: 10, color: '#6abf6a', fontWeight: 700 }}>✓ Spray Log</span>
+                    )}
                   </div>
-                )}
-                {t.priority && t.priority !== 'normal' && (
-                  <span style={{
-                    fontSize: 10, color: PRIORITY_COLORS[t.priority], fontWeight: 700,
-                    marginTop: 2, display: 'inline-block',
-                  }}>{PRIORITY_LABELS[t.priority]}</span>
-                )}
-                {/* Sent-to-spray badge */}
-                {t.sentToSpray && (
-                  <span style={{
-                    fontSize: 10, color: '#6abf6a', fontWeight: 700,
-                    marginTop: 2, marginLeft: 4, display: 'inline-block',
-                  }}>✓ Sent to Spray Log</span>
-                )}
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, alignItems: 'flex-end' }}>
+                  {/* → Spray Log */}
+                  {t.farm === 'pepper' && !t.sentToSpray && onSendToSpray && (
+                    <button onClick={() => onSendToSpray(t)}
+                      style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66',
+                        borderRadius: 7, padding: '3px 7px', cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                        lineHeight: 1.4, whiteSpace: 'nowrap' }}>→ Spray</button>
+                  )}
+                  {/* Push to day */}
+                  {!t.done && onPush && (
+                    <button
+                      onClick={() => setPushState(isPushing ? null : { task: t, toDate: addDaysISO(t.date, 1) })}
+                      title="Push to another day"
+                      style={{ background: isPushing ? 'rgba(143,168,200,0.2)' : 'rgba(255,255,255,0.06)',
+                        border: `1px solid ${isPushing ? 'rgba(143,168,200,0.5)' : 'rgba(255,255,255,0.12)'}`,
+                        color: isPushing ? '#8fa8c8' : '#888',
+                        borderRadius: 7, padding: '3px 7px', cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                        lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+                      {isPushing ? '✕ Cancel' : '📅 Push'}
+                    </button>
+                  )}
+                  {/* Delete */}
+                  <button onClick={() => onDelete(t.id)}
+                    style={{ background: 'none', border: 'none', color: '#444', cursor: 'pointer', fontSize: 15, padding: '0 2px', lineHeight: 1 }}
+                    title="Remove task">🗑</button>
+                </div>
               </div>
 
-              {/* → Spray Log button (pepper tasks only, not yet sent) */}
-              {t.farm === 'pepper' && !t.sentToSpray && onSendToSpray && (
-                <button
-                  onClick={() => onSendToSpray(t)}
-                  title="Push to Pepper Spray Log"
-                  style={{
-                    background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655',
-                    color: '#7A9A66', borderRadius: 7, padding: '3px 7px',
-                    cursor: 'pointer', fontSize: 11, fontWeight: 700, flexShrink: 0,
-                    lineHeight: 1.4, whiteSpace: 'nowrap',
-                  }}>→ Spray Log</button>
+              {/* Multi-day progress bar */}
+              {t.multiDay && t.endDate && mdTotal && !t.done && (
+                <div style={{ padding: '0 12px 8px' }}>
+                  <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${Math.min(100, mdPct)}%`, background: '#8fa8c8', borderRadius: 3, transition: 'width 0.3s' }} />
+                  </div>
+                </div>
               )}
 
-              {/* Delete */}
-              <button onClick={() => onDelete(t.id)}
-                style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 16, padding: '0 2px', lineHeight: 1, flexShrink: 0 }}
-                title="Remove task">🗑</button>
+              {/* Push-to-day picker (inline, expands below card) */}
+              {isPushing && (
+                <div style={{ padding: '0 12px 12px', borderTop: '1px solid rgba(143,168,200,0.15)' }}>
+                  <div style={{ fontSize: 11, color: '#8fa8c8', marginBottom: 6, marginTop: 8, fontWeight: 600 }}>
+                    📅 Move this task to:
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {/* Quick day shortcuts */}
+                    {[
+                      { label: 'Tomorrow', date: addDaysISO(todayISO(), 1) },
+                      { label: 'In 2 days', date: addDaysISO(todayISO(), 2) },
+                      { label: 'Next week', date: addDaysISO(todayISO(), 7) },
+                    ].map(({ label, date }) => (
+                      <button key={label}
+                        onClick={() => setPushState((ps) => ({ ...ps, toDate: date }))}
+                        style={{
+                          background: pushState.toDate === date ? 'rgba(143,168,200,0.25)' : 'rgba(255,255,255,0.06)',
+                          border: `1px solid ${pushState.toDate === date ? 'rgba(143,168,200,0.6)' : 'rgba(255,255,255,0.12)'}`,
+                          color: pushState.toDate === date ? '#8fa8c8' : '#888',
+                          borderRadius: 7, padding: '4px 9px', cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                        }}>{label}</button>
+                    ))}
+                    <input type="date" value={pushState.toDate}
+                      min={addDaysISO(todayISO(), 1)}
+                      onChange={(e) => setPushState((ps) => ({ ...ps, toDate: e.target.value }))}
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+                        color: '#fff', borderRadius: 7, padding: '4px 8px', fontSize: 12, outline: 'none' }} />
+                    <button
+                      onClick={() => {
+                        if (pushState.toDate) {
+                          onPush(pushState.task, pushState.toDate);
+                          setPushState(null);
+                          // navigate to the target date so user sees it land
+                          setViewDate(pushState.toDate);
+                        }
+                      }}
+                      disabled={!pushState.toDate}
+                      style={{ background: 'rgba(143,168,200,0.2)', border: '1px solid rgba(143,168,200,0.5)',
+                        color: '#8fa8c8', borderRadius: 7, padding: '4px 12px', cursor: 'pointer',
+                        fontSize: 12, fontWeight: 700 }}>
+                      ✓ Move
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* ── Add task form ── */}
@@ -12457,6 +12761,38 @@ function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onSe
               >{PRIORITY_LABELS[p]}</button>
             ))}
           </div>
+          {/* Multi-day toggle */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <button type="button"
+              onClick={() => { setIsMultiDay(!isMultiDay); setNewEndDate(''); }}
+              style={{
+                padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                border: `1px solid ${isMultiDay ? 'rgba(143,168,200,0.6)' : 'rgba(255,255,255,0.1)'}`,
+                background: isMultiDay ? 'rgba(143,168,200,0.18)' : 'transparent',
+                color: isMultiDay ? '#8fa8c8' : '#555', whiteSpace: 'nowrap',
+              }}>
+              📅 {isMultiDay ? 'Multi-day ✓' : 'Multi-day'}
+            </button>
+            {isMultiDay && (
+              <>
+                <span style={{ fontSize: 11, color: '#666' }}>ends</span>
+                <input type="date" value={newEndDate}
+                  min={addDaysISO(viewDate, 1)}
+                  onChange={(e) => setNewEndDate(e.target.value)}
+                  style={{
+                    flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(143,168,200,0.4)',
+                    color: newEndDate ? '#8fa8c8' : '#666', borderRadius: 7, padding: '5px 8px',
+                    fontSize: 12, outline: 'none',
+                  }} />
+                {newEndDate && (
+                  <span style={{ fontSize: 10, color: '#8fa8c8', whiteSpace: 'nowrap' }}>
+                    {Math.round((new Date(newEndDate) - new Date(viewDate)) / 86400000) + 1}d
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+
           {/* Pepper-only: field selector + chemical input */}
           {isPepper && (
             <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
