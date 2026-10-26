@@ -1020,7 +1020,7 @@ function GlobalSearch({ data, flocks, onNavigate }) {
       if (text.includes(q)) hits.push({
         id: `phv-${h.id}`, icon: '🌶',
         title: `Pepper harvest — ${h.fieldName || 'field'}`,
-        sub: `${fmtDate(h.date)} · ${h.weightKg}kg${h.buyer?' · '+h.buyer:''}`,
+        sub: `${fmtDate(h.date)} · ${harvestQtyLabel(h)}${h.buyer?' · '+h.buyer:''}`,
         action: { workspace: 'pepper', tab: 'harvests' },
       });
     });
@@ -1763,9 +1763,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     const allEvents = [];
     // Poultry sales
     (data.sales || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'Poultry', amount: Number(s.amount) }); });
-    // Pepper harvests (weightKg × pricePerKg)
+    // Pepper harvests
     (data.pepper?.harvests || []).forEach((h) => {
-      const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+      const amt = harvestRev(h);
       if (h.date && amt) allEvents.push({ date: h.date, section: 'Pepper', amount: amt });
     });
     // Goat sales (revenue field is `price`)
@@ -2043,8 +2043,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     setInvoicePrefill({
       kind: 'invoice', date: harvest.date, buyerName: harvest.buyer || '',
       item: `Bell peppers${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
-      quantity: harvest.weightKg, unitPrice: harvest.pricePerKg,
-      amount: (Number(harvest.weightKg) || 0) * (Number(harvest.pricePerKg) || 0),
+      quantity: (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
+      unitPrice: (harvest.unit && harvest.unit !== 'kg') ? harvest.pricePerUnit : harvest.pricePerKg,
+      amount: harvestRev(harvest),
     });
   }
   function openInvoiceFromGoatSale(sale, goatLabel) {
@@ -4916,6 +4917,41 @@ const PEST_OPTIONS = [
 const SEVERITY = ['Low', 'Medium', 'High'];
 const SPRAY_TYPES = ['Insecticide', 'Fungicide', 'Foliar feed', 'Fertigation', 'Other'];
 const GRADES = ['Grade A', 'Grade B', 'Reject / off-grade'];
+const HARVEST_UNITS = ['kg', 'sack', 'crate'];
+
+/** Calculates pepper harvest revenue regardless of unit type.
+ *  For kg:    weightKg × pricePerKg
+ *  For sack/crate: quantity × pricePerUnit
+ *  Falls back gracefully for old records that only have weightKg/pricePerKg. */
+function harvestRev(h) {
+  const unit = h.unit || 'kg';
+  if (unit === 'kg') {
+    return (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+  }
+  return (Number(h.quantity) || 0) * (Number(h.pricePerUnit) || 0);
+}
+
+/** Returns a short display string for harvest quantity e.g. "50 kg", "12 sacks", "5 crates" */
+function harvestQtyLabel(h) {
+  const unit = h.unit || 'kg';
+  if (unit === 'kg') return `${num(h.weightKg, 1)} kg`;
+  const qty = Number(h.quantity) || 0;
+  if (unit === 'sack') {
+    const s5 = sackToSize5(h);
+    return `${num(qty, 0)} sack${qty !== 1 ? 's' : ''} (${num(s5, 2)} Size 5)`;
+  }
+  return `${num(qty, 0)} ${unit}${qty !== 1 ? 's' : ''}`;
+}
+
+/** Converts farm 50 kg sacks to market Size 5 sacks.
+ *  Size 5 = 2.5 × 50 kg sacks, so Size 5 count = quantity ÷ 2.5.
+ *  sackWeightKg defaults to 50 for old records. */
+function sackToSize5(h) {
+  const sackKg = Number(h.sackWeightKg) || 50;
+  const size5Kg = 125; // 2.5 × 50 kg = 125 kg per Size 5
+  const totalKg = (Number(h.quantity) || 0) * sackKg;
+  return totalKg / size5Kg;
+}
 
 function sev2num(s) { return s === 'High' ? 3 : s === 'Medium' ? 2 : s === 'Low' ? 1 : 0; }
 function addDaysISO(iso, days) {
@@ -5085,7 +5121,7 @@ function PepperWorkspace({
 
   const totalPlants = fieldsScoped.reduce((s, f) => s + (Number(f.plantCount) || 0), 0);
   const totalKg = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
-  const revenue = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const revenue = harvestScoped.reduce((s, h) => s + harvestRev(h), 0);
   const inputCost = sprayScoped.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const setupCost = fieldsScoped.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
   // Structures (net houses, drip) charged over their life, plus running
@@ -5175,7 +5211,7 @@ function PepperWorkspace({
   const harvestChart = harvestScoped.map((h) => ({
     date: fmtDate(h.date).slice(0, 6),
     kg: Number(h.weightKg) || 0,
-    revenue: Math.round((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)),
+    revenue: Math.round(harvestRev(h)),
   }));
   const pressureChart = scoutScoped.map((s) => ({
     date: fmtDate(s.date).slice(0, 6),
@@ -5595,7 +5631,7 @@ function PepperDashboard({
 
       {/* Payment mode breakdown — pepper */}
       {(() => {
-        const pm = calcPayModeTotals(harvestScoped, (h) => (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0));
+        const pm = calcPayModeTotals(harvestScoped, (h) => harvestRev(h));
         return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />;
       })()}
 
@@ -6741,15 +6777,16 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
 
   const totalOwed = rows.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') {
-      const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
-      s += calcOwed(r, rev);
+      s += calcOwed(r, harvestRev(r));
     }
     return s;
   }, 0);
 
   const visibleRows = filterByPeriod(rows, period, customStart, customEnd);
   const periodKg = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0), 0);
-  const periodRev = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0), 0);
+  const periodRev = visibleRows.reduce((s, r) => s + harvestRev(r), 0);
+  const periodSacks = visibleRows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+  const periodSize5 = visibleRows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + sackToSize5(r), 0);
 
   return (
     <>
@@ -6757,12 +6794,18 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
         <h3 style={{ fontSize: 18 }}>Harvest &amp; Sales</h3>
         <button className="btn btn-green" onClick={onAdd}>+ Log harvest</button>
       </div>
-      {rows.length > 0 && (
-        <p className="stat-foot" style={{ marginBottom: 10 }}>
-          All time: <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong> ·
-          revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
-        </p>
-      )}
+      {rows.length > 0 && (() => {
+        const allSacks = rows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+        const allSize5 = rows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + sackToSize5(r), 0);
+        return (
+          <p className="stat-foot" style={{ marginBottom: 10 }}>
+            All time:
+            {totalKg > 0 && <> <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong></>}
+            {allSacks > 0 && <> · <strong style={{ color: '#D4A537' }}>{num(allSacks, 0)} sacks</strong> ({num(allSize5, 2)} Size 5)</>}
+            {' '}· revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
+          </p>
+        );
+      })()}
       {totalOwed > 0 && (
         <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
           ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from pepper harvests.
@@ -6775,24 +6818,34 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
       />
       {period !== 'all' && visibleRows.length > 0 && (
         <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
-          {visibleRows.length} harvest(s) · <strong style={{ color: 'var(--green)' }}>{num(periodKg, 1)} kg</strong> · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRev, 2)}</strong>
+          {visibleRows.length} harvest(s)
+          {periodKg > 0 && <> · <strong style={{ color: 'var(--green)' }}>{num(periodKg, 1)} kg</strong></>}
+          {periodSacks > 0 && <> · <strong style={{ color: '#D4A537' }}>{num(periodSacks, 0)} sacks</strong> (<strong style={{ color: '#D4A537' }}>{num(periodSize5, 2)} Size 5</strong>)</>}
+          {' '}· Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRev, 2)}</strong>
         </p>
       )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Field</th><th>Qty / Weight</th><th>Unit</th><th>Size 5 equiv.</th><th>Grade</th><th>Price/unit</th><th>Revenue</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {visibleRows.map((r) => {
-              const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
+              const rev = harvestRev(r);
+              const unit = r.unit || 'kg';
+              const priceLabel = unit === 'kg' ? (r.pricePerKg != null ? `GH₵ ${num(r.pricePerKg, 2)}/kg` : '—')
+                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit}` : '—');
               return (
                 <tr key={r.id}>
                   <td className="mono">{fmtDate(r.date)}</td>
                   <td>{fieldName(r.fieldId)}</td>
-                  <td className="mono">{num(r.weightKg, 1)}</td>
+                  <td className="mono">{unit === 'sack' ? `${num(r.quantity, 0)} sack${Number(r.quantity) !== 1 ? 's' : ''}` : harvestQtyLabel(r)}</td>
+                  <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
+                  <td className="mono" style={{ color: unit === 'sack' ? '#D4A537' : '#666' }}>
+                    {unit === 'sack' ? `${num(sackToSize5(r), 2)}` : '—'}
+                  </td>
                   <td>{r.grade ? <span className={`tag ${r.grade.startsWith('Grade A') ? 'green' : r.grade.startsWith('Grade B') ? 'gold' : 'rust'}`}>{r.grade}</span> : '—'}</td>
-                  <td className="mono">{r.pricePerKg != null ? num(r.pricePerKg, 2) : '—'}</td>
+                  <td className="mono">{priceLabel}</td>
                   <td className="mono">{rev ? `GH₵ ${num(rev, 2)}` : '—'}</td>
                   <td>{r.buyer || '—'}</td>
                   <td>
@@ -6803,7 +6856,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
                           onClick={() => onUpdateHarvest(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
                       )}
                       {(r.paymentStatus || 'paid') === 'credit' && onHarvestPayment && (
-                        <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal({ ...r, _rev: rev })}>Log payment</button>
+                        <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal({ ...r, _rev: harvestRev(r) })}>Log payment</button>
                       )}
                     </div>
                   </td>
@@ -6812,7 +6865,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
                 </tr>
               );
             })}
-            {visibleRows.length === 0 && <tr><td colSpan={10} className="empty">{rows.length === 0 ? 'No harvest logged yet — record each pick to build your yield and revenue picture.' : 'No harvests in this period.'}</td></tr>}
+            {visibleRows.length === 0 && <tr><td colSpan={12} className="empty">{rows.length === 0 ? 'No harvest logged yet — record each pick to build your yield and revenue picture.' : 'No harvests in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -6834,31 +6887,68 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
 }
 
 function HarvestForm({ fields, defaultField, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
+  const [f, setF] = useState({
+    date: todayISO(), fieldId: defaultField,
+    unit: 'kg',
+    weightKg: '',      // used when unit === 'kg'
+    quantity: '',      // used when unit === 'sack' or 'crate'
+    sackWeightKg: '50', // weight of each farm sack (default 50 kg)
+    grade: GRADES[0],
+    pricePerKg: '',    // used when unit === 'kg'
+    pricePerUnit: '',  // used when unit === 'sack' or 'crate'
+    buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '',
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const rev = (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0);
+
+  const isByWeight = f.unit === 'kg';
+  const isSack = f.unit === 'sack';
+  const rev = isByWeight
+    ? (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0)
+    : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
+
+  // Size 5 equivalent — only meaningful for sacks
+  const previewSize5 = isSack
+    ? ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125
+    : null;
+
   const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
   const splitOk = splitTotal === 0 || Math.abs(splitTotal - rev) < 0.01;
   const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
+
+  const canSave = f.date && f.fieldId && (isByWeight ? f.weightKg !== '' : f.quantity !== '');
+
   function submit() {
-    if (!f.date || !f.fieldId || f.weightKg === '') return;
+    if (!canSave) return;
     const cash = Number(f.cashAmount) || 0;
     const momo = Number(f.momoAmount) || 0;
     const credit = Number(f.creditAmount) || 0;
     const hasAnySplit = cash + momo + credit > 0;
-    onSave({
-      id: newId(), date: f.date, fieldId: f.fieldId, weightKg: Number(f.weightKg),
-      grade: f.grade || null, pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg),
+    const base = {
+      id: newId(), date: f.date, fieldId: f.fieldId,
+      unit: f.unit,
+      grade: f.grade || null,
       buyer: f.buyer || null, notes: f.notes || null,
       cashAmount: hasAnySplit ? cash : rev,
       momoAmount: hasAnySplit ? momo : 0,
       creditAmount: hasAnySplit ? credit : 0,
       paymentStatus: hasCreditSplit ? 'credit' : 'paid',
       payments: [],
-    });
+    };
+    if (isByWeight) {
+      onSave({ ...base, weightKg: Number(f.weightKg), pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg) });
+    } else if (f.unit === 'sack') {
+      const sackKg = Number(f.sackWeightKg) || 50;
+      const size5Sacks = ((Number(f.quantity) || 0) * sackKg) / 125;
+      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+    } else {
+      onSave({ ...base, quantity: Number(f.quantity), pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+    }
   }
+
+  const unitLabel = f.unit === 'sack' ? 'sack' : f.unit === 'crate' ? 'crate' : 'kg';
+
   return (
-    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter weight and price to see revenue.'} onClose={onClose}>
+    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Field">
@@ -6866,16 +6956,50 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
             {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
           </select>
         </Field>
-        <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
+
+        {/* Unit selector */}
+        <Field label="Sell by">
+          <select value={f.unit} onChange={set('unit')}>
+            <option value="kg">Weight (kg)</option>
+            <option value="sack">Sacks</option>
+            <option value="crate">Crates</option>
+          </select>
+        </Field>
+
+        {/* Quantity field — label changes with unit */}
+        {isByWeight
+          ? <Field label="Weight (kg)"><input type="number" step="0.1" min="0" value={f.weightKg} onChange={set('weightKg')} placeholder="e.g. 50" /></Field>
+          : <Field label={`No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
+        }
+
+        {/* Sack weight + Size 5 conversion — only shown when unit = sack */}
+        {isSack && (
+          <Field label="Each sack weighs (kg)">
+            <input type="number" step="1" min="1" value={f.sackWeightKg} onChange={set('sackWeightKg')} placeholder="50" />
+          </Field>
+        )}
+        {isSack && previewSize5 != null && Number(f.quantity) > 0 && (
+          <Field label="= Size 5 sacks (market)">
+            <input value={`${num(previewSize5, 2)} Size 5 sack${previewSize5 !== 1 ? 's' : ''}`} disabled style={{ color: '#D4A537', fontWeight: 600 }} />
+          </Field>
+        )}
+
         <Field label="Grade">
           <select value={f.grade} onChange={set('grade')}>
             {GRADES.map((g) => <option key={g}>{g}</option>)}
           </select>
         </Field>
-        <Field label="Price per kg (GH₵)"><input type="number" step="0.01" value={f.pricePerKg} onChange={set('pricePerKg')} /></Field>
-        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, etc." /></Field>
+
+        {/* Price field — label changes with unit */}
+        {isByWeight
+          ? <Field label="Price per kg (GH₵)"><input type="number" step="0.01" min="0" value={f.pricePerKg} onChange={set('pricePerKg')} placeholder="per kg" /></Field>
+          : <Field label={`Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={`per ${unitLabel}`} /></Field>
+        }
+
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, trader…" /></Field>
         <Field label="Revenue (auto)"><input value={rev ? `GH₵ ${num(rev, 2)}` : '—'} disabled /></Field>
       </div>
+
       {/* Payment mode split */}
       <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
         💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split across modes — leave blank if all cash)</span>
@@ -6893,7 +7017,7 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
       )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save harvest</button>
+        <button className="btn btn-green" onClick={submit} disabled={!canSave || (splitTotal > 0 && !splitOk)}>Save harvest</button>
       </div>
     </Modal>
   );
@@ -11233,7 +11357,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
 
   // ---- Pepper ----
   const p = data.pepper || {};
-  const pepperRevenue = (p.harvests || []).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const pepperRevenue = (p.harvests || []).reduce((s, h) => s + harvestRev(h), 0);
   const sprayCost = (p.sprays || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const fieldSetup = fields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
   const pepperCost = sprayCost + fieldSetup + runningCost('pepper') + capexCharge('pepper');
@@ -12830,7 +12954,7 @@ function BatchPerformanceView({ fields, batches, soilReadings, harvests, scoutin
         const batchScouting = scouting.filter(inWindow);
         const batchSprays = sprays.filter(inWindow);
         const kg = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
-        const revenue = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+        const revenue = batchHarvests.reduce((s, h) => s + harvestRev(h), 0);
         const sprayCost = batchSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
         const cost = (Number(b.setupCost) || 0) + sprayCost;
         const margin = revenue - cost;
@@ -13272,7 +13396,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
     const fSprays   = filterByP(safeSprays.filter((s) => s.fieldId === fid));
     const fExp      = filterByP(safeCropExpenses.filter((e) => e.fieldId === fid));
     const setupCost = (fields.find((f) => f.id === fid) || {}).setupCost || 0;
-    const rev  = fHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+    const rev  = fHarvests.reduce((s, h) => s + harvestRev(h), 0);
     const cost = fSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0)
                + fExp.reduce((s, e) => s + (Number(e.amount) || 0), 0)
                + (period === 'all' ? Number(setupCost) : 0);
@@ -13287,7 +13411,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
     ? activeFields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0)
     : 0;
 
-  const totalRev    = visHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const totalRev    = visHarvests.reduce((s, h) => s + harvestRev(h), 0);
   const sprayCost   = visSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const expCost     = visExp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const totalCost   = sprayCost + expCost + visSetup;
@@ -13433,18 +13557,20 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
       {subTab === 'income' && (
         <div className="table-wrap">
           <table className="data">
-            <thead><tr><th>Date</th><th>Field</th><th>Buyer</th><th>Grade</th><th>Kg</th><th>Price/kg</th><th>Amount</th></tr></thead>
+            <thead><tr><th>Date</th><th>Field</th><th>Buyer</th><th>Grade</th><th>Qty</th><th>Unit</th><th>Price</th><th>Amount</th></tr></thead>
             <tbody>
               {[...visHarvests].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((h) => {
-                const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+                const amt = harvestRev(h);
+                const unit = h.unit || 'kg';
                 return (
                   <tr key={h.id}>
                     <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(h.date)}</td>
                     <td>{fieldName(h.fieldId)}</td>
                     <td>{h.buyer || '—'}</td>
                     <td>{h.grade ? <span className="tag green">{h.grade}</span> : '—'}</td>
-                    <td className="mono">{num(h.weightKg, 1)} kg</td>
-                    <td className="mono">{h.pricePerKg ? ghc(h.pricePerKg) : '—'}</td>
+                    <td className="mono">{harvestQtyLabel(h)}</td>
+                    <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
+                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit}` : '—')}</td>
                     <td className="mono gold">{ghc(amt)}</td>
                   </tr>
                 );
@@ -14341,7 +14467,7 @@ function WeeklySummaryPanel({ data, onClose }) {
   const pepperSprays = (data.pepper?.sprays || []).filter((r) => inW(r.date || ''));
   const pepperHarvests = (data.pepper?.harvests || []).filter((h) => inW(h.date || ''));
   const pepperHarvestKg = pepperHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
-  const pepperRevenue = pepperHarvests.reduce((s, h) => s + ((Number(h.weightKg)||0) * (Number(h.pricePerKg)||0)), 0);
+  const pepperRevenue = pepperHarvests.reduce((s, h) => s + harvestRev(h), 0);
   const pepperSprayCost = pepperSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const pepperExpenses = (data.expenses || []).filter((e) => e.scope === 'pepper' && inW(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const pepperPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && (c.farm === 'pepper' || (c.farm || '').startsWith('pepper__'))).reduce((s, c) => s + (Number(c.amount) || 0), 0);
@@ -15218,7 +15344,7 @@ function RevenueGoalTracker({ goals, data, onSave, onDelete, onClose }) {
     const { start, end } = periodRange(p);
     const inP = (d) => d >= start && d <= end;
     const pp = data.pepper || {};
-    const revenue = (pp.harvests || []).filter((h) => inP(h.date || '')).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+    const revenue = (pp.harvests || []).filter((h) => inP(h.date || '')).reduce((s, h) => s + harvestRev(h), 0);
     const sprayCost = (pp.sprays || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
     const expCost   = (data.expenses || []).filter((e) => e.scope === 'pepper' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
     const pettyCost = pettyCostForFarm('pepper', p);
