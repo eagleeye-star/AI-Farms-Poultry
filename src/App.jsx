@@ -1497,6 +1497,48 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     saveData(profileId, data);
   }, [data, profileId]);
 
+  // ── One-time migration: backfill payment ledger for sales marked paid
+  //    via the old "Mark as Fully Paid" button, which set paymentStatus='paid'
+  //    but never appended a payment to r.payments[]. Without a payments entry
+  //    buildCreditSummary sees collected=0 and shows them as still outstanding.
+  //    We run this once per profile (guarded by a localStorage flag) and create
+  //    a synthetic payment covering the original credit amount for each affected
+  //    sale. saleOrigCredit() is defined in the sales-tab helper section and
+  //    is safe to call here because it only reads immutable sale fields.
+  useEffect(() => {
+    const migKey = `aifarms_credit_migration_v1_${profileId}`;
+    try {
+      if (localStorage.getItem(migKey)) return; // already ran for this profile
+    } catch { return; }
+
+    setData((d) => {
+      const needsFix = (d.sales || []).some(
+        (r) => r.paymentStatus === 'paid' && (r.payments || []).length === 0 && saleOrigCredit(r) > 0
+      );
+      if (!needsFix) {
+        try { localStorage.setItem(migKey, '1'); } catch {}
+        return d;
+      }
+      const migratedSales = (d.sales || []).map((r) => {
+        if (r.paymentStatus !== 'paid') return r;
+        if ((r.payments || []).length > 0) return r; // already has payment records
+        const origCredit = saleOrigCredit(r);
+        if (origCredit <= 0) return r;
+        // Create a synthetic payment that fully settles the credit
+        const syntheticPayment = {
+          id: `mig_${r.id}`,
+          date: r.date || todayISO(),
+          amount: origCredit,
+          note: 'Migrated — marked as fully paid (historical)',
+        };
+        return { ...r, payments: [syntheticPayment] };
+      });
+      try { localStorage.setItem(migKey, '1'); } catch {}
+      return touch({ ...d, sales: migratedSales });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]); // run once per profile mount
+
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
   const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
   // A farm's own birds can consistently start laying earlier or later than
@@ -1888,11 +1930,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
       ...d,
       sales: (d.sales || []).map((r) => {
         if (r.id !== saleId) return r;
-        // Reduce creditAmount live as payments come in
-        const paidNow = Number(payment.amount) || 0;
-        const prevCredit = Number(r.creditAmount) || 0;
-        const newCredit = Math.max(0, prevCredit - paidNow);
-        return { ...r, payments: [...(r.payments || []), payment], creditAmount: newCredit };
+        // Append payment to the ledger; creditAmount stays immutable (original credit at sale time).
+        // calcOwed derives outstanding = creditAmount - sum(payments).
+        return { ...r, payments: [...(r.payments || []), payment] };
       }),
     }));
   }
@@ -7306,7 +7346,15 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
     onClose();
   }
   function markFullyPaid() {
-    onMarkPaid();
+    // Create a synthetic payment covering the remaining owed balance so the
+    // payments ledger is complete. This keeps calcOwed and buildCreditSummary
+    // accurate — outstanding drops to zero and collected reflects reality.
+    if (owed > 0) {
+      const payment = { id: Math.random().toString(36).slice(2, 10), date, amount: owed, note: 'Marked as fully paid' };
+      onLogPayment(payment, true);
+    } else {
+      onMarkPaid();
+    }
     onClose();
   }
 
@@ -7614,17 +7662,33 @@ function FulfilAdvanceModal({ advance, onClose, onSave }) {
 }
 
 /* ── Credit Summary helpers ── */
+/**
+ * Derive the original credit portion at time of sale.
+ * r.amount, r.cashAmount, r.momoAmount are immutable after save — they give the true split.
+ * r.creditAmount was historically mutated when payments came in (a bug now fixed), so we
+ * use derivedCredit = amount − cash − momo as the source of truth for origCredit.
+ * For very old records that predate split amounts (cashAmount == null), derivedCredit falls
+ * back to r.amount (all-credit sale).
+ */
+function saleOrigCredit(r) {
+  const amt = Number(r.amount) || 0;
+  if (r.cashAmount == null && r.momoAmount == null) {
+    // Pre-split record: paymentStatus 'credit' means the whole sale was on credit
+    return (r.paymentStatus === 'credit' || (r.payments || []).length > 0) ? amt : 0;
+  }
+  const derived = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
+  return Math.max(0, derived);
+}
+
 function buildCreditSummary(sales) {
   let totalCash = 0, totalMomo = 0, totalCreditGiven = 0, totalCreditCollected = 0;
   (sales || []).forEach((r) => {
-    const amt = Number(r.amount) || 0;
     totalCash  += Number(r.cashAmount)  || 0;
     totalMomo  += Number(r.momoAmount)  || 0;
-    // Original credit given = cashAmount + momoAmount + creditAmount should = amount
-    // Credit given for this sale = amount - cash - momo (i.e. portion on credit at time of sale)
-    const origCredit = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
-    if (origCredit > 0 && (r.paymentStatus === 'credit' || (Number(r.creditAmount) > 0) || (r.payments || []).length > 0)) {
+    const origCredit = saleOrigCredit(r);
+    if (origCredit > 0 && (r.paymentStatus === 'credit' || (r.payments || []).length > 0)) {
       totalCreditGiven += origCredit;
+      // collected = sum of all payments logged against this sale
       const collected = (r.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
       totalCreditCollected += Math.min(collected, origCredit);
     }
@@ -7668,12 +7732,12 @@ function CreditSummarySubTab({ sales }) {
   const filtered = filterByPeriod(sales || [], period, customStart, customEnd);
   const { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding } = buildCreditSummary(filtered);
 
-  // Per-buyer credit breakdown
+  // Per-buyer credit breakdown — same origCredit logic as buildCreditSummary
   const buyerMap = {};
   filtered.forEach((r) => {
-    const amt = Number(r.amount) || 0;
-    const origCredit = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
+    const origCredit = saleOrigCredit(r);
     if (origCredit <= 0) return;
+    if (r.paymentStatus !== 'credit' && (r.payments || []).length === 0) return;
     const buyer = r.buyer || 'Unknown buyer';
     if (!buyerMap[buyer]) buyerMap[buyer] = { given: 0, collected: 0 };
     buyerMap[buyer].given += origCredit;
@@ -7778,8 +7842,10 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
   const isFiltered = period !== 'all';
   const periodLabel = isFiltered ? PERIOD_OPTS.find((o) => o.value === period)?.label || period : 'All time';
 
+  // saleOrigCredit gives the true credit portion at time of sale (immutable).
+  // calcOwed subtracts sum(payments) to get the remaining balance.
   const totalOwed = sales.reduce((s, r) => {
-    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.amount) || 0);
+    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, saleOrigCredit(r));
     return s;
   }, 0);
 
@@ -7856,7 +7922,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
 
       {totalOwed > 0 && (
         <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
-          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed across {sales.filter((r) => (r.paymentStatus || 'paid') === 'credit' && calcOwed(r, Number(r.amount) || 0) > 0).length} sale(s).
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed across {sales.filter((r) => (r.paymentStatus || 'paid') === 'credit' && calcOwed(r, saleOrigCredit(r)) > 0).length} sale(s).
         </div>
       )}
 
@@ -7882,7 +7948,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                 <td>{r.buyer || '—'}</td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <CreditBadge sale={r} saleAmount={Number(r.amount) || 0} />
+                    <CreditBadge sale={r} saleAmount={saleOrigCredit(r)} />
                     {(r.paymentStatus || 'paid') === 'paid' && onUpdateSale && (
                       <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
                         onClick={() => onUpdateSale(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
@@ -7905,7 +7971,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
       {payModal && (
         <LogPaymentModal
           sale={payModal}
-          saleAmount={Number(payModal.amount) || 0}
+          saleAmount={saleOrigCredit(payModal)}
           buyerName={payModal.buyer}
           onClose={() => setPayModal(null)}
           onLogPayment={(payment, fullyPaid) => {
