@@ -1497,47 +1497,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     saveData(profileId, data);
   }, [data, profileId]);
 
-  // ── One-time migration: backfill payment ledger for sales marked paid
-  //    via the old "Mark as Fully Paid" button, which set paymentStatus='paid'
-  //    but never appended a payment to r.payments[]. Without a payments entry
-  //    buildCreditSummary sees collected=0 and shows them as still outstanding.
-  //    We run this once per profile (guarded by a localStorage flag) and create
-  //    a synthetic payment covering the original credit amount for each affected
-  //    sale. saleOrigCredit() is defined in the sales-tab helper section and
-  //    is safe to call here because it only reads immutable sale fields.
-  useEffect(() => {
-    const migKey = `aifarms_credit_migration_v1_${profileId}`;
-    try {
-      if (localStorage.getItem(migKey)) return; // already ran for this profile
-    } catch { return; }
-
-    setData((d) => {
-      const needsFix = (d.sales || []).some(
-        (r) => r.paymentStatus === 'paid' && (r.payments || []).length === 0 && saleOrigCredit(r) > 0
-      );
-      if (!needsFix) {
-        try { localStorage.setItem(migKey, '1'); } catch {}
-        return d;
-      }
-      const migratedSales = (d.sales || []).map((r) => {
-        if (r.paymentStatus !== 'paid') return r;
-        if ((r.payments || []).length > 0) return r; // already has payment records
-        const origCredit = saleOrigCredit(r);
-        if (origCredit <= 0) return r;
-        // Create a synthetic payment that fully settles the credit
-        const syntheticPayment = {
-          id: `mig_${r.id}`,
-          date: r.date || todayISO(),
-          amount: origCredit,
-          note: 'Migrated — marked as fully paid (historical)',
-        };
-        return { ...r, payments: [syntheticPayment] };
-      });
-      try { localStorage.setItem(migKey, '1'); } catch {}
-      return touch({ ...d, sales: migratedSales });
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId]); // run once per profile mount
+  // Migration removed — was causing data loss on refresh across all devices.
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
   const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
