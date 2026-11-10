@@ -1193,9 +1193,27 @@ export default function AppRoot() {
   const [user, setUser] = useState(getUser);
   const [cloudReady, setCloudReady] = useState(isCloudConfigured);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
+  // A phone with no cloud link and no farm records would otherwise open
+  // straight into an empty farm that looks like "starting over". Ask to
+  // connect first; the person can still choose to use this phone only.
+  const [skipFirstConnect, setSkipFirstConnect] = useState(() => {
+    try { return localStorage.getItem('aifarms_skip_first_connect') === '1'; } catch { return false; }
+  });
+  const [hasLocalFarm] = useState(() => !!findLegacyLocalData(null));
 
   let screen;
-  if (showCloudSetup) {
+  if (!cloudReady && !skipFirstConnect && !hasLocalFarm && !showCloudSetup) {
+    screen = (
+      <CloudSetupScreen
+        firstRun
+        onDone={() => setCloudReady(isCloudConfigured())}
+        onCancel={() => {
+          try { localStorage.setItem('aifarms_skip_first_connect', '1'); } catch { /* ignore */ }
+          setSkipFirstConnect(true);
+        }}
+      />
+    );
+  } else if (showCloudSetup) {
     screen = (
       <CloudSetupScreen
         onDone={() => { setCloudReady(isCloudConfigured()); setShowCloudSetup(false); }}
@@ -13683,7 +13701,7 @@ function InstallPrompt() {
  * to point a device at a different project. Entering details here saves them
  * on the device, so a deploy that forgot its env vars is still usable.
  */
-function CloudSetupScreen({ onDone, onCancel }) {
+function CloudSetupScreen({ onDone, onCancel, firstRun = false }) {
   const current = getCloudConfig();
   const [url, setUrl] = useState(current.source === 'device' ? current.url : '');
   const [key, setKey] = useState(current.source === 'device' ? current.key : '');
@@ -13714,9 +13732,13 @@ function CloudSetupScreen({ onDone, onCancel }) {
     <div className="auth-screen">
       <div className="auth-card">
         <p className="brand-eyebrow">AI Farms</p>
-        <h1 className="brand-title" style={{ fontSize: 24, marginBottom: 4 }}>Connect cloud sync</h1>
+        <h1 className="brand-title" style={{ fontSize: 24, marginBottom: 4 }}>
+          {firstRun ? 'Connect to your farm' : 'Connect cloud sync'}
+        </h1>
         <p className="brand-sub" style={{ marginBottom: 20 }}>
-          So your phone and PC share the same farm records.
+          {firstRun
+            ? 'This phone is not connected yet. Connect it once, then sign in with your email to load your farm records.'
+            : 'So your phone and PC share the same farm records.'}
         </p>
 
         {fromEnv ? (
@@ -13752,7 +13774,7 @@ function CloudSetupScreen({ onDone, onCancel }) {
             </button>
 
             <div className="auth-links">
-              <button className="link-btn" onClick={onCancel}>← Back</button>
+              <button className="link-btn" onClick={onCancel}>{firstRun ? 'Use on this phone only' : '← Back'}</button>
               {current.source === 'device' && (
                 <button className="link-btn rust" onClick={disconnect}>Disconnect this device</button>
               )}
