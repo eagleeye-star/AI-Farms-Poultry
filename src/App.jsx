@@ -858,6 +858,27 @@ function NotificationBell({ alerts, onNavigate }) {
     catch { return new Set(); }
   });
   const ref = useRef(null);
+  const btnRef = useRef(null);
+  const [panelTop, setPanelTop] = useState(56);
+  const [panelBox, setPanelBox] = useState({ left: 8, width: 320 });
+
+  // The bell lives inside a scrolling toolbar, so an absolutely-positioned
+  // panel gets clipped (and runs off the left edge on a phone). Open it as a
+  // fixed panel under the bell, centred and never wider than the screen.
+  function toggleOpen() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPanelTop(Math.max(8, Math.round(r.bottom + 6)));
+      // Place the panel from the bell's real position and keep it inside the
+      // visible screen width. (Centring on 50% of the page goes wrong when the
+      // toolbar is wider than the phone and stretches the page sideways.)
+      const vw = document.documentElement.clientWidth || window.innerWidth;
+      const width = Math.max(240, Math.min(360, vw - 16));
+      const left = Math.min(Math.max(8, Math.round(r.left + r.width / 2 - width / 2)), Math.max(8, vw - width - 8));
+      setPanelBox({ left, width });
+    }
+    setOpen((v) => !v);
+  }
 
   const visible = alerts.filter((a) => !dismissed.has(a.id));
   const critCount = visible.filter((a) => a.level === 'critical').length;
@@ -866,7 +887,11 @@ function NotificationBell({ alerts, onNavigate }) {
   useEffect(() => {
     function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
     document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    document.addEventListener('touchstart', handleClick);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('touchstart', handleClick);
+    };
   }, []);
 
   function dismiss(id) {
@@ -896,7 +921,8 @@ function NotificationBell({ alerts, onNavigate }) {
   return (
     <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={btnRef}
+        onClick={toggleOpen}
         style={{
           position: 'relative', background: 'transparent', border: 'none',
           cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
@@ -921,10 +947,11 @@ function NotificationBell({ alerts, onNavigate }) {
 
       {open && (
         <div style={{
-          position: 'absolute', top: '110%', right: 0, zIndex: 9999,
+          position: 'fixed', top: panelTop, left: panelBox.left, zIndex: 9999,
           background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
           borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-          width: 340, maxHeight: 480, overflowY: 'auto',
+          width: panelBox.width, maxWidth: 'calc(100vw - 16px)',
+          maxHeight: `calc(100dvh - ${panelTop + 12}px)`, overflowY: 'auto',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '12px 14px 10px', borderBottom: '1px solid rgba(212,165,55,0.12)' }}>
@@ -2594,7 +2621,7 @@ function AppInner({ initialUser, onSignedOut }) {
   return (
     <div className="app">
       <InstallPrompt />
-      <div className="workspace-switch">
+      <div className="workspace-switch" style={{ maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         <button
           className={`ws-btn${workspace === 'poultry' ? ' active' : ''}`}
           onClick={() => { setWorkspace('poultry'); setModal(null); }}
@@ -2623,7 +2650,7 @@ function AppInner({ initialUser, onSignedOut }) {
 
       {/* ── Global search + notification bell + tools ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         padding: '8px 14px', background: 'rgba(0,0,0,0.25)',
         borderBottom: '1px solid rgba(212,165,55,0.12)',
       }}>
