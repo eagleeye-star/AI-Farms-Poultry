@@ -1698,6 +1698,9 @@ function AppInner({ initialUser, onSignedOut }) {
   function updateSale(id, patch) {
     setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
   }
+  function deleteSale(id) {
+    setData((d) => touch({ ...d, sales: (d.sales || []).filter((r) => r.id !== id) }));
+  }
   function addSalePayment(saleId, payment) {
     setData((d) => touch({
       ...d,
@@ -3080,6 +3083,7 @@ function AppInner({ initialUser, onSignedOut }) {
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
           onUpdateSale={updateSale}
+          onDeleteSale={deleteSale}
           onLogPayment={addSalePayment}
         />
       )}
@@ -7631,7 +7635,8 @@ function CreditSummarySubTab({ sales }) {
   );
 }
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onDeleteSale, onLogPayment }) {
+  const { askConfirm } = useToastConfirm();
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
@@ -7781,7 +7786,13 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                   </div>
                 </td>
                 <td className="notes">{r.notes || ''}</td>
-                <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
+                <td>
+                  <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
+                  {onDeleteSale && (
+                    <button className="link-btn rust" style={{ marginLeft: 8 }}
+                      onClick={async () => { if (await askConfirm('Delete this sale record? Use this to remove a duplicate.')) onDeleteSale(r.id); }}>Delete</button>
+                  )}
+                </td>
               </tr>
             ))}
             {visibleSales.length === 0 && <tr><td colSpan={9} className="empty">{sales.length === 0 ? 'No sales logged yet — record egg or bird sales to build your profit picture.' : 'No sales in this period.'}</td></tr>}
