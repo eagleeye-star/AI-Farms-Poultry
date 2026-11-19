@@ -8,7 +8,7 @@
  *    and stale cached data would be worse than an honest failure.
  */
 
-const CACHE = 'aifarms-v1';
+const CACHE = 'aifarms-v2';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -37,6 +37,8 @@ self.addEventListener('fetch', (event) => {
   // Never cache Supabase — auth and sync must be live.
   if (url.hostname.endsWith('supabase.co')) return;
   if (url.origin !== self.location.origin) return;
+  // The laptop build's local data API must always be live, never cached.
+  if (url.pathname.startsWith('/api/')) return;
 
   // Navigations: try network first so a deployed update is picked up,
   // fall back to the cached shell when offline.
