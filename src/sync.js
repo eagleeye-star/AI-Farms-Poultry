@@ -26,6 +26,8 @@ const CONFIG_KEY = 'aifarms_cloud_config_v1';
  * connect from the phone without waiting on a redeploy.
  */
 export function getCloudConfig() {
+  // The laptop (offline) build never connects to the cloud.
+  if (import.meta.env.VITE_OFFLINE === '1') return { url: '', key: '', source: 'none' };
   const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
   const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
   if (envUrl && envKey) return { url: envUrl, key: envKey, source: 'env' };

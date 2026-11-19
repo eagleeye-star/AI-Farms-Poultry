@@ -13,6 +13,12 @@ import {
 } from './sync';
 import './App.css';
 import FinancialsModule from './FinancialsModule';
+import BackupModule from './BackupModule';
+import PerformanceModule from './PerformanceModule';
+import ProfitFlowModule from './ProfitFlowModule';
+import { normalizePerformance } from './performanceLogic';
+import { normalizeFlow } from './flowLogic';
+import { OFFLINE, fetchDiskState, pushDiskState, subscribeDiskStatus, getDiskStatus, pingServer } from './offline';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
 
@@ -198,6 +204,8 @@ function starterFlocks() {
 
 function freshData() {
   return {
+    performance: normalizePerformance(null),
+    flow: normalizeFlow(null),
     flocks: starterFlocks(),
     dailyLog: [], meds: [], vax: [], feed: [], weightSamples: [],
     sales: [],
@@ -253,7 +261,9 @@ function dataRichness(d) {
     (p.inputs || []).length +
     (g.animals || []).length + (g.heats || []).length + (g.matings || []).length +
     (g.kiddings || []).length + (g.kidMortality || []).length + (g.health || []).length +
-    (g.weights || []).length + (g.sales || []).length
+    (g.weights || []).length + (g.sales || []).length +
+    ((d.performance && d.performance.entries) || []).length +
+    ((d.flow && d.flow.allocations) || []).length
   );
 }
 
@@ -371,6 +381,8 @@ function migrate(saved) {
       cropExpenses: pepper.cropExpenses || [],
     },
     goats: { ...defaultGoats(), ...(saved.goats || {}) },
+    performance: normalizePerformance(saved.performance),
+    flow: normalizeFlow(saved.flow),
     updatedAt: saved.updatedAt || new Date().toISOString(),
     // Always stamped with what THIS build produced, not what was read in —
     // once migrate() has run, the in-memory shape matches the current
@@ -1229,7 +1241,15 @@ export default function AppRoot() {
   const [hasLocalFarm] = useState(() => !!findLegacyLocalData(null));
 
   let screen;
-  if (!cloudReady && !skipFirstConnect && !hasLocalFarm && !showCloudSetup) {
+  if (OFFLINE) {
+    screen = (
+      <ToastConfirmProvider>
+        <OfflineGate>
+          <AppInner key="local" initialUser={null} onSignedOut={() => {}} />
+        </OfflineGate>
+      </ToastConfirmProvider>
+    );
+  } else if (!cloudReady && !skipFirstConnect && !hasLocalFarm && !showCloudSetup) {
     screen = (
       <CloudSetupScreen
         firstRun
@@ -1274,6 +1294,50 @@ export default function AppRoot() {
   );
 }
 
+/** Laptop build: before the app opens, look at the copy saved in the laptop
+    folder and the copy in the browser, and start from the better one. This is
+    what brings the farm back if the browser's storage was ever cleared. */
+function OfflineGate({ children }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const disk = await fetchDiskState();
+        const d = disk && disk.data;
+        let local = null;
+        try { const raw = localStorage.getItem(STORAGE_KEY); if (raw) local = JSON.parse(raw); } catch { local = null; }
+        if (d && typeof d === 'object') {
+          const rd = dataRichness(d); const rl = local ? dataRichness(local) : -1;
+          const newer = !local || String(d.updatedAt || '') > String(local.updatedAt || '');
+          const wiped = local && rl < rd * 0.5;
+          if (!local || wiped || (newer && rd >= rl * 0.5)) {
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch { /* ignore */ }
+          }
+        }
+      } catch { /* run from browser storage */ }
+      if (alive) setReady(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!ready) return <div style={{ padding: 40, color: 'var(--text-dim)' }}>Opening your farm…</div>;
+  return children;
+}
+
+function OfflineBar({ lastSaveLabel }) {
+  const [st, setSt] = useState(getDiskStatus());
+  useEffect(() => { pingServer(); const id = setInterval(pingServer, 30000); const un = subscribeDiskStatus(setSt); return () => { clearInterval(id); un(); }; }, []);
+  const on = st.server === 'on';
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 14px', fontSize: 13, background: (on || location.protocol === "file:") ? 'rgba(122,154,102,0.12)' : 'rgba(193,95,65,0.12)', border: '1px solid var(--border)', borderRadius: 8, margin: '10px 14px' }}>
+      {typeof location !== 'undefined' && location.protocol === 'file:' && <span>📄 Saved in this browser. Use the <strong>Backup</strong> tab to download a copy regularly. Works without internet.</span>}
+      {!(typeof location !== 'undefined' && location.protocol === 'file:') && <span>{on ? '💾 Saving to your laptop folder' : '⚠ Not saving to the laptop folder (start the app with the Start AI Farms file). Data is still kept in this browser.'}</span>}
+      {on && st.lastSaved && <span style={{ color: 'var(--text-dim)' }}>Last saved {new Date(st.lastSaved).toLocaleTimeString()}</span>}
+      {!(typeof location !== 'undefined' && location.protocol === 'file:') && <span style={{ color: 'var(--text-dim)' }}>Works without internet.</span>}
+    </div>
+  );
+}
+
 function AppInner({ initialUser, onSignedOut }) {
   const profileId = initialUser ? initialUser.id : null; // local-copy key (null = local-only mode)
   const { showToast, askConfirm } = useToastConfirm();
@@ -1308,6 +1372,7 @@ function AppInner({ initialUser, onSignedOut }) {
     // it fires. Only real gap was the missing guard against Safari private
     // mode / storage quota throwing here.
     saveData(profileId, data);
+    if (OFFLINE) pushDiskState(data);
   }, [data, profileId]);
 
   // Migration removed — was causing data loss on refresh across all devices.
@@ -1624,7 +1689,7 @@ function AppInner({ initialUser, onSignedOut }) {
 
   // ── Navigation handler for notifications & search results ──
   function handleNavigate({ workspace: ws, tab }) {
-    if (ws === '__backup__') { backupData(); return; }
+    if (ws === '__backup__') { if (OFFLINE) { setWorkspace('backup'); setModal(null); } else backupData(); return; }
     setWorkspace(ws);
     setModal(null);
     // Tabs inside workspaces can't be set from here directly,
@@ -2304,6 +2369,39 @@ function AppInner({ initialUser, onSignedOut }) {
     URL.revokeObjectURL(url);
     try { localStorage.setItem('aifarms_last_backup', todayISO()); } catch {}
   }
+  const isBackupShape = (parsed) => !!parsed && typeof parsed === 'object'
+    && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
+  async function applyRestore(parsed) {
+    if (isFromNewerSchema(parsed)) {
+      const proceed = await askConfirm(
+        `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
+        'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
+        'Update the app first if you can. Restore anyway?',
+        { confirmLabel: 'Restore anyway' }
+      );
+      if (!proceed) return;
+    }
+    const merged = migrate(parsed);
+    merged.updatedAt = new Date().toISOString();
+    const recordCount = dataRichness(merged);
+    setData(merged);
+    setActiveFlockId(merged.flocks[0].id);
+    showToast(`Backup restored — ${recordCount} record(s) loaded across the farm.`, 'green');
+  }
+  function summarizeData(d) {
+    const x = migrate(d || {});
+    const n = (a) => (a || []).length;
+    return [
+      { label: 'Poultry daily records', count: n(x.dailyLog) },
+      { label: 'Feed purchases', count: n(x.feed) },
+      { label: 'Poultry sales', count: n(x.sales) },
+      { label: 'Expenses', count: n(x.expenses) },
+      { label: 'Bell pepper records', count: n(x.pepper.harvests) + n(x.pepper.scouting) + n(x.pepper.sprays) + n(x.pepper.cropExpenses) },
+      { label: 'Goat records', count: n(x.goats.animals) + n(x.goats.sales) + n(x.goats.health) },
+      { label: 'Performance entries', count: n(x.performance.entries) },
+      { label: 'Profit placed (flow)', count: n(x.flow.allocations) },
+    ];
+  }
   function restoreData(file) {
     const reader = new FileReader();
     reader.onload = async () => {
@@ -2314,29 +2412,11 @@ function AppInner({ initialUser, onSignedOut }) {
         showToast('Could not read that file — it doesn\'t look like valid JSON.', 'rust');
         return;
       }
-      // Loose but real shape check — catches "wrong file entirely" before
-      // migrate()'s defensive fallbacks turn it into a silently near-empty
-      // farm that LOOKS like a successful restore.
-      const looksLikeBackup = parsed && typeof parsed === 'object'
-        && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
-      if (!looksLikeBackup) {
+      if (!isBackupShape(parsed)) {
         showToast('That doesn\'t look like an AI Farms backup file — nothing was changed.', 'rust');
         return;
       }
-      if (isFromNewerSchema(parsed)) {
-        const proceed = await askConfirm(
-          `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
-          'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
-          'Update the app first if you can. Restore anyway?',
-          { confirmLabel: 'Restore anyway' }
-        );
-        if (!proceed) return;
-      }
-      const merged = migrate(parsed);
-      const recordCount = dataRichness(merged);
-      setData(merged);
-      setActiveFlockId(merged.flocks[0].id);
-      showToast(`Backup restored — ${recordCount} record(s) loaded across the farm.`, 'green');
+      await applyRestore(parsed);
     };
     reader.onerror = () => showToast('Could not read that file from your device — please try again.', 'rust');
     reader.readAsText(file);
@@ -2649,6 +2729,18 @@ function AppInner({ initialUser, onSignedOut }) {
           className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
           onClick={() => { setWorkspace('financials'); setModal(null); }}
         >💰 Financials</button>
+        <button
+          className={`ws-btn${workspace === 'performance' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('performance'); setModal(null); }}
+        >📊 Performance</button>
+        <button
+          className={`ws-btn${workspace === 'flow' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('flow'); setModal(null); }}
+        >🔀 Profit Flow</button>
+        <button
+          className={`ws-btn${workspace === 'backup' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('backup'); setModal(null); }}
+        >🛟 Backup</button>
       </div>
 
       {/* ── Global search + notification bell + tools ── */}
@@ -2803,6 +2895,7 @@ function AppInner({ initialUser, onSignedOut }) {
         />
       )}
 
+      {OFFLINE ? <OfflineBar /> : (
       <SyncBar
         sync={sync}
         user={user}
@@ -2813,6 +2906,7 @@ function AppInner({ initialUser, onSignedOut }) {
         onSignOut={handleSignOut}
         onEditProfile={() => setShowProfileForm(true)}
       />
+      )}
 
       {sync.message && sync.message.includes('restored automatically') && (
         <div className="stale-banner" style={{ marginBottom: 18, borderColor: 'rgba(122, 154, 102, 0.5)' }}>
@@ -3357,6 +3451,38 @@ function AppInner({ initialUser, onSignedOut }) {
           onSaveExpenseTemplate={saveExpenseTemplate}
           onDeleteExpenseTemplate={deleteExpenseTemplate}
           onApplyExpenseTemplate={applyExpenseTemplate}
+        />
+      )}
+
+      {workspace === 'performance' && (
+        <PerformanceModule
+          perf={normalizePerformance(data.performance)}
+          onChange={(performance) => setData((d) => ({ ...d, performance, updatedAt: new Date().toISOString() }))}
+          askConfirm={askConfirm}
+          showToast={showToast}
+          farmName={data.farmProfile && data.farmProfile.farmName}
+        />
+      )}
+
+      {workspace === 'flow' && (
+        <ProfitFlowModule
+          data={data}
+          flow={normalizeFlow(data.flow)}
+          onChange={(flow) => setData((d) => touch({ ...d, flow }))}
+          askConfirm={askConfirm}
+          showToast={showToast}
+        />
+      )}
+
+      {workspace === 'backup' && (
+        <BackupModule
+          data={data}
+          summarize={summarizeData}
+          isBackup={isBackupShape}
+          onDownload={() => { backupData(); showToast('Backup file downloaded.', 'green'); }}
+          onRestore={applyRestore}
+          schemaVersion={SCHEMA_VERSION}
+          newerThanApp={isFromNewerSchema}
         />
       )}
 
