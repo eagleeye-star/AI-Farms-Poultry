@@ -17,7 +17,7 @@ import BackupModule from './BackupModule';
 import PerformanceModule from './PerformanceModule';
 import ProfitFlowModule from './ProfitFlowModule';
 import { normalizePerformance } from './performanceLogic';
-import { normalizeFlow } from './flowLogic';
+import { normalizeFlow, getUnits } from './flowLogic';
 import { OFFLINE, fetchDiskState, pushDiskState, subscribeDiskStatus, getDiskStatus, pingServer } from './offline';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
@@ -379,6 +379,18 @@ function migrate(saved) {
       batches: pepper.batches || [],
       nurseryBatches: pepper.nurseryBatches || [],
       cropExpenses: pepper.cropExpenses || [],
+      // Sacks are priced per Size 5 sack. Older paid-in-full sack records stored cash = small sacks × price,
+      // so bring that stored amount in line with Size 5 × price. Records with a MoMo/credit split or payments are left alone.
+      harvests: (pepper.harvests || []).map((h) => {
+        if (h.unit !== 'sack' || Number(h.momoAmount) || Number(h.creditAmount) || (h.payments || []).length) return h;
+        const price = Number(h.pricePerUnit) || 0;
+        const oldRev = (Number(h.quantity) || 0) * price;
+        const newRev = sackToSize5(h) * price;
+        if (Math.abs(oldRev - newRev) > 0.01 && Math.abs((Number(h.cashAmount) || 0) - oldRev) < 0.01) {
+          return { ...h, cashAmount: Math.round(newRev * 100) / 100 };
+        }
+        return h;
+      }),
     },
     goats: { ...defaultGoats(), ...(saved.goats || {}) },
     performance: normalizePerformance(saved.performance),
@@ -1763,6 +1775,9 @@ function AppInner({ initialUser, onSignedOut }) {
   function updateSale(id, patch) {
     setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
   }
+  function deleteHarvest(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).filter((h) => h.id !== id) } }));
+  }
   function deleteSale(id) {
     setData((d) => touch({ ...d, sales: (d.sales || []).filter((r) => r.id !== id) }));
   }
@@ -1901,6 +1916,9 @@ function AppInner({ initialUser, onSignedOut }) {
       delete: (farmId, entryId) => patchCustomFarm(farmId, (f) => ({ ...f, [key]: (f[key] || []).filter((e) => e.id !== entryId) })),
     };
   }
+  function updateCustomLog(farmId, key, id, patch) {
+    patchCustomFarm(farmId, (f) => ({ ...f, [key]: (f[key] || []).map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
+  }
   const customScoutingH = customFarmListHandlers('scouting');
   const customHarvestH = customFarmListHandlers('harvests');
   const customHealthH = customFarmListHandlers('healthLog');
@@ -1923,8 +1941,8 @@ function AppInner({ initialUser, onSignedOut }) {
   function openInvoiceFromHarvest(harvest, fieldLabel) {
     setInvoicePrefill({
       kind: 'invoice', date: harvest.date, buyerName: harvest.buyer || '',
-      item: `Bell peppers${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
-      quantity: (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
+      item: `Bell peppers${harvest.unit === 'sack' ? ' (Size 5 sacks)' : ''}${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
+      quantity: harvest.unit === 'sack' ? Number(sackToSize5(harvest).toFixed(2)) : (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
       unitPrice: (harvest.unit && harvest.unit !== 'kg') ? harvest.pricePerUnit : harvest.pricePerKg,
       amount: harvestRev(harvest),
     });
@@ -3364,6 +3382,7 @@ function AppInner({ initialUser, onSignedOut }) {
           onTransplantNurseryBatch={transplantNurseryBatch}
           onInvoiceHarvest={openInvoiceFromHarvest}
           onUpdateHarvest={updateHarvest}
+          onDeleteHarvest={deleteHarvest}
           onHarvestPayment={addHarvestPayment}
           onSendEventToTask={sendSprayEventToTask}
           onAddCropExpense={addCropExpense}
@@ -3419,6 +3438,7 @@ function AppInner({ initialUser, onSignedOut }) {
           onDeleteScouting={customScoutingH.delete}
           onAddHarvest={customHarvestH.add}
           onDeleteHarvest={customHarvestH.delete}
+          onUpdateLog={updateCustomLog}
           onAddHealthLog={customHealthH.add}
           onDeleteHealthLog={customHealthH.delete}
           onAddFeedLog={customFeedH.add}
@@ -3457,6 +3477,7 @@ function AppInner({ initialUser, onSignedOut }) {
       {workspace === 'performance' && (
         <PerformanceModule
           perf={normalizePerformance(data.performance)}
+          data={data}
           onChange={(performance) => setData((d) => ({ ...d, performance, updatedAt: new Date().toISOString() }))}
           askConfirm={askConfirm}
           showToast={showToast}
@@ -4920,6 +4941,9 @@ function harvestRev(h) {
   if (unit === 'kg') {
     return (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
   }
+  // Sacks are SOLD as Size 5 sacks: the small farm sacks are repackaged (2.5 small = 1 Size 5),
+  // and the price is per Size 5 sack, so revenue is Size 5 count × price.
+  if (unit === 'sack') return sackToSize5(h) * (Number(h.pricePerUnit) || 0);
   return (Number(h.quantity) || 0) * (Number(h.pricePerUnit) || 0);
 }
 
@@ -4939,6 +4963,8 @@ function harvestQtyLabel(h) {
  *  Size 5 = 2.5 × 50 kg sacks, so Size 5 count = quantity ÷ 2.5.
  *  sackWeightKg defaults to 50 for old records. */
 function sackToSize5(h) {
+  // If the user counted the Size 5 sacks actually packed, that count wins over the calculation.
+  if (h.size5Manual && Number(h.size5Sacks) > 0) return Number(h.size5Sacks);
   const sackKg = Number(h.sackWeightKg) || 50;
   const size5Kg = 125; // 2.5 × 50 kg = 125 kg per Size 5
   const totalKg = (Number(h.quantity) || 0) * sackKg;
@@ -5077,7 +5103,7 @@ function PepperWorkspace({
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
-  onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
+  onInvoiceHarvest, onUpdateHarvest, onDeleteHarvest: onDeletePepperHarvest, onHarvestPayment,
   onSendEventToTask,
   onAddCropExpense, onUpdateCropExpense, onDeleteCropExpense,
 }) {
@@ -5434,6 +5460,8 @@ function PepperWorkspace({
           onAdd={() => setModal('harvest')}
           onInvoice={(h) => onInvoiceHarvest(h, fieldName(h.fieldId))}
           onUpdateHarvest={onUpdateHarvest}
+          onDeleteHarvest={onDeletePepperHarvest}
+          fields={fields}
           onHarvestPayment={onHarvestPayment}
         />
       )}
@@ -6761,7 +6789,9 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
 
 /* ---------------- Harvest & sales ---------------- */
 
-function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
+function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onDeleteHarvest, fields, onHarvestPayment }) {
+  const { askConfirm } = useToastConfirm();
+  const [editRow, setEditRow] = useState(null);
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
@@ -6826,7 +6856,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
               const rev = harvestRev(r);
               const unit = r.unit || 'kg';
               const priceLabel = unit === 'kg' ? (r.pricePerKg != null ? `GH₵ ${num(r.pricePerKg, 2)}/kg` : '—')
-                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit}` : '—');
+                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit === 'sack' ? 'Size 5' : unit}` : '—');
               return (
                 <tr key={r.id}>
                   <td className="mono">{fmtDate(r.date)}</td>
@@ -6853,7 +6883,11 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
                     </div>
                   </td>
                   <td className="notes">{r.notes || ''}</td>
-                  <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {onUpdateHarvest && <button className="link-btn" onClick={() => setEditRow(r)}>Edit</button>}{' '}
+                    <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
+                    {onDeleteHarvest && <>{' '}<button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this harvest record? Use this to remove a mistake or a duplicate.')) onDeleteHarvest(r.id); }}>Delete</button></>}
+                  </td>
                 </tr>
               );
             })}
@@ -6861,6 +6895,11 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
           </tbody>
         </table>
       </div>
+      {editRow && fields && (
+        <HarvestForm fields={fields} defaultField={editRow.fieldId} entry={editRow}
+          onClose={() => setEditRow(null)}
+          onSave={(e) => { const { id, ...rest } = e; onUpdateHarvest(editRow.id, rest); setEditRow(null); }} />
+      )}
       {payModal && (
         <LogPaymentModal
           sale={payModal}
@@ -6878,30 +6917,37 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
   );
 }
 
-function HarvestForm({ fields, defaultField, onClose, onSave }) {
+function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
+  const isEdit = Boolean(entry);
+  const str = (v) => (v == null ? '' : String(v));
   const [f, setF] = useState({
-    date: todayISO(), fieldId: defaultField,
-    unit: 'kg',
-    weightKg: '',      // used when unit === 'kg'
-    quantity: '',      // used when unit === 'sack' or 'crate'
-    sackWeightKg: '50', // weight of each farm sack (default 50 kg)
-    grade: GRADES[0],
-    pricePerKg: '',    // used when unit === 'kg'
-    pricePerUnit: '',  // used when unit === 'sack' or 'crate'
-    buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '',
+    date: entry?.date || todayISO(), fieldId: entry?.fieldId || defaultField,
+    unit: entry?.unit || 'kg',
+    weightKg: str(entry?.weightKg),      // used when unit === 'kg'
+    quantity: str(entry?.quantity),      // used when unit === 'sack' or 'crate'
+    sackWeightKg: str(entry?.sackWeightKg) || '50', // weight of each farm sack (default 50 kg)
+    size5Packed: entry?.size5Manual ? str(entry.size5Sacks) : '',    // optional: Size 5 sacks actually packed (overrides the calculation)
+    grade: entry?.grade || GRADES[0],
+    pricePerKg: str(entry?.pricePerKg),    // used when unit === 'kg'
+    pricePerUnit: str(entry?.pricePerUnit),  // used when unit === 'sack' or 'crate'
+    buyer: entry?.buyer || '', notes: entry?.notes || '',
+    cashAmount: entry && (Number(entry.momoAmount) || Number(entry.creditAmount)) ? str(entry.cashAmount) : '',
+    momoAmount: entry && Number(entry.momoAmount) ? str(entry.momoAmount) : '',
+    creditAmount: entry && Number(entry.creditAmount) ? str(entry.creditAmount) : '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const isByWeight = f.unit === 'kg';
   const isSack = f.unit === 'sack';
+  // Size 5 equivalent — only meaningful for sacks. A counted number of packed Size 5 sacks wins.
+  const calcSize5 = ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125;
+  const previewSize5 = isSack ? (Number(f.size5Packed) > 0 ? Number(f.size5Packed) : calcSize5) : null;
+  // Sacks are priced per Size 5 sack, so revenue = Size 5 count × price
   const rev = isByWeight
     ? (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0)
-    : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
-
-  // Size 5 equivalent — only meaningful for sacks
-  const previewSize5 = isSack
-    ? ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125
-    : null;
+    : isSack
+      ? previewSize5 * (Number(f.pricePerUnit) || 0)
+      : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
 
   const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
   const splitOk = splitTotal === 0 || Math.abs(splitTotal - rev) < 0.01;
@@ -6915,23 +6961,27 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
     const momo = Number(f.momoAmount) || 0;
     const credit = Number(f.creditAmount) || 0;
     const hasAnySplit = cash + momo + credit > 0;
+    const wasCredit = isEdit && (entry.paymentStatus || 'paid') === 'credit';
     const base = {
-      id: newId(), date: f.date, fieldId: f.fieldId,
+      id: entry?.id || newId(), date: f.date, fieldId: f.fieldId,
       unit: f.unit,
       grade: f.grade || null,
       buyer: f.buyer || null, notes: f.notes || null,
-      cashAmount: hasAnySplit ? cash : rev,
+      cashAmount: hasAnySplit ? cash : (wasCredit ? 0 : rev),
       momoAmount: hasAnySplit ? momo : 0,
       creditAmount: hasAnySplit ? credit : 0,
-      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
-      payments: [],
+      paymentStatus: hasCreditSplit ? 'credit' : (isEdit ? (entry.paymentStatus || 'paid') : 'paid'),
+      payments: isEdit ? (entry.payments || []) : [],
+      // clear fields from the previous "sell by" type so they cannot leak into the new one
+      weightKg: null, pricePerKg: null, quantity: null, sackWeightKg: null, size5Sacks: null, size5Manual: false, pricePerUnit: null,
     };
     if (isByWeight) {
       onSave({ ...base, weightKg: Number(f.weightKg), pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg) });
     } else if (f.unit === 'sack') {
       const sackKg = Number(f.sackWeightKg) || 50;
-      const size5Sacks = ((Number(f.quantity) || 0) * sackKg) / 125;
-      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+      const manual = Number(f.size5Packed) > 0;
+      const size5Sacks = manual ? Number(f.size5Packed) : ((Number(f.quantity) || 0) * sackKg) / 125;
+      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, size5Manual: manual, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
     } else {
       onSave({ ...base, quantity: Number(f.quantity), pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
     }
@@ -6940,7 +6990,7 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
   const unitLabel = f.unit === 'sack' ? 'sack' : f.unit === 'crate' ? 'crate' : 'kg';
 
   return (
-    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
+    <Modal title={isEdit ? 'Edit harvest' : 'Log harvest'} sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Field">
@@ -6961,7 +7011,7 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
         {/* Quantity field — label changes with unit */}
         {isByWeight
           ? <Field label="Weight (kg)"><input type="number" step="0.1" min="0" value={f.weightKg} onChange={set('weightKg')} placeholder="e.g. 50" /></Field>
-          : <Field label={`No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
+          : <Field label={isSack ? 'No. of small sacks harvested' : `No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
         }
 
         {/* Sack weight + Size 5 conversion — only shown when unit = sack */}
@@ -6971,8 +7021,13 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
           </Field>
         )}
         {isSack && previewSize5 != null && Number(f.quantity) > 0 && (
-          <Field label="= Size 5 sacks (market)">
+          <Field label="= Size 5 sacks (what you sell)">
             <input value={`${num(previewSize5, 2)} Size 5 sack${previewSize5 !== 1 ? 's' : ''}`} disabled style={{ color: '#D4A537', fontWeight: 600 }} />
+          </Field>
+        )}
+        {isSack && (
+          <Field label="Size 5 sacks actually packed (optional)">
+            <input type="number" step="0.5" min="0" value={f.size5Packed} onChange={set('size5Packed')} placeholder="leave blank to use the calculation" />
           </Field>
         )}
 
@@ -6985,7 +7040,7 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
         {/* Price field — label changes with unit */}
         {isByWeight
           ? <Field label="Price per kg (GH₵)"><input type="number" step="0.01" min="0" value={f.pricePerKg} onChange={set('pricePerKg')} placeholder="per kg" /></Field>
-          : <Field label={`Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={`per ${unitLabel}`} /></Field>
+          : <Field label={isSack ? 'Price per Size 5 sack (GH₵)' : `Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={isSack ? 'per Size 5 sack' : `per ${unitLabel}`} /></Field>
         }
 
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, trader…" /></Field>
@@ -10736,6 +10791,7 @@ function GoatSaleForm({ animals, onClose, onSave }) {
 const FARM_CATEGORIES = [['crop', 'Crop'], ['livestock', 'Livestock']];
 
 function FarmsWorkspace({
+  onUpdateLog,
   farms, reminders, onAddFarm, onUpdateFarm, onDeleteFarm,
   onAddField, onUpdateField, onDeleteField,
   onAddReminder, onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
@@ -10798,6 +10854,7 @@ function FarmsWorkspace({
           onDeleteScouting={(id) => onDeleteScouting(activeFarm.id, id)}
           onAddHarvest={(entry) => onAddHarvest(activeFarm.id, entry)}
           onDeleteHarvest={(id) => onDeleteHarvest(activeFarm.id, id)}
+          onUpdateLog={(key, id, patch) => onUpdateLog(activeFarm.id, key, id, patch)}
         />
       ) : (
         <LivestockFarmDetail
@@ -10806,6 +10863,7 @@ function FarmsWorkspace({
           onDeleteHealthLog={(id) => onDeleteHealthLog(activeFarm.id, id)}
           onAddFeedLog={(entry) => onAddFeedLog(activeFarm.id, entry)}
           onDeleteFeedLog={(id) => onDeleteFeedLog(activeFarm.id, id)}
+          onUpdateLog={(key, id, patch) => onUpdateLog(activeFarm.id, key, id, patch)}
           onAddSale={(entry) => onAddSale(activeFarm.id, entry)}
           onDeleteSale={(id) => onDeleteSale(activeFarm.id, id)}
           onUpdateSale={onUpdateCustomSale}
@@ -10900,9 +10958,10 @@ function FarmForm({ farm, onClose, onSave, onDelete }) {
 
 function CropFarmDetail({
   farm, reminders, onAddField, onUpdateField, onDeleteField, onAddReminder,
-  onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
+  onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest, onUpdateLog,
 }) {
   const { askConfirm } = useToastConfirm();
+  const [editLog, setEditLog] = useState(null); // { key, entry }
   const [view, setView] = useState('fields'); // 'fields' | 'programme' | 'scouting' | 'harvest'
   const [modal, setModal] = useState(null);
   const [activeFieldId, setActiveFieldId] = useState(farm.fields?.[0]?.id || null);
@@ -10979,7 +11038,7 @@ function CropFarmDetail({
       {view === 'scouting' && (
         <GenericLogView
           title="Scouting" farm={farm} entries={farm.scouting || []}
-          onAdd={() => setModal('scouting')} onDelete={onDeleteScouting}
+          onAdd={() => setModal('scouting')} onDelete={onDeleteScouting} onEdit={(e) => setEditLog({ key: 'scouting', entry: e })}
           columns={[['date', 'Date'], ['notes', 'Observation'], ['severity', 'Severity']]}
         />
       )}
@@ -10987,7 +11046,7 @@ function CropFarmDetail({
       {view === 'harvest' && (
         <GenericLogView
           title="Harvest" farm={farm} entries={farm.harvests || []}
-          onAdd={() => setModal('harvest')} onDelete={onDeleteHarvest}
+          onAdd={() => setModal('harvest')} onDelete={onDeleteHarvest} onEdit={(e) => setEditLog({ key: 'harvests', entry: e })}
           columns={[['date', 'Date'], ['quantityKg', 'Qty (kg)'], ['notes', 'Notes']]}
         />
       )}
@@ -11009,6 +11068,15 @@ function CropFarmDetail({
           fields={[['date', 'Date', 'date'], ['severity', 'Severity', 'text'], ['notes', 'Observation', 'textarea']]}
           onClose={() => setModal(null)}
           onSave={(entry) => { onAddScouting(entry); setModal(null); }}
+        />
+      )}
+      {editLog && onUpdateLog && (
+        <SimpleLogForm
+          title="Edit entry"
+          entry={editLog.entry}
+          fields={LOG_FIELD_SPECS[editLog.key]}
+          onClose={() => setEditLog(null)}
+          onSave={(entry) => { const { id, ...rest } = entry; onUpdateLog(editLog.key, id, rest); setEditLog(null); }}
         />
       )}
       {modal === 'harvest' && (
@@ -11057,7 +11125,8 @@ function CustomFieldForm({ field, onClose, onSave }) {
 
 /* ---------------- Livestock farm detail (generic — any species) ---------------- */
 
-function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
+function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onUpdateLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
+  const [editLog, setEditLog] = useState(null); // { key, entry }
   const [view, setView] = useState('overview');
   const [modal, setModal] = useState(null);
   const [payModal, setPayModal] = useState(null); // { sale, saleAmount }
@@ -11108,14 +11177,14 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
       {view === 'health' && (
         <GenericLogView
           title="Health" farm={farm} entries={farm.healthLog || []}
-          onAdd={() => setModal('health')} onDelete={onDeleteHealthLog}
+          onAdd={() => setModal('health')} onDelete={onDeleteHealthLog} onEdit={(e) => setEditLog({ key: 'healthLog', entry: e })}
           columns={[['date', 'Date'], ['type', 'Type'], ['notes', 'Notes']]}
         />
       )}
       {view === 'feed' && (
         <GenericLogView
           title="Feed" farm={farm} entries={farm.feedLog || []}
-          onAdd={() => setModal('feed')} onDelete={onDeleteFeedLog}
+          onAdd={() => setModal('feed')} onDelete={onDeleteFeedLog} onEdit={(e) => setEditLog({ key: 'feedLog', entry: e })}
           columns={[['date', 'Date'], ['feedType', 'Feed'], ['quantityKg', 'Qty (kg)'], ['cost', 'Cost (GHS)']]}
         />
       )}
@@ -11185,6 +11254,15 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
         </>
       )}
 
+      {editLog && onUpdateLog && (
+        <SimpleLogForm
+          title="Edit entry"
+          entry={editLog.entry}
+          fields={LOG_FIELD_SPECS[editLog.key]}
+          onClose={() => setEditLog(null)}
+          onSave={(entry) => { const { id, ...rest } = entry; onUpdateLog(editLog.key, id, rest); setEditLog(null); }}
+        />
+      )}
       {modal === 'health' && (
         <SimpleLogForm
           title="Add health record"
@@ -11261,7 +11339,14 @@ function CustomSaleForm({ onClose, onSave }) {
 
 /* ---------------- Shared small pieces ---------------- */
 
-function GenericLogView({ title, entries, onAdd, onDelete, columns }) {
+const LOG_FIELD_SPECS = {
+  scouting: [['date', 'Date', 'date'], ['severity', 'Severity', 'text'], ['notes', 'Observation', 'textarea']],
+  harvests: [['date', 'Date', 'date'], ['quantityKg', 'Quantity (kg)', 'number'], ['notes', 'Notes', 'textarea']],
+  healthLog: [['date', 'Date', 'date'], ['type', 'Type (vaccination, treatment, etc.)', 'text'], ['notes', 'Notes', 'textarea']],
+  feedLog: [['date', 'Date', 'date'], ['feedType', 'Feed type', 'text'], ['quantityKg', 'Quantity (kg)', 'number'], ['cost', 'Cost (GHS)', 'number']],
+};
+
+function GenericLogView({ title, entries, onAdd, onDelete, onEdit, columns }) {
   const { askConfirm } = useToastConfirm();
   const sorted = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
   return (
@@ -11284,7 +11369,10 @@ function GenericLogView({ title, entries, onAdd, onDelete, columns }) {
                       {k === 'date' ? fmtDate(e[k]) : (e[k] ?? '—')}
                     </td>
                   ))}
-                  <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(e.id); }}>Delete</button></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {onEdit && <button className="link-btn" onClick={() => onEdit(e)}>Edit</button>}{' '}
+                    <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(e.id); }}>Delete</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -11298,13 +11386,13 @@ function GenericLogView({ title, entries, onAdd, onDelete, columns }) {
 /** A small generic add-entry form driven by a field spec, used for every
     simple log (scouting, harvest, health, feed, sales) so those five don't
     each need their own bespoke form component. */
-function SimpleLogForm({ title, fields, onClose, onSave }) {
-  const initial = { date: todayISO() };
-  fields.forEach(([key]) => { if (!(key in initial)) initial[key] = ''; });
+function SimpleLogForm({ title, fields, entry, onClose, onSave }) {
+  const initial = { date: entry?.date || todayISO() };
+  fields.forEach(([key]) => { if (!(key in initial)) initial[key] = entry && entry[key] != null ? String(entry[key]) : ''; });
   const [f, setF] = useState(initial);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
-    const out = { id: newId() };
+    const out = { id: entry?.id || newId() };
     fields.forEach(([key, , type]) => {
       const v = f[key];
       out[key] = type === 'number' ? (v === '' ? null : Number(v)) : (v || null);
@@ -11567,7 +11655,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add structure</button>
         </div>
 
-        <AssetsTable capital={capital} labelFor={labelFor} onDelete={onDeleteExpense} />
+        <AssetsTable capital={capital} labelFor={labelFor} onDelete={onDeleteExpense} onEdit={(id) => setModal('expense:' + id)} fundUnits={getUnits(data)} />
 
         <p className="stat-foot">
           A net house or coop serves many seasons, so its cost is spread across its useful life rather
@@ -11638,6 +11726,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           entry={modal.startsWith('expense:') ? running.concat(capital).find((r) => r.id === modal.split(':')[1]) : null}
           fields={fields}
           flocks={flocks}
+          fundUnits={getUnits(data)}
           onClose={() => setModal(null)}
           onSave={(e) => {
             if (modal.startsWith('expense:')) onUpdateExpense(e.id, e);
@@ -11728,7 +11817,23 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   );
 }
 
-function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
+const FUND_SOURCES = [
+  ['', 'Not recorded'],
+  ['profit', 'Profit from a farm or field'],
+  ['savings', 'Savings'],
+  ['owner', 'My own pocket (owner money)'],
+  ['loan', 'Loan'],
+  ['gift', 'Gift or support'],
+  ['other', 'Other'],
+];
+const fundLabel = (r, units) => {
+  if (!r.fundSource) return '—';
+  const base = (FUND_SOURCES.find(([k]) => k === r.fundSource) || [, r.fundSource])[1];
+  if (r.fundSource === 'profit') return `Profit: ${((units || []).find((u) => u.id === r.fundUnitId) || {}).name || 'a farm'}`;
+  return r.fundNote ? `${base} (${r.fundNote})` : base;
+};
+
+function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
   const isEdit = Boolean(entry);
   const [f, setF] = useState({
     date: entry?.date || todayISO(),
@@ -11741,7 +11846,11 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
     target: entry?.target || 'shared',
     usefulLifeYears: entry?.usefulLifeYears ?? 4,
     notes: entry?.notes || '',
+    fundSource: entry?.fundSource || '',
+    fundUnitId: entry?.fundUnitId || '',
+    fundNote: entry?.fundNote || '',
   });
+  const [fundErr, setFundErr] = useState('');
   const isCapital = f.kind === 'capital';
 
   function set(k) {
@@ -11775,8 +11884,10 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
 
   function submit() {
     if (!f.date || f.amount === '') return;
+    if (isCapital && f.fundSource === 'profit' && !f.fundUnitId) { setFundErr('Choose which farm or field the profit came from.'); return; }
     onSave({
       id: entry?.id || newId(), date: f.date,
+      ...(isCapital ? { fundSource: f.fundSource || null, fundUnitId: f.fundSource === 'profit' ? f.fundUnitId : null, fundNote: f.fundSource && f.fundSource !== 'profit' ? (f.fundNote || null) : null } : { fundSource: null, fundUnitId: null, fundNote: null }),
       capital: isCapital,
       category: isCapital ? f.capexCategory : f.category,
       description: f.description || null,
@@ -11850,8 +11961,32 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
           </Field>
         )}
 
+        {isCapital && (
+          <Field label="Where did the money come from?" span2>
+            <select value={f.fundSource} onChange={(e) => { setFundErr(''); setF({ ...f, fundSource: e.target.value, fundUnitId: '' }); }}>
+              {FUND_SOURCES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </Field>
+        )}
+        {isCapital && f.fundSource === 'profit' && (
+          <Field label="Which farm or field's profit?" span2>
+            <select value={f.fundUnitId} onChange={(e) => { setFundErr(''); setF({ ...f, fundUnitId: e.target.value }); }}>
+              <option value="">Choose…</option>
+              {(fundUnits || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </Field>
+        )}
+        {isCapital && f.fundSource && f.fundSource !== 'profit' && (
+          <Field label={f.fundSource === 'loan' ? 'Who is the loan from? (optional)' : 'Details (optional)'} span2>
+            <input value={f.fundNote} onChange={set('fundNote')} placeholder={f.fundSource === 'loan' ? 'e.g. bank loan, a friend' : 'e.g. from the wedding gift'} />
+          </Field>
+        )}
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {fundErr && <p style={{ color: '#e05c5c', fontSize: 13, margin: '4px 0' }}>{fundErr}</p>}
+      {isCapital && f.fundSource === 'profit' && f.fundUnitId && (
+        <p className="stat-foot" style={{ marginTop: 4 }}>This will also show in Profit Flow as equipment bought with that farm's profit, and reduce its held cash by GH₵ {num(amount, 2)}.</p>
+      )}
 
       {isCapital && perYear != null && (
         <p className="stat-foot" style={{ marginTop: 4 }}>
@@ -11871,7 +12006,7 @@ function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
 
 /* ---------------- Assets & structures table ---------------- */
 
-function AssetsTable({ capital, labelFor, onDelete }) {
+function AssetsTable({ capital, labelFor, onDelete, onEdit, fundUnits }) {
   if (!capital.length) {
     return (
       <p className="empty" style={{ padding: '18px 0' }}>
@@ -11886,7 +12021,7 @@ function AssetsTable({ capital, labelFor, onDelete }) {
         <thead>
           <tr>
             <th>Built</th><th>Structure</th><th>Description</th><th>Assigned to</th>
-            <th>Cost</th><th>Life</th><th>Per year</th><th>Written off</th><th>Book value</th><th></th>
+            <th>Cost</th><th>Funded by</th><th>Life</th><th>Per year</th><th>Written off</th><th>Book value</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -11897,11 +12032,15 @@ function AssetsTable({ capital, labelFor, onDelete }) {
               <td>{r.description || '—'}</td>
               <td>{labelFor(r)}</td>
               <td className="mono">GH₵ {num(r.amount, 2)}</td>
+              <td>{fundLabel(r, fundUnits)}</td>
               <td className="mono">{r.usefulLifeYears}y</td>
               <td className="mono">GH₵ {num(annualCharge(r), 2)}</td>
               <td className="mono">GH₵ {num(chargedToDate(r), 2)}</td>
               <td className="mono"><span className="tag green">GH₵ {num(bookValue(r), 2)}</span></td>
-              <td><button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button></td>
+              <td style={{ whiteSpace: 'nowrap' }}>
+                {onEdit && <button className="link-btn" onClick={() => onEdit(r.id)}>Edit</button>}{' '}
+                <button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -13591,7 +13730,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
                     <td>{h.grade ? <span className="tag green">{h.grade}</span> : '—'}</td>
                     <td className="mono">{harvestQtyLabel(h)}</td>
                     <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
-                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit}` : '—')}</td>
+                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit === 'sack' ? 'Size 5' : unit}` : '—')}</td>
                     <td className="mono gold">{ghc(amt)}</td>
                   </tr>
                 );

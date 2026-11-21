@@ -2,6 +2,7 @@
 // Reads the records the app already keeps. Only the "where did the profit go" step is entered by hand.
 
 export const DESTS = [
+  { id: 'reinvest', label: 'Reinvested in the farm (items bought)', icon: '🔧' },
   { id: 'savings', label: 'Savings', icon: '🏦' },
   { id: 'owner', label: 'Owner withdrawal', icon: '👤' },
   { id: 'eagleeye', label: 'EagleEyE (investing)', icon: '📈' },
@@ -16,11 +17,19 @@ export const flowId = () => 'a' + Math.random().toString(36).slice(2, 9) + Date.
 
 export function normalizeFlow(f) {
   const a = f && Array.isArray(f.allocations) ? f.allocations : [];
-  return { version: 1, allocations: a.filter((x) => x && x.id && n(x.amount) > 0) };
+  const ws = f && f.settings && ['none', 'sales', 'equal'].includes(f.settings.wholeFarmSplit) ? f.settings.wholeFarmSplit : 'none';
+  return { version: 1, allocations: a.filter((x) => x && x.id && n(x.amount) > 0), settings: { wholeFarmSplit: ws } };
 }
 
 export function harvestRevenue(h) {
-  return (h.unit || 'kg') === 'kg' ? n(h.weightKg) * n(h.pricePerKg) : n(h.quantity) * n(h.pricePerUnit);
+  const u = h.unit || 'kg';
+  if (u === 'kg') return n(h.weightKg) * n(h.pricePerKg);
+  if (u === 'sack') {
+    // sold as Size 5 sacks (2.5 small 50 kg sacks = 1); price is per Size 5 sack
+    const s5 = h.size5Manual && n(h.size5Sacks) > 0 ? n(h.size5Sacks) : (n(h.quantity) * (n(h.sackWeightKg) || 50)) / 125;
+    return s5 * n(h.pricePerUnit);
+  }
+  return n(h.quantity) * n(h.pricePerUnit);
 }
 
 export function getUnits(data) {
@@ -29,6 +38,7 @@ export function getUnits(data) {
   const p = data.pepper || {};
   (p.fields || []).forEach((f) => units.push({ id: 'field:' + f.id, rawId: f.id, kind: 'field', farm: 'pepper', name: f.name || ('Field ' + f.id) }));
   units.push({ id: 'goats', rawId: 'goats', kind: 'goats', farm: 'goats', name: 'Goats' });
+  (data.customFarms || []).forEach((f) => units.push({ id: 'custom:' + f.id, rawId: f.id, kind: 'custom', farm: 'custom', name: f.name || 'My farm' }));
   return units;
 }
 
@@ -68,11 +78,32 @@ function shareOf(units, scopeFarm, target, unit) {
   return 1 / mine.length;
 }
 
-export function unitRecords(data, unit, units) {
-  const income = []; const costs = []; let extra = {};
-  const add = (arr, date, amount, cat, label) => { if (n(amount) && date) arr.push({ date: d10(date), amount: n(amount), cat, label }); };
+const addTo = (arr, date, amount, cat, label) => { if (n(amount) && date) arr.push({ date: d10(date), amount: n(amount), cat, label }); };
+
+/** Sales money that belongs to one unit, from the app's own sales and harvest records. */
+export function unitIncome(data, unit) {
+  const income = [];
+  const add = (...a) => addTo(income, ...a);
   if (unit.kind === 'flock') {
-    (data.sales || []).filter((s) => s.flockId === unit.rawId).forEach((s) => add(income, s.date, s.amount, s.item || 'Sales', s.buyer || ''));
+    (data.sales || []).filter((s) => s.flockId === unit.rawId).forEach((s) => add(s.date, s.amount, s.item || 'Sales', s.buyer || ''));
+  } else if (unit.kind === 'field') {
+    const p = data.pepper || {};
+    (p.harvests || []).filter((h) => h.fieldId === unit.rawId).forEach((h) => add(h.date, harvestRevenue(h), 'Harvest sales', h.buyer || ''));
+  } else if (unit.kind === 'goats') {
+    ((data.goats || {}).sales || []).forEach((s) => add(s.date, s.price, 'Goat sales', s.buyer || ''));
+  } else if (unit.kind === 'custom') {
+    const farm = (data.customFarms || []).find((x) => x.id === unit.rawId) || {};
+    (farm.salesLog || []).forEach((s) => add(s.date, s.amount, s.item || 'Sales', s.buyer || ''));
+  }
+  return income;
+}
+
+const WHOLE_SCOPES = (e) => !e.scope || e.scope === 'general' || e.scope === 'shared' || e.scope === 'whole farm';
+
+export function unitRecords(data, unit, units, flow) {
+  const income = unitIncome(data, unit); const costs = []; let extra = {};
+  const add = (arr, date, amount, cat, label) => addTo(arr, date, amount, cat, label);
+  if (unit.kind === 'flock') {
     const fd = feedForFlock(data, unit.rawId);
     fd.costs.forEach((c) => costs.push(c));
     extra = { feed: fd };
@@ -80,15 +111,33 @@ export function unitRecords(data, unit, units) {
     (data.vax || []).filter((r) => r.flockId === unit.rawId).forEach((r) => add(costs, r.date, r.cost, 'Vaccines'));
   } else if (unit.kind === 'field') {
     const p = data.pepper || {};
-    (p.harvests || []).filter((h) => h.fieldId === unit.rawId).forEach((h) => add(income, h.date, harvestRevenue(h), 'Harvest sales', h.buyer || ''));
     (p.sprays || []).filter((s) => s.fieldId === unit.rawId).forEach((s) => add(costs, s.date, s.cost, 'Sprays & inputs'));
     (p.cropExpenses || []).filter((e) => e.fieldId === unit.rawId).forEach((e) => add(costs, e.date, e.amount, e.category || 'Field costs'));
   } else if (unit.kind === 'goats') {
     const g = data.goats || {};
-    (g.sales || []).forEach((s) => add(income, s.date, s.price, 'Goat sales', s.buyer || ''));
     (g.health || []).forEach((h) => add(costs, h.date, h.cost, 'Health'));
     (g.animals || []).filter((a) => a.source === 'Purchased').forEach((a) => add(costs, a.dateAcquired || a.acquiredDate || a.dob, a.cost, 'Animals bought'));
   }
+  if (unit.kind === 'custom') {
+    const farm = (data.customFarms || []).find((x) => x.id === unit.rawId) || {};
+    (farm.feedLog || []).forEach((e) => add(costs, e.date, e.cost, 'Feed'));
+  }
+  // whole-farm running costs, shared out if the user chose a sharing rule
+  const mode = flow && flow.settings && flow.settings.wholeFarmSplit;
+  if (mode === 'sales' || mode === 'equal') {
+    let share = 1 / Math.max(units.length, 1);
+    if (mode === 'sales') {
+      const tot = units.map((u) => unitIncome(data, u).reduce((s, x) => s + x.amount, 0));
+      const sum = tot.reduce((a, b) => a + b, 0);
+      const mine = unitIncome(data, unit).reduce((s, x) => s + x.amount, 0);
+      share = sum > 0 ? mine / sum : share;
+    }
+    (data.expenses || []).filter((e) => !e.capital && WHOLE_SCOPES(e)).forEach((e) => add(costs, e.date, n(e.amount) * share, 'Share of whole-farm costs'));
+  }
+  // consumables bought with profit (pesticides, seed...) count as a cost of the farm they were bought for,
+  // unless the user says they already entered the purchase in the app's own logs
+  ((flow && flow.allocations) || []).filter((a) => a.dest === 'reinvest' && a.kind === 'input' && !a.alreadyLogged && a.toUnitId === unit.id)
+    .forEach((a) => add(costs, a.date, a.amount, a.item || 'Inputs (reinvested)'));
   // running expenses and petty costs booked to this farm
   const pools = [
     ...(data.expenses || []).filter((e) => !e.capital && e.scope && e.scope !== 'shared' && e.scope !== 'whole farm').map((e) => ({ date: e.date, amount: e.amount, farm: e.scope, target: e.target, cat: e.category || 'Running costs' })),
@@ -105,8 +154,22 @@ export function unitRecords(data, unit, units) {
 }
 
 export function wholeFarmCosts(data) {
-  return (data.expenses || []).filter((e) => !e.capital && (!e.scope || e.scope === 'shared' || e.scope === 'whole farm'))
-    .reduce((s, e) => s + n(e.amount), 0);
+  return (data.expenses || []).filter((e) => !e.capital && WHOLE_SCOPES(e)).reduce((s, e) => s + n(e.amount), 0);
+}
+
+/** Where an equipment or structure purchase is for, as a Profit Flow unit id. */
+function expenseTargetUnit(e) {
+  if (e.scope === 'pepper') return e.target && e.target !== 'shared' ? 'field:' + e.target : 'crops';
+  if (e.scope === 'poultry') return e.target && e.target !== 'shared' ? 'flock:' + e.target : 'poultry';
+  if (e.scope === 'goats') return 'goats';
+  return 'shared';
+}
+
+/** Manual entries plus equipment (Whole Farm > Structure / equipment) paid from a farm's profit. */
+export function allAllocations(data, flow) {
+  const derived = (data.expenses || []).filter((e) => e.capital && e.fundSource === 'profit' && e.fundUnitId && n(e.amount) > 0)
+    .map((e) => ({ id: 'exp:' + e.id, derived: true, date: d10(e.date), unitId: e.fundUnitId, dest: 'reinvest', kind: 'asset', item: e.description || e.category || 'Equipment', amount: n(e.amount), toUnitId: expenseTargetUnit(e), note: 'From Whole Farm records' }));
+  return [...((flow && flow.allocations) || []), ...derived];
 }
 
 const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to);
@@ -117,11 +180,22 @@ export function rangeFlow(data, rec, unit, from, to, flow) {
   const sum = (a) => a.reduce((s, x) => s + x.amount, 0);
   const by = (a) => { const m = {}; a.forEach((x) => { m[x.cat] = (m[x.cat] || 0) + x.amount; }); return Object.entries(m).map(([cat, amount]) => ({ cat, amount: r2(amount) })).sort((x, y) => y.amount - x.amount); };
   const income = r2(sum(inc)); const cost = r2(sum(cos)); const profit = r2(income - cost);
-  const allocs = (flow.allocations || []).filter((a) => a.unitId === unit.id && inRange(d10(a.date), from, to));
+  const every = allAllocations(data, flow);
+  const all = every.filter((a) => inRange(d10(a.date), from, to));
+  // spending on consumables for the SAME farm is already inside costs, so it is not taken off the cash a second time
+  const sameFarmInput = (a) => a.dest === 'reinvest' && a.kind === 'input' && a.toUnitId === a.unitId;
+  const allocs = all.filter((a) => a.unitId === unit.id && !sameFarmInput(a));
   const out = {}; allocs.forEach((a) => { out[a.dest] = r2((out[a.dest] || 0) + n(a.amount)); });
   const allocated = r2(allocs.reduce((s, a) => s + n(a.amount), 0));
-  const received = r2((flow.allocations || []).filter((a) => a.dest === 'transfer' && a.toUnitId === unit.id && inRange(d10(a.date), from, to)).reduce((s, a) => s + n(a.amount), 0));
-  return { income, cost, profit, margin: income ? Math.round((profit / income) * 1000) / 10 : null, incomeLines: by(inc), costLines: by(cos), allocated, out, received, held: r2(profit - allocated + received) };
+  // cash arriving from other farms: transfers, and consumables another farm's profit paid for
+  const received = r2(all.filter((a) => a.unitId !== unit.id && a.toUnitId === unit.id && (a.dest === 'transfer' || (a.dest === 'reinvest' && a.kind === 'input'))).reduce((s, a) => s + n(a.amount), 0));
+  // equipment and structures bought for this farm (an investment, not a running cost)
+  const investments = all.filter((a) => a.dest === 'reinvest' && a.kind !== 'input' && a.toUnitId === unit.id);
+  const invested = r2(investments.reduce((s, a) => s + n(a.amount), 0));
+  // equipment bought for a whole group (all crops, all poultry), not split between its units
+  const groupKey = unit.farm === 'pepper' ? 'crops' : unit.farm === 'poultry' ? 'poultry' : null;
+  const groupInvestments = groupKey ? all.filter((a) => a.dest === 'reinvest' && a.kind !== 'input' && a.toUnitId === groupKey) : [];
+  return { income, cost, profit, margin: income ? Math.round((profit / income) * 1000) / 10 : null, incomeLines: by(inc), costLines: by(cos), allocated, out, received, invested, investments, groupInvestments, held: r2(profit - allocated + received) };
 }
 
 /** Periods for a flock follow its feed purchases: each purchase starts a new period that runs until the next one. */

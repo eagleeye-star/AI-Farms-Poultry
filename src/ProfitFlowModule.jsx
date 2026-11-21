@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
-import { DESTS, getUnits, unitRecords, rangeFlow, feedPeriods, wholeFarmCosts, flowId, addDays } from './flowLogic';
+import { DESTS, getUnits, unitRecords, rangeFlow, feedPeriods, wholeFarmCosts, flowId, addDays, allAllocations } from './flowLogic';
 
 const money = (v) => (Number(v) || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const money0 = (v) => (Number(v) || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 });
 const today = () => new Date().toISOString().slice(0, 10);
 const fmt = (iso) => (iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '');
-const DEST_COLOR = { savings: '#7A9A66', owner: '#8B6FB5', eagleeye: '#3E7CB1', transfer: '#D4A537', other: '#9A9080' };
+const DEST_COLOR = { reinvest: '#C97B2A', savings: '#7A9A66', owner: '#8B6FB5', eagleeye: '#3E7CB1', transfer: '#D4A537', other: '#9A9080' };
 
 const CSS = `
 .pf-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px}
@@ -51,7 +51,7 @@ function FlowStrip({ f }) {
 }
 
 function AllocateForm({ units, unit, held, onSave, onCancel }) {
-  const [f, setF] = useState({ date: today(), dest: 'savings', amount: '', toUnitId: '', note: '' });
+  const [f, setF] = useState({ date: today(), dest: 'reinvest', amount: '', toUnitId: unit.id, note: '', item: '', kind: 'input', alreadyLogged: false });
   const [err, setErr] = useState('');
   const set = (p) => { setF((x) => ({ ...x, ...p })); setErr(''); };
   const others = units.filter((u) => u.id !== unit.id);
@@ -60,7 +60,9 @@ function AllocateForm({ units, unit, held, onSave, onCancel }) {
     const amt = Number(f.amount);
     if (!(amt > 0)) return setErr('Enter an amount.');
     if (f.dest === 'transfer' && !f.toUnitId) return setErr('Choose which farm receives it.');
-    onSave({ id: flowId(), date: f.date, unitId: unit.id, dest: f.dest, amount: amt, toUnitId: f.dest === 'transfer' ? f.toUnitId : null, note: f.note.trim() });
+    if (f.dest === 'reinvest' && !f.item.trim()) return setErr('Say what was bought, for example “spray machine”.');
+    const re = f.dest === 'reinvest';
+    onSave({ id: flowId(), date: f.date, unitId: unit.id, dest: f.dest, amount: amt, toUnitId: (re || f.dest === 'transfer') ? f.toUnitId : null, note: f.note.trim(), ...(re ? { item: f.item.trim(), kind: f.kind, alreadyLogged: f.kind === 'input' && f.alreadyLogged } : {}) });
   }
   return (
     <form className="pf-card" onSubmit={submit}>
@@ -71,6 +73,26 @@ function AllocateForm({ units, unit, held, onSave, onCancel }) {
         <div><label htmlFor="pa-date">Date</label><input id="pa-date" type="date" value={f.date} onChange={(e) => set({ date: e.target.value })} /></div>
         <div style={{ gridColumn: '1/-1' }}><label htmlFor="pa-dest">Where did it go?</label>
           <select id="pa-dest" value={f.dest} onChange={(e) => set({ dest: e.target.value })}>{DESTS.map((d) => <option key={d.id} value={d.id}>{d.icon} {d.label}</option>)}</select></div>
+        {f.dest === 'reinvest' && (<>
+          <div style={{ gridColumn: '1/-1' }}><label htmlFor="pa-item">What did you buy?</label>
+            <input id="pa-item" value={f.item} onChange={(e) => set({ item: e.target.value })} placeholder="e.g. spray machine, pesticides, seed" /></div>
+          <div style={{ gridColumn: '1/-1' }}><label htmlFor="pa-for">Which farm or field is it for?</label>
+            <select id="pa-for" value={f.toUnitId} onChange={(e) => set({ toUnitId: e.target.value })}>
+              {units.map((u) => <option key={u.id} value={u.id}>{u.name}{u.id === unit.id ? ' (same farm)' : ''}</option>)}
+              <option value="crops">All crops (shared)</option>
+              <option value="poultry">All poultry (shared)</option>
+              <option value="shared">Whole farm (shared tools)</option>
+            </select></div>
+          <div style={{ gridColumn: '1/-1' }}><label>What kind of purchase?</label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className={`btn ${f.kind === 'input' ? 'btn-gold' : 'btn-ghost'}`} onClick={() => set({ kind: 'input' })}>Used up: pesticides, seed, fertiliser</button>
+              <button type="button" className={`btn ${f.kind === 'asset' ? 'btn-gold' : 'btn-ghost'}`} onClick={() => set({ kind: 'asset' })}>Lasts years: machines, tools, structures</button>
+            </div>
+            <p className="pf-tip" style={{ margin: '6px 0 0' }}>{f.kind === 'input' ? 'Counted as a cost of that farm.' : 'Kept as an investment in that farm, not a running cost, so it does not make that farm look like it lost money.'}</p></div>
+          {f.kind === 'input' && <label style={{ gridColumn: '1/-1', display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={f.alreadyLogged} onChange={(e) => set({ alreadyLogged: e.target.checked })} />
+            I already entered this purchase in the spray or expense log (so do not count it twice)</label>}
+        </>)}
         {f.dest === 'transfer' && <div style={{ gridColumn: '1/-1' }}><label htmlFor="pa-to">Which farm receives it?</label>
           <select id="pa-to" value={f.toUnitId} onChange={(e) => set({ toUnitId: e.target.value })}><option value="">Choose…</option>{others.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>}
         <div style={{ gridColumn: '1/-1' }}><label htmlFor="pa-note">Note (optional)</label><input id="pa-note" value={f.note} onChange={(e) => set({ note: e.target.value })} placeholder="e.g. paid for pepper seedlings" /></div>
@@ -85,8 +107,12 @@ function AllocateForm({ units, unit, held, onSave, onCancel }) {
 }
 
 export default function ProfitFlowModule({ data, flow, onChange, askConfirm, showToast }) {
+  const wfLine = (() => {
+    const t = wholeFarmCosts(data); const m = (flow.settings || {}).wholeFarmSplit || 'none';
+    return `Whole-farm costs recorded: GH₵ ${money(t)}. ${m === 'none' ? 'Not included in any farm above.' : m === 'sales' ? 'Shared in proportion to each farm\'s total sales.' : 'Shared equally between all units.'}`;
+  })();
   const units = useMemo(() => getUnits(data), [data]);
-  const recs = useMemo(() => Object.fromEntries(units.map((u) => [u.id, unitRecords(data, u, units)])), [data, units]);
+  const recs = useMemo(() => Object.fromEntries(units.map((u) => [u.id, unitRecords(data, u, units, flow)])), [data, units, flow]);
   const [unitId, setUnitId] = useState(units[0] ? units[0].id : null);
   const unit = units.find((u) => u.id === unitId) || units[0];
   const [range, setRange] = useState('batch');
@@ -111,8 +137,8 @@ export default function ProfitFlowModule({ data, flow, onChange, askConfirm, sho
   const f = rangeFlow(data, rec, unit, from, to, flow);
   const all = rangeFlow(data, rec, unit, null, null, flow);
   const feed = rec.feed;
-  const allocs = (flow.allocations || []).filter((a) => a.unitId === unit.id || a.toUnitId === unit.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  const nm = (id) => (units.find((u) => u.id === id) || { name: '—' }).name;
+  const allocs = allAllocations(data, flow).filter((a) => a.unitId === unit.id || a.toUnitId === unit.id).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const nm = (id) => (id === 'shared' ? 'Whole farm' : id === 'crops' ? 'All crops' : id === 'poultry' ? 'All poultry' : (units.find((u) => u.id === id) || { name: '—' }).name);
 
   function save(a) { onChange({ ...flow, allocations: [...(flow.allocations || []), a] }); setAdding(false); showToast('Saved.', 'green'); }
   async function del(a) {
@@ -126,6 +152,16 @@ export default function ProfitFlowModule({ data, flow, onChange, askConfirm, sho
       <style>{CSS}</style>
       <div className="panel-head" style={{ marginBottom: 8 }}><h3 style={{ fontSize: 20 }}>Profit Flow</h3></div>
       <p className="pf-tip" style={{ margin: '0 0 12px' }}>Follow the money for each flock and field: sales in, what it cost (feed counted as it is used, not when bought), the profit, and where the profit went.</p>
+
+      <div className="pf-card" style={{ padding: 12 }}>
+        <label htmlFor="pf-share" style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Whole-farm costs (fuel, general labour…)</label>
+        <select id="pf-share" value={(flow.settings || {}).wholeFarmSplit || 'none'} onChange={(e) => onChange({ ...flow, settings: { ...(flow.settings || {}), wholeFarmSplit: e.target.value } })}>
+          <option value="none">Leave out of each farm's profit</option>
+          <option value="sales">Share by each farm's sales</option>
+          <option value="equal">Share equally between farms</option>
+        </select>
+        <p className="pf-tip" style={{ margin: '6px 0 0' }}>{wfLine}</p>
+      </div>
 
       <div className="pf-grid">
         {units.map((u) => {
@@ -181,6 +217,8 @@ export default function ProfitFlowModule({ data, flow, onChange, askConfirm, sho
         <div className="pf-row"><span>Profit</span><b className={f.profit >= 0 ? 'pf-pos' : 'pf-neg'}>GH₵ {money(f.profit)}</b></div>
         {DESTS.filter((d) => f.out[d.id]).map((d) => <div className="pf-row" key={d.id}><span><span style={{ color: DEST_COLOR[d.id] }}>■</span> {d.label}</span><span>− {money(f.out[d.id])}</span></div>)}
         {f.received > 0 && <div className="pf-row"><span>Received from other farms</span><span>+ {money(f.received)}</span></div>}
+        {f.groupInvestments.length > 0 && <div className="pf-row pf-tip"><span>Shared equipment for all {unit.farm === 'pepper' ? 'crops' : 'poultry'} ({f.groupInvestments.map((g) => g.item).join(', ')}), not split between units</span><span>{money(f.groupInvestments.reduce((t, g) => t + g.amount, 0))}</span></div>}
+        {f.invested > 0 && <div className="pf-row pf-tip"><span>Equipment and tools bought for this farm (investment, not in costs)</span><span>{money(f.invested)}</span></div>}
         <div className="pf-row"><b>Held, not yet placed</b><b>GH₵ {money(f.held)}</b></div>
         {!adding && <button className="btn btn-gold" style={{ marginTop: 10 }} onClick={() => setAdding(true)}>+ Place some profit</button>}
       </div>
@@ -207,13 +245,13 @@ export default function ProfitFlowModule({ data, flow, onChange, askConfirm, sho
         <div className="pf-card"><h4 style={{ margin: '0 0 4px' }}>Profit placed</h4>
           {allocs.map((a) => (
             <div className="pf-row" key={a.id} style={{ alignItems: 'center' }}>
-              <span>{fmt(a.date)} · {nm(a.unitId)} → {a.dest === 'transfer' ? nm(a.toUnitId) : (DESTS.find((d) => d.id === a.dest) || {}).label}{a.note ? ` · ${a.note}` : ''}</span>
-              <span style={{ whiteSpace: 'nowrap' }}>{money(a.amount)} <button className="link-btn rust" onClick={() => del(a)}>Delete</button></span>
+              <span>{fmt(a.date)} · {nm(a.unitId)} → {a.dest === 'transfer' ? nm(a.toUnitId) : a.dest === 'reinvest' ? `${a.item || 'items'} for ${nm(a.toUnitId)}` : (DESTS.find((d) => d.id === a.dest) || {}).label}{a.note ? ` · ${a.note}` : ''}</span>
+              <span style={{ whiteSpace: 'nowrap' }}>{money(a.amount)} {a.derived ? <span className="pf-tip">(edit in Whole Farm)</span> : <button className="link-btn rust" onClick={() => del(a)}>Delete</button>}</span>
             </div>
           ))}
         </div>
       )}
-      {wf > 0 && <p className="pf-tip">Whole-farm costs not tied to any farm: GH₵ {money(wf)} (not included above). The Performance tab splits these between farms.</p>}
+
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { proposeImport, toEntries } from './trackerImport';
 import {
   newId, activeFarms, equalSplit, ruleFor, splitTotal, allocate, computeMonth, findDuplicate,
   addMonth, monthLabel, lastMonths, FARM_COLORS,
@@ -413,6 +414,44 @@ function Report({ perf, ym, farmName }) {
   );
 }
 
+/* ───────────────────────── Import from farm records ───────────────────────── */
+function ImportPage({ data, perf, ym, onChange, showToast, goEntries }) {
+  const prop = useMemo(() => proposeImport(data, perf, ym), [data, perf, ym]);
+  const inc = prop.items.filter((i) => i.type === 'income').reduce((s, i) => s + i.amount, 0);
+  const exp = prop.items.filter((i) => i.type === 'expense').reduce((s, i) => s + i.amount, 0);
+  const cname = (id) => (perf.categories.find((c) => c.id === id) || { name: 'Other' }).name;
+  const fname = (id) => (perf.farms.find((f) => f.id === id) || { name: '' }).name;
+  function run() {
+    onChange({ ...perf, entries: [...perf.entries, ...toEntries(prop.items, perf)] });
+    showToast(`${prop.items.length} entries imported.`, 'green');
+    goEntries();
+  }
+  return (
+    <>
+      <div className="perf-card">
+        <h4 style={{ margin: '0 0 4px' }}>Pull from your farm records · {monthLabel(ym)}</h4>
+        <p className="perf-tip" style={{ margin: 0 }}>This copies sales and costs you already logged (eggs and bird sales, harvests, goat sales, feed, medication, sprays, farm expenses) into Performance, so you do not type them again. Use the arrows at the top to pick another month. Anything already imported is skipped, and equipment and structures are left out.</p>
+      </div>
+      {prop.items.length === 0 ? (
+        <div className="perf-card"><p className="perf-tip" style={{ margin: 0 }}>Nothing new to import for {monthLabel(ym)}.{prop.already ? ` ${prop.already} already imported.` : ''}</p></div>
+      ) : (
+        <>
+          <div className="perf-card" style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
+            <span>Sales <b>GH₵ {money(inc)}</b></span><span>Costs <b>GH₵ {money(exp)}</b></span><span>{prop.items.length} entries</span>
+            <button className="btn btn-gold" style={{ marginLeft: 'auto' }} onClick={run}>Import {prop.items.length} entries</button>
+          </div>
+          <div className="perf-card" style={{ padding: 0 }}><div className="table-wrap"><table className="data">
+            <thead><tr><th>Date</th><th>What</th><th>Farm</th><th style={{ textAlign: 'right' }}>Amount</th><th>Note</th></tr></thead>
+            <tbody>{[...prop.items].sort((a, b) => a.date.localeCompare(b.date)).map((i) => (
+              <tr key={i.src}><td className="mono">{i.date}</td><td>{i.type === 'income' ? '＋ ' : '− '}{cname(i.categoryId)}</td><td>{i.shared ? 'Shared' : fname(i.farmId)}</td><td className="mono" style={{ textAlign: 'right' }}>{money(i.amount)}</td><td className="notes">{i.note}</td></tr>
+            ))}</tbody></table></div></div>
+        </>
+      )}
+      {prop.skipped > 0 && <p className="perf-tip">{prop.skipped} record(s) were left out because the farm or cost type they belong to was renamed or removed in Setup.</p>}
+    </>
+  );
+}
+
 /* ───────────────────────── Setup ───────────────────────── */
 function Setup({ perf, onChange, askConfirm, showToast }) {
   const farms = activeFarms(perf);
@@ -525,7 +564,7 @@ function Setup({ perf, onChange, askConfirm, showToast }) {
 }
 
 /* ───────────────────────── Main ───────────────────────── */
-export default function PerformanceModule({ perf, onChange, askConfirm, showToast, farmName }) {
+export default function PerformanceModule({ perf, onChange, askConfirm, showToast, farmName, data }) {
   const [ym, setYm] = useState(today().slice(0, 7));
   const [view, setView] = useState('overview');
   const [farmId, setFarmId] = useState(null);
@@ -545,7 +584,7 @@ export default function PerformanceModule({ perf, onChange, askConfirm, showToas
     showToast('Entry deleted.', 'green');
   }
 
-  const tabs = [['overview', 'Overview'], ['shared', 'Shared costs'], ['entries', 'Entries'], ['trends', 'Trends'], ['report', 'Report'], ['setup', 'Setup']];
+  const tabs = [['overview', 'Overview'], ['shared', 'Shared costs'], ['entries', 'Entries'], ['trends', 'Trends'], ['report', 'Report'], ['import', 'Import'], ['setup', 'Setup']];
   const showMonth = !['setup'].includes(view);
   return (
     <div style={{ maxWidth: 940 }}>
@@ -572,6 +611,7 @@ export default function PerformanceModule({ perf, onChange, askConfirm, showToas
       {view === 'entries' && <EntriesPage perf={perf} ym={ym} onEdit={(e) => { setEditing(e); setView('add'); }} onDelete={del} />}
       {view === 'trends' && <Trends perf={perf} ym={ym} />}
       {view === 'report' && <Report perf={perf} ym={ym} farmName={farmName} />}
+      {view === 'import' && data && <ImportPage data={data} perf={perf} ym={ym} onChange={onChange} showToast={showToast} goEntries={() => go('entries')} />}
       {view === 'setup' && <Setup perf={perf} onChange={onChange} askConfirm={askConfirm} showToast={showToast} />}
     </div>
   );
