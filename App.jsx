@@ -1,11 +1,10 @@
-import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext, Component } from 'react';
 import {
-  ResponsiveContainer, ComposedChart, Line, Bar, Area, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, BarChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart, ReferenceDot,
 } from 'recharts';
 import { SEED } from './data/seed';
 import Papa from 'papaparse';
-import { CUCUMBER_PROGRAMME, cucumberStageForWeek, CUCUMBER_RULES } from './data/cucumberProgramme';
 import ROSS308 from './data/ross308_standard.json';
 import {
   pullRemote, pushRemote, isCloudConfigured, getCloudConfig,
@@ -13,8 +12,707 @@ import {
   getUser, signIn, signUp, signOut, resetPassword,
 } from './sync';
 import './App.css';
+import FinancialsModule from './FinancialsModule';
 
-const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
+// ============================================================
+// FARM ADVISOR — KNOWLEDGE BASE + ENGINE
+// Pre-programmed agronomic and poultry best practices.
+// No API calls. Runs fully offline.
+// ============================================================
+
+const ADVISOR_AI_LIBRARY = [
+  { id: 'spirotetramat', name: 'Spirotetramat', group: '23', type: 'insecticide', controls: ['mealybugs','aphids','whitefly','thrips','scale insects'], phi: 14, rateRange: '7–10 ml per 16L', notes: 'Double systemic — moves up and down plant. Slow acting (5–7 days). Rotate with group 4A or 1A.' },
+  { id: 'acetamiprid', name: 'Acetamiprid', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs','leafhoppers'], phi: 7, rateRange: '10–15 ml per 16L', notes: 'Systemic, translaminar. Fast knockdown for sucking pests. Bee risk — do not spray open flowers.' },
+  { id: 'lambda-cyhalothrin', name: 'Lambda-cyhalothrin', group: '3A (pyrethroid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','caterpillars','beetles'], phi: 7, rateRange: '5–8 ml per 16L', notes: 'Contact + stomach action. Avoid when mite pressure is high — may cause mite flares.' },
+  { id: 'spinosad', name: 'Spinosad', group: '5 (spinosyn)', type: 'insecticide', controls: ['thrips','caterpillars','leafminers','spider mites'], phi: 3, rateRange: '12–15 ml per 16L', notes: 'Biological origin. Excellent for thrips. Apply early morning or evening — UV degrades it fast.' },
+  { id: 'emamectin', name: 'Emamectin benzoate', group: '6 (avermectin)', type: 'insecticide', controls: ['caterpillars','thrips','leafminers','spider mites'], phi: 3, rateRange: '5–8 ml per 16L', notes: 'Translaminar systemic. Short PHI — good before harvest.' },
+  { id: 'abamectin', name: 'Abamectin', group: '6 (avermectin)', type: 'acaricide', controls: ['spider mites','thrips','leafminers'], phi: 3, rateRange: '5 ml per 15L', notes: 'Primary acaricide. Rotate with group 23 or 25.' },
+  { id: 'imidacloprid', name: 'Imidacloprid', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs','leafhoppers'], phi: 7, rateRange: '5–10 ml per 16L', notes: 'Systemic. High bee toxicity — avoid flowering. Resistance common in whitefly — rotate.' },
+  { id: 'chlorpyrifos', name: 'Chlorpyrifos', group: '1B (organophosphate)', type: 'insecticide', controls: ['caterpillars','beetles','aphids','thrips','soil pests'], phi: 14, rateRange: '20–25 ml per 16L', notes: 'Broad spectrum contact. Long PHI.' },
+  { id: 'cypermethrin', name: 'Cypermethrin', group: '3A (pyrethroid)', type: 'insecticide', controls: ['caterpillars','aphids','beetles','whitefly'], phi: 7, rateRange: '10–15 ml per 16L', notes: 'Contact knockdown.' },
+  { id: 'thiamethoxam', name: 'Thiamethoxam', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs'], phi: 7, rateRange: '5–10 ml per 16L', notes: 'Systemic neonicotinoid.' },
+  { id: 'bifenazate', name: 'Bifenazate', group: '25 (acaricide)', type: 'acaricide', controls: ['spider mites'], phi: 3, rateRange: '20–25 ml per 16L', notes: 'Selective miticide — does not harm predatory mites.' },
+  { id: 'mancozeb', name: 'Mancozeb', group: 'M3 (multi-site)', type: 'fungicide', controls: ['cercospora','early blight','late blight','downy mildew','anthracnose','botrytis'], phi: 7, rateRange: '25–30 g per 16L', notes: 'Broad spectrum protectant. Weekly preventive spray. No resistance risk (multi-site).' },
+  { id: 'copper-hydroxide', name: 'Copper hydroxide', group: 'M1 (inorganic)', type: 'fungicide', controls: ['bacterial leaf spot','cercospora','anthracnose','downy mildew','angular leaf spot'], phi: 0, rateRange: '25–35 g per 16L', notes: 'Broad protectant + bactericide. Standard for Xanthomonas.' },
+  { id: 'copper-oxychloride', name: 'Copper oxychloride', group: 'M1 (inorganic)', type: 'fungicide', controls: ['bacterial leaf spot','cercospora','anthracnose','downy mildew'], phi: 0, rateRange: '30–40 g per 16L', notes: 'Good tank-mix partner with mancozeb.' },
+  { id: 'metalaxyl', name: 'Metalaxyl / Metalaxyl-M', group: '4 (phenylamide)', type: 'fungicide', controls: ['damping off','pythium','phytophthora','downy mildew'], phi: 7, rateRange: '15–25 g per 16L', notes: 'Systemic oomycide. Rotate with multi-site fungicides. High resistance risk.' },
+  { id: 'azoxystrobin', name: 'Azoxystrobin', group: '11 (QoI/strobilurin)', type: 'fungicide', controls: ['powdery mildew','cercospora','early blight','botrytis','anthracnose'], phi: 3, rateRange: '10–15 ml per 16L', notes: 'Systemic. Good curative + preventive.' },
+  { id: 'difenoconazole', name: 'Difenoconazole', group: '3 (DMI/triazole)', type: 'fungicide', controls: ['powdery mildew','cercospora','anthracnose','early blight','rust'], phi: 7, rateRange: '10 ml per 16L', notes: 'Systemic DMI fungicide. Good curative activity.' },
+  { id: 'chlorothalonil', name: 'Chlorothalonil', group: 'M5 (multi-site)', type: 'fungicide', controls: ['cercospora','early blight','botrytis','anthracnose','downy mildew'], phi: 7, rateRange: '20–25 ml per 16L', notes: 'Broad protectant. No resistance risk.' },
+  { id: 'yaravita', name: 'YaraVita Croplift Bio', group: 'foliar fertiliser', type: 'fertiliser', controls: [], phi: 0, rateRange: '200–400 ml per 16L', notes: 'Foliar NPK + micronutrient boost. Can tank-mix with most fungicides.' },
+  { id: 'calcium-boron', name: 'Calcium + Boron foliar', group: 'fertiliser', type: 'fertiliser', controls: [], phi: 0, rateRange: '10–15 ml per 16L', notes: 'Critical at flower set and fruit fill. Prevents blossom end rot.' },
+];
+
+const ADVISOR_PEST_LIBRARY = [
+  { id: 'thrips', name: 'Thrips', crops: ['bell pepper','habanero','cucumber','tomato'],
+    symptoms: 'Silver scarring on leaves and fruit, curled/distorted new growth, black faecal specks on undersides. Flowers fail to set.',
+    threshold: 'Act at first adults visible on leaves.',
+    controls: ['spinosad','emamectin','abamectin','acetamiprid'],
+    notes: 'Prune heavily before spraying. Best sprayed early morning. Rotate groups 5 → 6 → 4A.' },
+  { id: 'aphids', name: 'Aphids', crops: ['bell pepper','habanero','cucumber','tomato','cabbage','garden eggs'],
+    symptoms: 'Clustered on growing tips and undersides. Sticky honeydew + sooty mould. Yellowing, curled leaves. Major CMV vector.',
+    threshold: 'Act at first colony (even 5–10 insects) — primary CMV risk.',
+    controls: ['acetamiprid','imidacloprid','lambda-cyhalothrin','thiamethoxam','spinosad'],
+    notes: 'CMV from aphids is irreversible — act immediately. Yellow sticky traps for monitoring.' },
+  { id: 'whitefly', name: 'Whitefly', crops: ['bell pepper','habanero','cucumber','tomato','garden eggs','beans'],
+    symptoms: 'White cloud of small flies when disturbed. Honeydew, sooty mould. Yellowing.',
+    threshold: 'Act at >5 adults per leaf on 20% of sampled plants.',
+    controls: ['imidacloprid','thiamethoxam','acetamiprid','spirotetramat'],
+    notes: 'Very prone to insecticide resistance. Rotate mode of action every application.' },
+  { id: 'mealybugs', name: 'Mealybugs', crops: ['bell pepper','habanero','cucumber','tomato','garden eggs'],
+    symptoms: 'White waxy cottony masses in leaf axils, stem joints. Yellowing, stunting, honeydew + sooty mould.',
+    threshold: 'Act at first infestation — spreads rapidly in protected crops.',
+    controls: ['spirotetramat','acetamiprid','imidacloprid','chlorpyrifos'],
+    notes: 'Spirotetramat is best — systemic reaches hidden colonies. 2 applications 7–10 days apart.' },
+  { id: 'spider mites', name: 'Spider mites', crops: ['bell pepper','habanero','cucumber','tomato','beans'],
+    symptoms: 'Fine webbing on undersides, tiny yellow-white stippling on upper surface. Leaves go bronze then drop.',
+    threshold: 'Act at >5 mites per leaf or first visible webbing.',
+    controls: ['abamectin','bifenazate','spirotetramat'],
+    notes: 'Hot dry conditions promote explosions. Pyrethroid sprays often make mite problems worse.' },
+  { id: 'caterpillars', name: 'Caterpillars / Armyworm', crops: ['bell pepper','habanero','cucumber','tomato','cabbage','cowpea'],
+    symptoms: 'Irregular holes in leaves and fruit. Frass visible. Fruit bored from inside.',
+    threshold: 'Act at >1 larva per 10 plants for fruiting crops.',
+    controls: ['emamectin','spinosad','chlorpyrifos','cypermethrin'],
+    notes: 'Scout undersides of leaves for egg masses.' },
+  { id: 'leafminers', name: 'Leafminers', crops: ['bell pepper','tomato','cucumber','beans'],
+    symptoms: 'Winding white/silver tunnels in leaf tissue.',
+    threshold: 'Act at >5 mines per plant.',
+    controls: ['spinosad','emamectin','abamectin'],
+    notes: 'Spray when larvae inside mines are small (narrow mines).' },
+];
+
+const ADVISOR_DISEASE_LIBRARY = [
+  { id: 'cercospora', name: 'Cercospora Leaf Spot', crops: ['bell pepper','habanero'], type: 'fungal',
+    symptoms: 'Circular spots with tan/grey centre and dark brown border, yellow halo. Defoliation in severe cases.',
+    conditions: 'High humidity, prolonged leaf wetness.',
+    treatment: ['mancozeb','chlorothalonil','azoxystrobin','difenoconazole'] },
+  { id: 'bacterial-leaf-spot', name: 'Bacterial Leaf Spot (Xanthomonas)', crops: ['bell pepper','habanero','tomato'], type: 'bacterial',
+    symptoms: 'Water-soaked spots turning brown/black with yellow halo. Irregular margins. Fruit lesions are raised and scabby.',
+    conditions: 'Warm, wet weather. Spreads via water splash.',
+    treatment: ['copper-hydroxide','copper-oxychloride'] },
+  { id: 'powdery-mildew', name: 'Powdery Mildew', crops: ['cucumber','tomato','garden eggs','bell pepper'], type: 'fungal',
+    symptoms: 'White powdery coating on upper leaf surface. Starts on older leaves, spreads upward.',
+    conditions: 'Dry weather with high relative humidity at night.',
+    treatment: ['azoxystrobin','difenoconazole'] },
+  { id: 'downy-mildew', name: 'Downy Mildew', crops: ['cucumber','tomato','cabbage'], type: 'oomycete',
+    symptoms: 'Yellow patches on upper leaf, grey-purple downy growth on underside.',
+    conditions: 'Cool nights, >90% humidity, leaf wetness.',
+    treatment: ['metalaxyl','mancozeb','copper-hydroxide'] },
+  { id: 'pythium', name: 'Pythium / Damping Off', crops: ['bell pepper','cucumber','tomato','cabbage'], type: 'oomycete',
+    symptoms: 'Seedlings collapse at soil level. Stem base turns brown, water-soaked. Root rot.',
+    conditions: 'Overwatering, poor drainage.',
+    treatment: ['metalaxyl'] },
+  { id: 'anthracnose', name: 'Anthracnose', crops: ['bell pepper','habanero','tomato','cucumber','beans'], type: 'fungal',
+    symptoms: 'Dark sunken lesions on fruit. Pink spore masses in wet conditions.',
+    conditions: 'High humidity, warm temperatures.',
+    treatment: ['mancozeb','copper-hydroxide','azoxystrobin','difenoconazole'] },
+  { id: 'newcastle', name: 'Newcastle Disease (ND)', crops: ['poultry'], type: 'viral',
+    symptoms: 'Sudden drop in egg production. Respiratory distress (gasping, rattling). Nervous signs (twisted neck). High mortality.',
+    conditions: 'Highly contagious. Spreads via air, droppings, contaminated equipment.',
+    treatment: [] },
+  { id: 'gumboro', name: 'Gumboro (IBD)', crops: ['poultry'], type: 'viral',
+    symptoms: 'Sudden onset depression, whitish diarrhoea, ruffled feathers. Affects 2–6 week old birds.',
+    conditions: 'Very stable virus — survives in houses for months.',
+    treatment: [] },
+  { id: 'coccidiosis', name: 'Coccidiosis', crops: ['poultry'], type: 'parasitic',
+    symptoms: 'Bloody diarrhoea, lethargy, pale birds. High mortality if untreated. Most common in 3–8 week chicks.',
+    conditions: 'Wet litter, high humidity, overcrowding.',
+    treatment: ['Amprolium (Amprol)','Toltrazuril (vet prescribed)'] },
+  { id: 'fowl-typhoid', name: 'Fowl Typhoid / Salmonella', crops: ['poultry'], type: 'bacterial',
+    symptoms: 'Greenish-yellow diarrhoea, lethargy, sudden deaths. Affects all ages.',
+    conditions: 'Contaminated feed, water or equipment.',
+    treatment: ['Enrofloxacin (vet prescribed)'] },
+];
+
+const ADVISOR_CROP_GUIDES = {
+  'bell pepper': {
+    crop: 'Bell Pepper', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Mancozeb + Copper hydroxide','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20], focus: 'Root development. Keep consistent moisture. No waterlogging.' },
+      { name: 'Vegetative', days: [21, 50], focus: 'Vigorous canopy growth. Apply YaraVita foliar every 2 weeks. Scout weekly.' },
+      { name: 'First flower', days: [51, 70], focus: 'Reduce nitrogen, increase potassium + calcium. Manage thrips and aphids at flower — critical for fruit set.' },
+      { name: 'Fruiting', days: [71, 110], focus: 'Fruit fill. Apply Calcium + Boron foliar weekly. Maintain strict PHI discipline.' },
+      { name: 'Harvest', days: [111, 180], focus: 'Harvest at mature green stage. Grade and cool quickly.' },
+    ],
+    scoutingFrequency: 'Twice per week. Focus: new growth (thrips), undersides (mites, whitefly), lower canopy (Cercospora).',
+    harvestWindow: 'Green stage 70–90 days after transplant. Harvest every 5–7 days.',
+    foliarIntervalDays: 14,
+  },
+  'habanero': {
+    crop: 'Habanero Pepper', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Mancozeb + Copper hydroxide','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 25], focus: 'Slow early growth. Consistent moisture.' },
+      { name: 'Vegetative', days: [26, 60], focus: 'Weekly scouting. Same spray programme as bell pepper.' },
+      { name: 'Flowering', days: [61, 85], focus: 'Manage thrips and aphids at flower — critical for fruit set.' },
+      { name: 'Fruiting', days: [86, 150], focus: 'Long fruiting window. Continue PHI records.' },
+    ],
+    scoutingFrequency: 'Twice per week.',
+    harvestWindow: 'Green stage 90–100 days. Orange/red 110–130 days.',
+    foliarIntervalDays: 14,
+  },
+  'cucumber': {
+    crop: 'Cucumber', sprayIntervalDays: 5,
+    preventiveSprayRotation: ['Mancozeb','Azoxystrobin (powdery mildew primary)','Chlorothalonil','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 10], focus: 'Rapid early growth. Avoid waterlogging.' },
+      { name: 'Vegetative', days: [11, 25], focus: 'Train vines. Weekly scouting. Powdery mildew first target.' },
+      { name: 'Flowering', days: [26, 40], focus: 'Bee access important unless parthenocarpic variety.' },
+      { name: 'Harvest', days: [41, 90], focus: 'Harvest every 2–3 days at correct size. Over-ripe fruit reduces yield.' },
+    ],
+    scoutingFrequency: 'Every 2–3 days. Powdery mildew and spider mites are primary threats.',
+    harvestWindow: 'First harvest 40–50 days after transplant. Harvest every 2–3 days.',
+    foliarIntervalDays: 14,
+  },
+  'tomato': {
+    crop: 'Tomato', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Chlorothalonil','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20], focus: 'Root establishment.' },
+      { name: 'Vegetative', days: [21, 45], focus: 'Canopy growth. Begin weekly scouting.' },
+      { name: 'Flowering', days: [46, 65], focus: 'Manage whitefly — TYLCV vector.' },
+      { name: 'Fruiting', days: [66, 100], focus: 'Fruit fill. Calcium + Boron foliar.' },
+      { name: 'Harvest', days: [101, 150], focus: 'First harvest 70–90 days after transplant.' },
+    ],
+    scoutingFrequency: 'Twice per week.',
+    harvestWindow: 'First harvest 70–90 days after transplant.',
+    foliarIntervalDays: 14,
+  },
+  'garden eggs': {
+    crop: 'Garden Eggs (Eggplant)', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb','Azoxystrobin','Chlorothalonil'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 21] },
+      { name: 'Vegetative', days: [22, 55], focus: 'Weekly scouting. Very prone to spider mites.' },
+      { name: 'Flowering', days: [56, 75] },
+      { name: 'Harvest', days: [76, 150], focus: 'First harvest 60–80 days after transplant.' },
+    ],
+    scoutingFrequency: 'Twice per week. Spider mites and mealybugs primary threats.',
+    harvestWindow: 'First harvest 60–80 days after transplant.',
+    foliarIntervalDays: 14,
+  },
+  'okra': {
+    crop: 'Okra', sprayIntervalDays: 10,
+    preventiveSprayRotation: ['Mancozeb','Copper hydroxide'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20] },
+      { name: 'Vegetative', days: [21, 40] },
+      { name: 'Harvest', days: [41, 100], focus: 'Harvest every 2–3 days.' },
+    ],
+    scoutingFrequency: 'Weekly.',
+    harvestWindow: 'First harvest 50–60 days after sowing. Harvest every 2–3 days.',
+    foliarIntervalDays: 21,
+  },
+  'cabbage': {
+    crop: 'Cabbage', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb','Chlorothalonil'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20] },
+      { name: 'Head formation', days: [21, 60], focus: 'Caterpillars (diamondback moth, armyworm) primary threat. Spinosad or emamectin.' },
+      { name: 'Harvest', days: [61, 90] },
+    ],
+    scoutingFrequency: 'Weekly. Diamondback moth is primary threat.',
+    harvestWindow: 'Head harvest 60–90 days after transplant.',
+    foliarIntervalDays: 21,
+  },
+  'cowpea': {
+    crop: 'Cowpea / Beans', sprayIntervalDays: 10,
+    preventiveSprayRotation: ['Mancozeb','Copper hydroxide'],
+    stagesFromTransplant: [
+      { name: 'Vegetative', days: [0, 30] },
+      { name: 'Flowering', days: [31, 50] },
+      { name: 'Pod fill', days: [51, 70] },
+    ],
+    scoutingFrequency: 'Weekly.',
+    harvestWindow: 'Green pod 50–60 days. Dry 70–80 days.',
+    foliarIntervalDays: 21,
+  },
+};
+
+const ADVISOR_POULTRY_BENCHMARKS = {
+  henDay: { peak: 90, acceptable: 75, critical: 60, dropAlertPct: 5, dropAlertDays: 3 },
+  mortality: { dailyWarnPct: 0.5, dailyCriticalPct: 1, weeklyWarnPct: 2 },
+  feedPerBird: { layerGramsPerDay: 115, tolerancePct: 20 },
+  scoutingOverdueDays: 3,
+  vaccinationLeadDays: 3,
+  feedStockWarnDays: 7,
+};
+
+// ── Advisor engine helpers ──
+function _advDaysBetween(isoA, isoB) {
+  return Math.round((new Date(isoB) - new Date(isoA)) / 86400000);
+}
+function _advAddDays(iso, n) {
+  const d = new Date(iso); d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function _advTail(arr, n) { return arr.slice(-n); }
+
+let _advUID = 0;
+function _advMakeAlert({ severity, category, source, title, body, action, canEscalate, escalatePrompt }) {
+  return { id: `adv-${++_advUID}`, severity, category, source, title, body, action: action || null, canEscalate: !!canEscalate, escalatePrompt: escalatePrompt || null, ts: Date.now() };
+}
+
+function _advPoultryAlerts(data) {
+  const alerts = [];
+  const bm = ADVISOR_POULTRY_BENCHMARKS;
+  const today = new Date().toISOString().slice(0, 10);
+
+  (data.flocks || []).forEach((flock) => {
+    if (flock.status === 'closed') return;
+    const log = (data.dailyLog || []).filter((r) => r.flockId === flock.id).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const recent7 = _advTail(log, 7);
+    const flockName = flock.flockName || flock.name || 'Flock';
+
+    // 1. Missing daily log
+    const lastEntry = log[log.length - 1];
+    const daysAgo = lastEntry ? _advDaysBetween(lastEntry.date, today) : null;
+    if (!lastEntry || daysAgo > bm.scoutingOverdueDays) {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+        title: `${flockName}: daily log overdue`,
+        body: daysAgo ? `Last entry was ${daysAgo} day(s) ago. Log today's data to keep hen-day % and mortality tracking accurate.` : `No daily log entries yet for this flock. Start logging to enable monitoring.`,
+        action: { workspace: 'poultry', tab: 'log' } }));
+    }
+
+    // 2. Mortality spike
+    const todayEntry = log.find((r) => r.date === today);
+    if (todayEntry) {
+      const deaths = Number(todayEntry.mortality) || 0;
+      const closing = Number(todayEntry.closing) || Number(flock.initialBirds) || 1;
+      const pct = (deaths / closing) * 100;
+      if (pct >= bm.mortality.dailyCriticalPct) {
+        const ageWeeks = flock.hatchDate ? Math.floor(_advDaysBetween(flock.hatchDate, today) / 7) : '?';
+        const vaxDone = (data.vax || []).filter((v) => v.flockId === flock.id).map((v) => v.disease || v.vaccine).join(', ') || 'none recorded';
+        alerts.push(_advMakeAlert({ severity: 'critical', category: 'poultry', source: flockName,
+          title: `${flockName}: critical mortality — ${deaths} birds today (${pct.toFixed(1)}%)`,
+          body: `${deaths} deaths today exceeds critical threshold (${bm.mortality.dailyCriticalPct}% per day). Inspect birds immediately — look for Newcastle, Gumboro, or Coccidiosis signs. Isolate sick birds. Contact your vet.`,
+          action: { workspace: 'poultry', tab: 'health' },
+          canEscalate: true,
+          escalatePrompt: `My poultry flock (${closing} birds, ${ageWeeks} weeks old) had ${deaths} deaths in one day (${pct.toFixed(1)}% mortality). Vaccination history: ${vaxDone}. What could be causing this sudden mortality spike and what should I do immediately?` }));
+      } else if (pct >= bm.mortality.dailyWarnPct) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: elevated mortality — ${deaths} birds today`,
+          body: `${pct.toFixed(1)}% daily mortality. Normal is below ${bm.mortality.dailyWarnPct}%. Monitor closely over the next 24 hours. Check feed, water, ventilation and signs of respiratory or intestinal disease.`,
+          action: { workspace: 'poultry', tab: 'log' } }));
+      }
+    }
+
+    // 3. 7-day mortality
+    const week7Deaths = recent7.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
+    const avgClosing = recent7.length ? recent7.reduce((s, r) => s + (Number(r.closing) || 0), 0) / recent7.length : (Number(flock.initialBirds) || 1);
+    const weekMortPct = (week7Deaths / avgClosing) * 100;
+    if (weekMortPct >= bm.mortality.weeklyWarnPct && recent7.length >= 5) {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+        title: `${flockName}: 7-day mortality ${weekMortPct.toFixed(1)}%`,
+        body: `${week7Deaths} birds died in the last 7 days (${weekMortPct.toFixed(1)}% of flock). Above the ${bm.mortality.weeklyWarnPct}% weekly threshold. Review disease history, ventilation and biosecurity.`,
+        action: { workspace: 'poultry', tab: 'health' } }));
+    }
+
+    // 4. Hen-day % trend
+    const withEggs = recent7.filter((r) => r.closing && r.eggs != null);
+    if (withEggs.length >= 3) {
+      const hd = (r) => (Number(r.eggs) / Number(r.closing)) * 100;
+      const vals = withEggs.map(hd);
+      const latestHD = vals[vals.length - 1];
+      const earliestHD = vals[0];
+      const drop = earliestHD - latestHD;
+      if (latestHD < bm.henDay.critical) {
+        const ageWeeks = flock.hatchDate ? Math.floor(_advDaysBetween(flock.hatchDate, today) / 7) : '?';
+        const lastMeds = (data.meds || []).filter((m) => m.flockId === flock.id).slice(-3).map((m) => m.medicine).join(', ') || 'none';
+        alerts.push(_advMakeAlert({ severity: 'critical', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % critically low — ${latestHD.toFixed(1)}%`,
+          body: `Hen-day % is ${latestHD.toFixed(1)}% — well below the ${bm.henDay.critical}% critical threshold. Check: adequate feed supply and quality, water availability, disease pressure, lighting programme, and stress factors.`,
+          action: { workspace: 'poultry', tab: 'dashboard' },
+          canEscalate: true,
+          escalatePrompt: `My layer flock hen-day percentage dropped from ${earliestHD.toFixed(1)}% to ${latestHD.toFixed(1)}% over ${withEggs.length} days. Flock size: ${Math.round(avgClosing)} birds, age: ${ageWeeks} weeks. Recent medications: ${lastMeds}. What could be causing this drop?` }));
+      } else if (latestHD < bm.henDay.acceptable) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % below target — ${latestHD.toFixed(1)}%`,
+          body: `Hen-day % is ${latestHD.toFixed(1)}%, below the ${bm.henDay.acceptable}% target. Review feed quantity (${bm.feedPerBird.layerGramsPerDay}g/bird/day target), water supply, lighting and bird health.`,
+          action: { workspace: 'poultry', tab: 'dashboard' } }));
+      } else if (drop >= bm.henDay.dropAlertPct) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % dropped ${drop.toFixed(1)}% in ${withEggs.length} days`,
+          body: `Hen-day fell from ${earliestHD.toFixed(1)}% to ${latestHD.toFixed(1)}%. Investigate feed, water, temperature stress or early disease signs before it falls further.`,
+          action: { workspace: 'poultry', tab: 'dashboard' } }));
+      }
+    }
+
+    // 5. Feed per bird
+    if (recent7.length >= 3) {
+      const totalBirdDays = recent7.reduce((s, r) => s + (Number(r.closing) || 0), 0);
+      const totalFeedKg = recent7.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
+      if (totalBirdDays > 0 && totalFeedKg > 0) {
+        const gPerBird = (totalFeedKg * 1000) / totalBirdDays;
+        const target = bm.feedPerBird.layerGramsPerDay;
+        const tol = bm.feedPerBird.tolerancePct / 100;
+        if (gPerBird < target * (1 - tol)) {
+          alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+            title: `${flockName}: feed per bird low — ${gPerBird.toFixed(0)}g/bird/day`,
+            body: `Average feed over last 7 logged days is ${gPerBird.toFixed(0)}g per bird per day. Target is ${target}g. Under-feeding directly reduces egg production. Check feed stock and ensure feeders are always accessible.`,
+            action: { workspace: 'poultry', tab: 'feed' } }));
+        } else if (gPerBird > target * (1 + tol)) {
+          alerts.push(_advMakeAlert({ severity: 'info', category: 'poultry', source: flockName,
+            title: `${flockName}: feed per bird high — ${gPerBird.toFixed(0)}g/bird/day`,
+            body: `Average feed is ${gPerBird.toFixed(0)}g per bird per day — above the ${target}g target. Check for feed wastage, spillage, or rodent access.`,
+            action: { workspace: 'poultry', tab: 'feed' } }));
+        }
+      }
+    }
+
+    // 6. Vaccination schedule
+    (data.vax || []).filter((v) => v.flockId === flock.id && v.date && !v.done).forEach((v) => {
+      const daysToVax = _advDaysBetween(today, v.date);
+      if (daysToVax >= 0 && daysToVax <= bm.vaccinationLeadDays) {
+        alerts.push(_advMakeAlert({ severity: daysToVax === 0 ? 'critical' : 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: vaccination ${daysToVax === 0 ? 'DUE TODAY' : `in ${daysToVax} day(s)`} — ${v.disease || v.vaccine}`,
+          body: `${v.disease || v.vaccine} vaccination is scheduled for ${v.date}. ${daysToVax === 0 ? 'Administer today.' : 'Prepare your vaccine and equipment.'}`,
+          action: { workspace: 'poultry', tab: 'health' } }));
+      } else if (daysToVax < 0 && _advDaysBetween(v.date, today) <= 7) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: overdue vaccination — ${v.disease || v.vaccine}`,
+          body: `${v.disease || v.vaccine} was scheduled ${Math.abs(daysToVax)} day(s) ago and has not been marked done. Administer as soon as possible and update the health log.`,
+          action: { workspace: 'poultry', tab: 'health' } }));
+      }
+    });
+  });
+  return alerts;
+}
+
+function _advCropAlerts(data) {
+  const alerts = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const pepper = data.pepper || {};
+  const fields = (pepper.fields || []).filter((f) => f.transplantDate);
+  const sprays = pepper.inputs || [];
+  const scouting = pepper.scouting || [];
+  const harvests = pepper.harvests || [];
+  const soilReadings = pepper.soilReadings || [];
+
+  fields.forEach((field) => {
+    const fieldName = field.name || 'Field';
+    const daysFromTransplant = _advDaysBetween(field.transplantDate, today);
+    const cropKey = (field.cropType || 'bell pepper').toLowerCase();
+    const guide = ADVISOR_CROP_GUIDES[cropKey] || ADVISOR_CROP_GUIDES['bell pepper'];
+
+    // 1. PHI status
+    const fieldSprays = sprays.filter((s) => s.fieldId === field.id && s.phiDays);
+    let maxSafe = null, maxProduct = null, maxDaysLeft = 0;
+    fieldSprays.forEach((s) => {
+      const safe = _advAddDays(s.date, s.phiDays);
+      const dl = _advDaysBetween(today, safe);
+      if (dl > 0 && (!maxSafe || safe > maxSafe)) { maxSafe = safe; maxDaysLeft = dl; maxProduct = s.product; }
+    });
+    if (maxSafe) {
+      alerts.push(_advMakeAlert({ severity: maxDaysLeft <= 3 ? 'warning' : 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: harvest hold — ${maxDaysLeft} day(s) remaining (${maxProduct || 'spray'})`,
+        body: `The longest active PHI expires on ${maxSafe} (${maxDaysLeft} more day(s)). Do not harvest until this date. This accounts for all sprays with active PHI countdowns.`,
+        action: { workspace: 'pepper', tab: 'sprays' } }));
+    }
+
+    // 2. Spray interval
+    if (guide.sprayIntervalDays) {
+      const lastSpray = fieldSprays.length ? fieldSprays[fieldSprays.length - 1] : null;
+      if (lastSpray) {
+        const daysSince = _advDaysBetween(lastSpray.date, today);
+        if (daysSince > guide.sprayIntervalDays + 2) {
+          alerts.push(_advMakeAlert({ severity: daysSince > guide.sprayIntervalDays + 7 ? 'warning' : 'info', category: 'crop', source: fieldName,
+            title: `${fieldName}: spray overdue — ${daysSince} days since last spray`,
+            body: `Recommended interval for ${guide.crop} is every ${guide.sprayIntervalDays} days. Last spray: ${lastSpray.product || lastSpray.type || 'unknown'} on ${lastSpray.date}.\nNext rotation: ${guide.preventiveSprayRotation.join(' → ')}.`,
+            action: { workspace: 'pepper', tab: 'sprays' } }));
+        }
+      } else if (daysFromTransplant > 14) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+          title: `${fieldName}: no sprays recorded — plant is ${daysFromTransplant} days old`,
+          body: `${guide.crop} should follow a preventive spray programme from early vegetative stage. Recommended rotation: ${guide.preventiveSprayRotation.join(' → ')}.`,
+          action: { workspace: 'pepper', tab: 'sprays' } }));
+      }
+    }
+
+    // 3. Scouting frequency
+    const fieldScout = scouting.filter((s) => s.fieldId === field.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+    const lastScout = fieldScout[0];
+    const scoutDays = lastScout ? _advDaysBetween(lastScout.date, today) : null;
+    if (!lastScout || scoutDays > 4) {
+      alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: scouting overdue${scoutDays ? ` (${scoutDays} days ago)` : ''}`,
+        body: `${guide.crop} should be scouted at least twice per week. ${scoutDays ? `Last scout was ${scoutDays} days ago.` : 'No scouts recorded yet.'} ${guide.scoutingFrequency || ''}`,
+        action: { workspace: 'pepper', tab: 'scouting' } }));
+    } else if (lastScout && lastScout.severity === 'High') {
+      const pestEntry = ADVISOR_PEST_LIBRARY.find((p) => p.name.toLowerCase() === (lastScout.pest || '').toLowerCase());
+      const ais = pestEntry ? pestEntry.controls.slice(0, 3).join(', ') : 'consult advisor';
+      alerts.push(_advMakeAlert({ severity: 'critical', category: 'crop', source: fieldName,
+        title: `${fieldName}: HIGH pest pressure — ${lastScout.pest} (${lastScout.date})`,
+        body: `High ${lastScout.pest} pressure recorded. Act before it spreads.\nRecommended active ingredients: ${ais}.\n${pestEntry?.notes || ''}`,
+        action: { workspace: 'pepper', tab: 'sprays' },
+        canEscalate: !pestEntry,
+        escalatePrompt: !pestEntry ? `I am growing ${guide.crop} in a net house. I am seeing high ${lastScout.pest} pressure. Recent sprays: ${fieldSprays.slice(-3).map((s) => `${s.product} (${s.date})`).join(', ')}. What is this and how do I treat it?` : null }));
+    } else if (lastScout && lastScout.severity === 'Medium') {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+        title: `${fieldName}: medium pest pressure — ${lastScout.pest}`,
+        body: `Medium ${lastScout.pest} pressure on ${lastScout.date}. Monitor closely over the next 2 days. If pressure rises or doesn't respond, escalate to treatment.`,
+        action: { workspace: 'pepper', tab: 'scouting' } }));
+    }
+
+    // 4. Crop stage advisory
+    const currentStage = (guide.stagesFromTransplant || []).find(
+      (s) => daysFromTransplant >= s.days[0] && daysFromTransplant <= s.days[1]
+    );
+    if (currentStage) {
+      alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: "${currentStage.name}" stage (day ${daysFromTransplant} from transplant)`,
+        body: currentStage.focus || `Follow the standard crop programme for ${guide.crop}.`,
+        action: { workspace: 'pepper', tab: 'schedule' } }));
+    }
+
+    // 5. Harvest trend drop
+    const fieldHarvests = harvests.filter((h) => h.fieldId === field.id).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (fieldHarvests.length >= 4) {
+      const r = fieldHarvests.slice(-4);
+      const prev2 = (Number(r[0].weightKg || 0) + Number(r[1].weightKg || 0)) / 2;
+      const last2 = (Number(r[2].weightKg || 0) + Number(r[3].weightKg || 0)) / 2;
+      const dropPct = prev2 > 0 ? ((prev2 - last2) / prev2) * 100 : 0;
+      if (dropPct >= 20) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+          title: `${fieldName}: harvest yield dropped ${dropPct.toFixed(0)}%`,
+          body: `Average recent harvest (${last2.toFixed(1)}kg) is ${dropPct.toFixed(0)}% lower than the two before that (${prev2.toFixed(1)}kg). Possible causes: PHI restriction, pest/disease damage, water stress, or over-maturity.`,
+          action: { workspace: 'pepper', tab: 'harvests' },
+          canEscalate: true,
+          escalatePrompt: `My ${guide.crop} harvest in field "${fieldName}" dropped from ${prev2.toFixed(1)}kg to ${last2.toFixed(1)}kg over the last 2 picks (${daysFromTransplant} days from transplant). Recent sprays: ${fieldSprays.slice(-3).map((s) => `${s.product} (${s.date})`).join(', ')}. What could be causing this yield drop?` }));
+      }
+    }
+
+    // 6. Soil retest
+    if (field.manureAppliedDate) {
+      const latestSoil = soilReadings.filter((r) => r.fieldId === field.id).sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+      const lastTestDate = latestSoil?.date || field.manureAppliedDate;
+      const daysSinceSoil = _advDaysBetween(lastTestDate, today);
+      if (daysSinceSoil > 14) {
+        alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+          title: `${fieldName}: soil retest due (${daysSinceSoil} days since last reading)`,
+          body: `Soil was last tested ${daysSinceSoil} days ago. Retest to confirm nutrient status and adjust your fertilisation programme.`,
+          action: { workspace: 'pepper', tab: 'soil' } }));
+      }
+    }
+
+    // 7. Foliar fertiliser
+    const foliarSprays = sprays.filter((s) => s.fieldId === field.id && s.type === 'Fertiliser');
+    const lastFoliar = foliarSprays[foliarSprays.length - 1];
+    if (daysFromTransplant > 21) {
+      if (!lastFoliar) {
+        alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+          title: `${fieldName}: no foliar fertiliser recorded`,
+          body: `${guide.crop} from day 21 onwards benefits from regular foliar nutrition. Consider YaraVita Croplift Bio (200–400ml per 16L) every 2 weeks, or Calcium+Boron at flowering.`,
+          action: { workspace: 'pepper', tab: 'sprays' } }));
+      } else {
+        const daysSinceFoliar = _advDaysBetween(lastFoliar.date, today);
+        if (daysSinceFoliar > (guide.foliarIntervalDays || 21)) {
+          alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+            title: `${fieldName}: foliar fertiliser overdue — ${daysSinceFoliar} days since last`,
+            body: `Last foliar feed was ${daysSinceFoliar} days ago (${lastFoliar.product || 'unknown product'}). Apply YaraVita or Calcium+Boron to maintain plant nutrition${currentStage ? ` during ${currentStage.name} stage` : ''}.`,
+            action: { workspace: 'pepper', tab: 'sprays' } }));
+        }
+      }
+    }
+  });
+  return alerts;
+}
+
+function runAdvisor(data) {
+  _advUID = 0;
+  const rank = { critical: 0, warning: 1, info: 2 };
+  return [
+    ..._advPoultryAlerts(data),
+    ..._advCropAlerts(data),
+  ].sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+// ── AdvisorPanel component ────────────────────────────────────
+function AdvisorPanel({ data, onClose, onNavigate }) {
+  const [copied, setCopied] = React.useState(null);
+  const [expanded, setExpanded] = React.useState({});
+  const [pasteTarget, setPasteTarget] = React.useState(null);
+  const [pasteValue, setPasteValue] = React.useState('');
+  const [savedResponses, setSavedResponses] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('advisor_saved_responses') || '{}'); } catch { return {}; }
+  });
+
+  const alerts = React.useMemo(() => runAdvisor(data), [data]);
+
+  const severityStyle = {
+    critical: { border: '1px solid #c62828', background: 'rgba(198,40,40,0.08)', icon: '🚨', color: '#ff5252' },
+    warning:  { border: '1px solid #D4A537', background: 'rgba(212,165,55,0.08)', icon: '⚠️', color: '#D4A537' },
+    info:     { border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.03)', icon: '💡', color: '#7eb8d4' },
+  };
+
+  const critCount = alerts.filter((a) => a.severity === 'critical').length;
+  const warnCount = alerts.filter((a) => a.severity === 'warning').length;
+
+  function copyPrompt(alert) {
+    navigator.clipboard.writeText(alert.escalatePrompt || '').then(
+      () => { setCopied(alert.id); setTimeout(() => setCopied(null), 3000); },
+      () => { setCopied(alert.id); setTimeout(() => setCopied(null), 3000); }
+    );
+    setPasteTarget(alert.id);
+    setPasteValue(savedResponses[alert.id] || '');
+  }
+
+  function saveResponse(alertId) {
+    const updated = { ...savedResponses, [alertId]: pasteValue };
+    setSavedResponses(updated);
+    try { localStorage.setItem('advisor_saved_responses', JSON.stringify(updated)); } catch {}
+    setPasteTarget(null);
+    setPasteValue('');
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      display: 'flex', flexDirection: 'column',
+      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+    }} onClick={onClose}>
+      <div style={{
+        marginTop: 'auto', maxHeight: '90vh',
+        background: '#1a1a1a', borderTop: '2px solid #D4A537',
+        borderRadius: '16px 16px 0 0', display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>🌱</span>
+              <span style={{ fontWeight: 700, fontSize: 17, color: '#D4A537' }}>Farm Advisor</span>
+            </div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+            {critCount > 0 && <span style={{ background: 'rgba(198,40,40,0.15)', color: '#ff5252', border: '1px solid #c62828', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>🚨 {critCount} Critical</span>}
+            {warnCount > 0 && <span style={{ background: 'rgba(212,165,55,0.12)', color: '#D4A537', border: '1px solid rgba(212,165,55,0.4)', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>⚠️ {warnCount} Warning</span>}
+            {critCount === 0 && warnCount === 0 && <span style={{ color: '#4caf50', fontSize: 13 }}>✓ All systems looking good</span>}
+            <span style={{ marginLeft: 'auto', color: '#555', fontSize: 12 }}>{alerts.length} alert{alerts.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+
+        {/* Alert list */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '10px 12px 24px' }}>
+          {alerts.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#555' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <p style={{ margin: 0, fontSize: 15 }}>No issues detected right now. Keep logging daily data to get the most out of the advisor.</p>
+            </div>
+          )}
+          {alerts.map((alert) => {
+            const st = severityStyle[alert.severity];
+            const isExpanded = expanded[alert.id];
+            const savedResp = savedResponses[alert.id];
+            return (
+              <div key={alert.id} style={{ borderRadius: 10, border: st.border, background: st.background, marginBottom: 10, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 8 }}
+                  onClick={() => setExpanded((e) => ({ ...e, [alert.id]: !e[alert.id] }))}>
+                  <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{st.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: st.color, lineHeight: 1.3 }}>{alert.title}</p>
+                    <p style={{ margin: '2px 0 0', fontSize: 11, color: '#666' }}>{alert.source} · {alert.category}</p>
+                  </div>
+                  <span style={{ color: '#555', fontSize: 14, flexShrink: 0, marginTop: 2 }}>{isExpanded ? '▲' : '▼'}</span>
+                </div>
+                {isExpanded && (
+                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '10px 12px 12px' }}>
+                    <p style={{ margin: '0 0 10px', fontSize: 13, color: '#ccc', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{alert.body}</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {alert.action && (
+                        <button onClick={() => { onNavigate(alert.action); onClose(); }}
+                          style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.4)', color: '#D4A537', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                          Go to {alert.action.tab}
+                        </button>
+                      )}
+                      {alert.canEscalate && (
+                        <button onClick={() => copyPrompt(alert)}
+                          style={{ background: 'rgba(126,184,212,0.1)', border: '1px solid rgba(126,184,212,0.3)', color: '#7eb8d4', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                          {copied === alert.id ? '✓ Copied!' : '📋 Copy AI prompt'}
+                        </button>
+                      )}
+                    </div>
+                    {savedResp && (
+                      <div style={{ marginTop: 10, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: 11, color: '#888', fontWeight: 700 }}>SAVED AI RESPONSE:</p>
+                        <p style={{ margin: 0, fontSize: 12, color: '#bbb', whiteSpace: 'pre-line' }}>{savedResp}</p>
+                        <button onClick={() => { setPasteTarget(alert.id); setPasteValue(savedResp); }}
+                          style={{ marginTop: 6, background: 'none', border: 'none', color: '#D4A537', fontSize: 11, cursor: 'pointer', padding: 0 }}>✏️ Edit response</button>
+                      </div>
+                    )}
+                    {pasteTarget === alert.id && (
+                      <div style={{ marginTop: 10 }}>
+                        <p style={{ margin: '0 0 6px', fontSize: 12, color: '#888' }}>Paste the AI response here and save it against this alert:</p>
+                        <textarea value={pasteValue} onChange={(e) => setPasteValue(e.target.value)}
+                          rows={5} placeholder="Paste AI response here..."
+                          style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, color: '#fff', fontSize: 12, padding: '8px 10px', resize: 'vertical' }} />
+                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                          <button onClick={() => saveResponse(alert.id)}
+                            style={{ background: '#D4A537', color: '#000', border: 'none', borderRadius: 8, padding: '5px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Save</button>
+                          <button onClick={() => { setPasteTarget(null); setPasteValue(''); }}
+                            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Knowledge base quick reference */}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '10px 16px', flexShrink: 0 }}>
+          <p style={{ margin: 0, fontSize: 11, color: '#444', textAlign: 'center' }}>AI Farms Advisor · Rule-based · Offline · Tap any alert to expand</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
+
+/* ─── Multi-user profile system ───────────────────────────────────────────
+   Each profile gets its own localStorage key and Supabase row.
+   The user never needs an email/password — just a name + 4-digit PIN.
+   ─────────────────────────────────────────────────────────────────────── */
+const PROFILES_KEY      = 'aifarms_profiles_v1';      // array of { id, name, farmName, pinHash }
+const ACTIVE_PROFILE_KEY = 'aifarms_active_profile';  // id of the currently unlocked profile
+const PROFILE_DATA_KEY  = (uid) => `aifarms_data_${uid}`; // per-profile data key
+
+/** Simple non-cryptographic PIN hash — good enough for local farm data. */
+function hashPin(pin) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < pin.length; i++) {
+    h ^= pin.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+function loadProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function saveProfiles(profiles) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)); } catch {}
+}
+function getActiveProfileId() {
+  try { return localStorage.getItem(ACTIVE_PROFILE_KEY) || null; } catch { return null; }
+}
+function setActiveProfileId(id) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+    else localStorage.removeItem(ACTIVE_PROFILE_KEY);
+  } catch {}
+}
+function getActiveProfile() {
+  const id = getActiveProfileId();
+  if (!id) return null;
+  return loadProfiles().find((p) => p.id === id) || null;
+}
 
 /**
  * Bump this whenever the shape of `data` changes in a way old code
@@ -108,10 +806,10 @@ function fieldSoilDefaults() {
 
 function defaultPepper() {
   return {
-    moduleName: 'Bell Pepper', // editable — rename when the fields grow beyond just peppers
+    enterpriseName: 'Bell Pepper Fields', // user-editable enterprise label
     fields: [
-      { id: 'A', name: 'Field A', programmeKey: 'bell_pepper', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
-      { id: 'B', name: 'Field B', programmeKey: 'bell_pepper', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
+      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
+      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
     ],
     scouting: [],
     sprays: [],
@@ -121,6 +819,7 @@ function defaultPepper() {
     soilReadings: [],    // per-field soil tests after manure mix, over time
     batches: [],         // closed planting cycles per field (history)
     nurseryBatches: [],  // seed-sowing through germination, before transplant
+    cropExpenses: [],    // per-field cash expense log (labour, irrigation, misc)
   };
 }
 
@@ -198,6 +897,13 @@ function freshData() {
     bsf: { batches: [] }, // black soldier fly larvae production — manure/waste to poultry protein
     ownerLoans: { loans: [], repayments: [] }, // owner-as-banker: real loans to the business, with interest
     customFarms: [], // user-defined farms beyond poultry/pepper/goats — any crop or livestock type
+    buyers: [],           // buyer phonebook — name, phone, what they buy
+    buyerAdvances: [],    // advance payments from egg buyers — name, amount, date, fulfilled status
+    drugStock: [],        // medicine / vaccine inventory — doses on hand, expiry
+    expenseTemplates: [], // recurring expense templates
+    revenueGoals: [],     // profit / revenue targets per section + period
+    dailyTasks: [],       // farm day-plan tasks — date, text, done flag
+    pettyCosts: [],       // petty / running costs per farm — date, farm, item, amount
     pepper: defaultPepper(),
     goats: defaultGoats(),
     farmProfile: { farmName: '', location: '', email: '', phone: '' },
@@ -223,6 +929,7 @@ function dataRichness(d) {
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
+    (d.buyers || []).length + (d.buyerAdvances || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length + (d.pettyCosts || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
     (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
@@ -300,9 +1007,7 @@ function migrate(saved) {
   // the hardcoded template. Backfill it once here so an in-use field (one
   // with a transplant date already set) doesn't suddenly look empty; a
   // field nobody has started yet just gets a clean, empty programme.
-  pepper.fields = (pepper.fields || []).map((raw) => {
-    // Fields from before programme types existed were all Bell Pepper.
-    const f = raw.programmeKey === undefined ? { ...raw, programmeKey: 'bell_pepper' } : raw;
+  pepper.fields = (pepper.fields || []).map((f) => {
     if (f.sprayProgramme && f.sprayProgramme.events) return f;
     return { ...f, sprayProgramme: { events: f.transplantDate ? loadBellPepperTemplate() : [] } };
   });
@@ -320,6 +1025,13 @@ function migrate(saved) {
     staff: (saved.staff || []).map((s) => (s.id ? s : { ...s, id: newId() })),
     recipes: saved.recipes || [],
     invoices: saved.invoices || [],
+    buyers: saved.buyers || [],
+    buyerAdvances: saved.buyerAdvances || [],
+    drugStock: saved.drugStock || [],
+    expenseTemplates: saved.expenseTemplates || [],
+    revenueGoals: saved.revenueGoals || [],
+    dailyTasks: saved.dailyTasks || [],
+    pettyCosts: saved.pettyCosts || [],
     bsf: { batches: (saved.bsf && saved.bsf.batches) || [] },
     ownerLoans: {
       loans: (saved.ownerLoans && saved.ownerLoans.loans) || [],
@@ -343,6 +1055,7 @@ function migrate(saved) {
       soilReadings: pepper.soilReadings || [],
       batches: pepper.batches || [],
       nurseryBatches: pepper.nurseryBatches || [],
+      cropExpenses: pepper.cropExpenses || [],
     },
     goats: { ...defaultGoats(), ...(saved.goats || {}) },
     updatedAt: saved.updatedAt || new Date().toISOString(),
@@ -353,12 +1066,28 @@ function migrate(saved) {
   };
 }
 
-function loadData() {
+function loadData(profileId) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return migrate(JSON.parse(raw));
+    // Try profile-specific key first
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : null;
+    if (key) {
+      const raw = localStorage.getItem(key);
+      if (raw) return migrate(JSON.parse(raw));
+    }
+    // Fall back to legacy key (migration path — owner claims existing data)
+    const legacy = localStorage.getItem(STORAGE_KEY);
+    if (legacy) return migrate(JSON.parse(legacy));
   } catch (e) { /* ignore corrupt storage */ }
   return freshData();
+}
+
+function saveData(profileId, dataObj) {
+  try {
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : STORAGE_KEY;
+    localStorage.setItem(key, JSON.stringify(dataObj));
+  } catch (e) {
+    console.warn('Local save failed:', e);
+  }
 }
 
 const FEED_STANDARD = SEED.feedStandard;
@@ -615,17 +1344,786 @@ function useToastConfirm() {
 
 /* ---------------- main app ---------------- */
 
-export default function AppRoot() {
+/* ============================================================
+   NOTIFICATIONS — build alert list from live farm data
+   ============================================================ */
+function useNotifications({ data, activeFlock, feedDaysLeft, vaxPending,
+  litterDue, litterCondition, weeksToPOL, flockMargin, flockCost,
+  dailyLog, daysSinceLastEntry }) {
+
+  return useMemo(() => {
+    const alerts = [];
+    const today = todayISO();
+
+    /* ── 1. Feed running low ── */
+    if (feedDaysLeft !== null && feedDaysLeft <= 3) {
+      alerts.push({
+        id: 'feed-low',
+        level: feedDaysLeft <= 1 ? 'critical' : 'warning',
+        icon: '🌾',
+        title: feedDaysLeft <= 0 ? 'Feed store empty!' : `Feed runs out in ${feedDaysLeft} day${feedDaysLeft === 1 ? '' : 's'}`,
+        body: 'Restock now to avoid a gap in feeding.',
+        action: { label: 'Go to Feed', workspace: 'poultry', tab: 'feed' },
+      });
+    }
+
+    /* ── 2. Vaccination overdue / due today ── */
+    (vaxPending || []).forEach((v) => {
+      const days = v.daysLeft;
+      if (days !== null && days <= 0) {
+        alerts.push({
+          id: `vax-overdue-${v.id}`,
+          level: 'critical',
+          icon: '💉',
+          title: `Vaccination overdue: ${v.disease || v.vaccine}`,
+          body: days === 0 ? 'Due today — administer now.' : `${Math.abs(days)} day${Math.abs(days)===1?'':'s'} overdue.`,
+          action: { label: 'Go to Vaccination', workspace: 'poultry', tab: 'health' },
+        });
+      } else if (days !== null && days <= 3) {
+        alerts.push({
+          id: `vax-soon-${v.id}`,
+          level: 'warning',
+          icon: '💉',
+          title: `Vaccination due in ${days} day${days===1?'':'s'}: ${v.disease || v.vaccine}`,
+          body: `Due ${fmtDate(v.dueDate)} — prepare vaccine and equipment.`,
+          action: { label: 'Go to Vaccination', workspace: 'poultry', tab: 'health' },
+        });
+      }
+    });
+
+    /* ── 3. Mortality spike ── */
+    const todayEntry = dailyLog.find((r) => r.date === today);
+    const todayDeaths = todayEntry ? (Number(todayEntry.mortality) || 0) : null;
+    if (todayDeaths !== null && dailyLog.length >= 7) {
+      const recent = dailyLog.slice(-7);
+      const avgDeaths = recent.reduce((s, r) => s + (Number(r.mortality) || 0), 0) / recent.length;
+      if (todayDeaths > 0 && todayDeaths >= Math.max(2, avgDeaths * 2)) {
+        alerts.push({
+          id: 'mortality-spike',
+          level: 'critical',
+          icon: '⚠️',
+          title: `Mortality spike: ${todayDeaths} deaths today`,
+          body: `Your 7-day average is ${avgDeaths.toFixed(1)}/day. Inspect the flock immediately.`,
+          action: { label: 'View Log', workspace: 'poultry', tab: 'log' },
+        });
+      }
+    }
+
+    /* ── 4. Daily log not filled in ── */
+    if (daysSinceLastEntry !== null && daysSinceLastEntry >= 1) {
+      alerts.push({
+        id: 'log-missing',
+        level: daysSinceLastEntry >= 3 ? 'critical' : 'info',
+        icon: '📋',
+        title: daysSinceLastEntry === 1
+          ? "Today's daily log is missing"
+          : `Daily log missing for ${daysSinceLastEntry} days`,
+        body: 'Log today\'s bird count, feed, eggs and deaths to keep your data accurate.',
+        action: { label: 'Log Today', workspace: 'poultry', tab: 'log' },
+      });
+    }
+
+    /* ── 5. Litter change overdue ── */
+    if (litterDue) {
+      const tone = litterCondition === 'Wet' || litterCondition === 'Caked' ? 'critical' : 'warning';
+      alerts.push({
+        id: 'litter-due',
+        level: tone,
+        icon: '🏠',
+        title: `Litter change overdue${litterCondition ? ` — condition: ${litterCondition}` : ''}`,
+        body: 'Wet or compacted litter increases ammonia and disease risk. Change or top-dress now.',
+        action: { label: 'Go to Litter', workspace: 'poultry', tab: 'house' },
+      });
+    }
+
+    /* ── 6. Pepper spray due ── */
+    const pepperFields = (data.pepper?.fields || []).filter((f) => f.transplantDate);
+    pepperFields.forEach((field) => {
+      const events = (field.sprayProgramme?.events || []);
+      const upcoming = events
+        .map((e) => ({ ...e, daysAway: daysBetween(today, e.dueDate || e.date) }))
+        .filter((e) => e.daysAway !== null && e.daysAway <= 2 && e.daysAway >= -1 && !e.done)
+        .sort((a, b) => a.daysAway - b.daysAway);
+      upcoming.forEach((ev) => {
+        const when = ev.daysAway < 0 ? `${Math.abs(ev.daysAway)}d overdue` : ev.daysAway === 0 ? 'today' : `in ${ev.daysAway}d`;
+        alerts.push({
+          id: `spray-${field.id}-${ev.id}`,
+          level: ev.daysAway <= 0 ? 'warning' : 'info',
+          icon: '🌶',
+          title: `Spray due ${when} — ${field.name}`,
+          body: `${ev.product || ev.type || 'Scheduled spray'} · ${fmtDate(ev.dueDate || ev.date)}`,
+          action: { label: 'Go to Pepper', workspace: 'pepper', tab: 'schedule' },
+        });
+      });
+    });
+
+    /* ── 7. Point of Lay reached ── */
+    if (weeksToPOL !== null && weeksToPOL <= 0 && activeFlock.type === 'layer') {
+      const eggsLogged = (data.sales || []).filter((s) => (s.item||'').toLowerCase().includes('egg') && s.flockId === activeFlock.id).length;
+      if (!eggsLogged) {
+        alerts.push({
+          id: 'pol-reached',
+          level: 'info',
+          icon: '🥚',
+          title: `${activeFlock.flockName} has reached Point of Lay!`,
+          body: 'Your hens should be starting to lay. Log your first egg sales when ready.',
+          action: { label: 'Log Sales', workspace: 'poultry', tab: 'sales' },
+        });
+      }
+    }
+
+    /* ── 8. Break-even / revenue milestone ── */
+    if (flockCost > 0 && flockMargin !== null) {
+      if (flockMargin >= 0 && flockMargin < 500) {
+        alerts.push({
+          id: 'breakeven',
+          level: 'info',
+          icon: '🎯',
+          title: `Break-even reached on ${activeFlock.flockName}!`,
+          body: `Revenue has covered all costs. Every cedi from here is profit.`,
+          action: { label: 'View Financials', workspace: 'financials', tab: null },
+        });
+      }
+    }
+
+    /* ── 9. Data backup reminder (every 30 days) ── */
+    try {
+      const lastBackup = localStorage.getItem('aifarms_last_backup');
+      if (!lastBackup || daysBetween(lastBackup, today) >= 30) {
+        alerts.push({
+          id: 'backup-reminder',
+          level: 'info',
+          icon: '💾',
+          title: lastBackup ? `Backup overdue — ${daysBetween(lastBackup, today)} days since last backup` : 'No backup yet — protect your farm data',
+          body: 'Download a backup file so you can restore your data if anything goes wrong.',
+          action: { label: 'Backup now', workspace: '__backup__', tab: null },
+        });
+      }
+    } catch {}
+
+    // Sort: critical first, then warning, then info
+    const order = { critical: 0, warning: 1, info: 2 };
+    return alerts.sort((a, b) => order[a.level] - order[b.level]);
+  }, [feedDaysLeft, vaxPending, litterDue, litterCondition, weeksToPOL,
+      flockMargin, flockCost, dailyLog, daysSinceLastEntry, data, activeFlock]);
+}
+
+/* ── Bell icon + dropdown panel ── */
+function NotificationBell({ alerts, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('aifarms_dismissed_alerts') || '[]')); }
+    catch { return new Set(); }
+  });
+  const ref = useRef(null);
+
+  const visible = alerts.filter((a) => !dismissed.has(a.id));
+  const critCount = visible.filter((a) => a.level === 'critical').length;
+  const badgeCount = visible.length;
+
+  useEffect(() => {
+    function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  function dismiss(id) {
+    const next = new Set([...dismissed, id]);
+    setDismissed(next);
+    try { localStorage.setItem('aifarms_dismissed_alerts', JSON.stringify([...next])); } catch {}
+  }
+  function dismissAll() {
+    const next = new Set([...dismissed, ...visible.map((a) => a.id)]);
+    setDismissed(next);
+    try { localStorage.setItem('aifarms_dismissed_alerts', JSON.stringify([...next])); } catch {}
+  }
+  // Clear dismissals once a day so fresh alerts re-appear
+  useEffect(() => {
+    const lastReset = localStorage.getItem('aifarms_alert_reset');
+    const today = todayISO();
+    if (lastReset !== today) {
+      setDismissed(new Set());
+      localStorage.removeItem('aifarms_dismissed_alerts');
+      localStorage.setItem('aifarms_alert_reset', today);
+    }
+  }, []);
+
+  const levelColor = { critical: '#C15F41', warning: '#D4A537', info: '#7A9A66' };
+  const levelBg    = { critical: 'rgba(193,95,65,0.12)', warning: 'rgba(212,165,55,0.10)', info: 'rgba(122,154,102,0.10)' };
+
   return (
-    <ToastConfirmProvider>
-      <AppInner />
-    </ToastConfirmProvider>
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          position: 'relative', background: 'transparent', border: 'none',
+          cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
+          color: critCount > 0 ? '#C15F41' : badgeCount > 0 ? '#D4A537' : '#83786A',
+          fontSize: 20, lineHeight: 1,
+          transition: 'color .15s',
+        }}
+        title="Notifications"
+      >
+        🔔
+        {badgeCount > 0 && (
+          <span style={{
+            position: 'absolute', top: 2, right: 2,
+            background: critCount > 0 ? '#C15F41' : '#D4A537',
+            color: '#fff', borderRadius: '50%',
+            fontSize: 10, fontWeight: 700, minWidth: 16, height: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            lineHeight: 1, padding: '0 3px',
+          }}>{badgeCount > 9 ? '9+' : badgeCount}</span>
+        )}
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: '110%', right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          width: 340, maxHeight: 480, overflowY: 'auto',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '12px 14px 10px', borderBottom: '1px solid rgba(212,165,55,0.12)' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#f5ead8' }}>
+              Alerts {badgeCount > 0 && <span style={{ color: '#D4A537' }}>({badgeCount})</span>}
+            </span>
+            {badgeCount > 0 && (
+              <button onClick={dismissAll}
+                style={{ fontSize: 11, color: '#83786A', background: 'none', border: 'none', cursor: 'pointer' }}>
+                Clear all
+              </button>
+            )}
+          </div>
+
+          {visible.length === 0 && (
+            <div style={{ padding: '24px 16px', textAlign: 'center', color: '#83786A', fontSize: 13 }}>
+              ✅ All clear — no alerts right now.
+            </div>
+          )}
+
+          {visible.map((a) => (
+            <div key={a.id} style={{
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              background: levelBg[a.level],
+            }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{a.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, margin: '0 0 3px',
+                    color: levelColor[a.level] }}>{a.title}</p>
+                  <p style={{ fontSize: 12, color: '#B9AD9A', margin: '0 0 8px', lineHeight: 1.4 }}>{a.body}</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {a.action && (
+                      <button onClick={() => { onNavigate(a.action); setOpen(false); }}
+                        style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 5,
+                          border: `1px solid ${levelColor[a.level]}`, background: 'transparent',
+                          color: levelColor[a.level], cursor: 'pointer' }}>
+                        {a.action.label}
+                      </button>
+                    )}
+                    <button onClick={() => dismiss(a.id)}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 5,
+                        border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
+                        color: '#83786A', cursor: 'pointer' }}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
-function AppInner() {
+/* ============================================================
+   GLOBAL SEARCH
+   ============================================================ */
+function GlobalSearch({ data, flocks, onNavigate }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    function handleClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const hits = [];
+
+    // Poultry sales
+    (data.sales || []).forEach((s) => {
+      const flock = flocks.find((f) => f.id === s.flockId);
+      const text = `${s.item||''} ${s.buyer||''} ${flock?.flockName||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `sale-${s.id}`, icon: '🐔',
+        title: `${s.item || 'Poultry sale'} — ${flock?.flockName || ''}`,
+        sub: `${fmtDate(s.date)} · GH₵ ${Number(s.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}${s.buyer?' · '+s.buyer:''}`,
+        action: { workspace: 'poultry', tab: 'sales' },
+      });
+    });
+
+    // Pepper harvests
+    (data.pepper?.harvests || []).forEach((h) => {
+      const text = `pepper harvest ${h.buyer||''} ${h.fieldName||''} ${h.grade||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `phv-${h.id}`, icon: '🌶',
+        title: `Pepper harvest — ${h.fieldName || 'field'}`,
+        sub: `${fmtDate(h.date)} · ${harvestQtyLabel(h)}${h.buyer?' · '+h.buyer:''}`,
+        action: { workspace: 'pepper', tab: 'harvests' },
+      });
+    });
+
+    // Goat sales
+    (data.goats?.sales || []).forEach((s) => {
+      const text = `goat sale ${s.buyer||''} ${s.notes||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `goat-${s.id}`, icon: '🐐',
+        title: `Goat sale${s.weightKg?' — '+s.weightKg+'kg':''}`,
+        sub: `${fmtDate(s.date)} · GH₵ ${Number(s.price||0).toLocaleString('en-GB',{minimumFractionDigits:2})}${s.buyer?' · '+s.buyer:''}`,
+        action: { workspace: 'goats', tab: null },
+      });
+    });
+
+    // Flocks
+    flocks.forEach((f) => {
+      if (`${f.flockName} ${f.breed} ${f.location}`.toLowerCase().includes(q)) hits.push({
+        id: `flock-${f.id}`, icon: '🐣',
+        title: f.flockName,
+        sub: `${f.breed} · started ${fmtDate(f.startDate)} · ${f.location || 'no location'}`,
+        action: { workspace: 'poultry', tab: 'dashboard' },
+      });
+    });
+
+    // Expenses
+    (data.expenses || []).forEach((e) => {
+      const text = `${e.category||''} ${e.description||''} ${e.scope||''}`.toLowerCase();
+      if (text.includes(q)) hits.push({
+        id: `exp-${e.id}`, icon: '📤',
+        title: `${e.category || 'Expense'}: ${e.description || ''}`,
+        sub: `${fmtDate(e.date)} · GH₵ ${Number(e.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})} · ${e.scope||'whole farm'}`,
+        action: { workspace: 'financials', tab: null },
+      });
+    });
+
+    // Custom farms
+    (data.customFarms || []).forEach((farm) => {
+      if (farm.name.toLowerCase().includes(q)) hits.push({
+        id: `farm-${farm.id}`, icon: '🌾',
+        title: farm.name,
+        sub: `${farm.category} · My Farms`,
+        action: { workspace: 'custom', tab: null },
+      });
+      (farm.salesLog || []).forEach((s) => {
+        const text = `${farm.name} ${s.notes||''} ${s.buyer||''}`.toLowerCase();
+        if (text.includes(q)) hits.push({
+          id: `csl-${s.id}`, icon: '🌾',
+          title: `${farm.name} sale`,
+          sub: `${fmtDate(s.date)} · GH₵ ${Number(s.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}`,
+          action: { workspace: 'custom', tab: null },
+        });
+      });
+    });
+
+    // Pepper spray events
+    (data.pepper?.fields || []).forEach((field) => {
+      (field.sprayProgramme?.events || []).forEach((ev) => {
+        const text = `spray ${field.name} ${ev.product||''} ${ev.type||''}`.toLowerCase();
+        if (text.includes(q)) hits.push({
+          id: `spev-${field.id}-${ev.id}`, icon: '🌶',
+          title: `${ev.product || ev.type || 'Spray'} — ${field.name}`,
+          sub: `Due ${fmtDate(ev.dueDate || ev.date)}${ev.done?' · ✓ done':''}`,
+          action: { workspace: 'pepper', tab: 'schedule' },
+        });
+      });
+    });
+
+    return hits.slice(0, 12);
+  }, [query, data, flocks]);
+
+  function handleKey(e) {
+    if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', flex: 1, maxWidth: 380 }}>
+      <div style={{ position: 'relative' }}>
+        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+          fontSize: 14, color: '#83786A', pointerEvents: 'none' }}>🔍</span>
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={handleKey}
+          placeholder="Search sales, flocks, expenses, sprays…"
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(212,165,55,0.2)',
+            borderRadius: 8, padding: '7px 10px 7px 32px',
+            color: '#f5ead8', fontSize: 13, outline: 'none',
+          }}
+        />
+        {query && (
+          <button onClick={() => { setQuery(''); setOpen(false); }}
+            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+              background: 'none', border: 'none', color: '#83786A', cursor: 'pointer', fontSize: 14 }}>
+            ✕
+          </button>
+        )}
+      </div>
+
+      {open && results.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '110%', left: 0, right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          maxHeight: 380, overflowY: 'auto',
+        }}>
+          {results.map((r) => (
+            <button key={r.id}
+              onClick={() => { onNavigate(r.action); setQuery(''); setOpen(false); }}
+              style={{
+                display: 'flex', gap: 10, alignItems: 'flex-start',
+                width: '100%', textAlign: 'left', padding: '10px 14px',
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(212,165,55,0.08)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{r.icon}</span>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#f5ead8', margin: '0 0 2px' }}>{r.title}</p>
+                <p style={{ fontSize: 11, color: '#83786A', margin: 0 }}>{r.sub}</p>
+              </div>
+            </button>
+          ))}
+          <div style={{ padding: '6px 14px', fontSize: 11, color: '#83786A', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+            {results.length} result{results.length !== 1 ? 's' : ''}
+          </div>
+        </div>
+      )}
+      {open && query.length >= 2 && results.length === 0 && (
+        <div style={{
+          position: 'absolute', top: '110%', left: 0, right: 0, zIndex: 9999,
+          background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
+          borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          padding: '16px 14px', color: '#83786A', fontSize: 13, textAlign: 'center',
+        }}>
+          No results for "<strong style={{color:'#B9AD9A'}}>{query}</strong>"
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Theme ── */
+const ThemeContext = createContext({ theme: 'dark', toggleTheme: () => {} });
+function useTheme() { return useContext(ThemeContext); }
+
+/* ═══════════════════════════════════════════════════════════════
+   ProfileGate — shown on app start when no profile is active.
+   Screens: 'list' → pick a profile or create new
+            'unlock' → enter PIN for chosen profile
+            'create' → enter name + farm name + PIN for new profile
+   ═══════════════════════════════════════════════════════════════ */
+function PinPad({ value, onChange, onSubmit, label, error }) {
+  const digits = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, '⌫'];
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {label && <div style={{ fontSize: 13, color: '#aaa', marginBottom: 10 }}>{label}</div>}
+      {/* PIN dots */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 18 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} style={{
+            width: 16, height: 16, borderRadius: '50%',
+            background: value.length > i ? '#D4A537' : 'rgba(255,255,255,0.15)',
+            border: '2px solid rgba(255,255,255,0.2)', transition: 'background 0.15s',
+          }} />
+        ))}
+      </div>
+      {/* Numpad */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, maxWidth: 220, margin: '0 auto' }}>
+        {digits.map((d, i) => {
+          if (d === null) return <div key={i} />;
+          const isBack = d === '⌫';
+          return (
+            <button key={i} type="button"
+              onClick={() => {
+                if (isBack) { onChange(value.slice(0, -1)); return; }
+                const next = value.length < 4 ? value + String(d) : value;
+                onChange(next);
+                if (next.length === 4) setTimeout(() => onSubmit(next), 120);
+              }}
+              style={{
+                height: 52, borderRadius: 12, fontSize: isBack ? 18 : 20, fontWeight: 700,
+                background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+                color: isBack ? '#888' : '#fff', cursor: 'pointer',
+              }}>{d}</button>
+          );
+        })}
+      </div>
+      {error && <div style={{ color: '#e05c5c', fontSize: 13, marginTop: 12 }}>{error}</div>}
+    </div>
+  );
+}
+
+function ProfileGate({ onUnlocked }) {
+  const [profiles, setProfiles] = useState(loadProfiles);
+  const [screen, setScreen] = useState(() => loadProfiles().length === 0 ? 'create' : 'list'); // 'list' | 'unlock' | 'create'
+  const [selectedId, setSelectedId] = useState(null);
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  // Create form state
+  const [cName, setCName]       = useState('');
+  const [cFarm, setCFarm]       = useState('');
+  const [cPin, setCPin]         = useState('');
+  const [cPin2, setCPin2]       = useState('');
+  const [cStep, setCStep]       = useState(1); // 1=details, 2=pin, 3=confirm
+  const [cError, setCError]     = useState('');
+
+  const hasMigrationData = (() => {
+    try { return !!localStorage.getItem(STORAGE_KEY); } catch { return false; }
+  })();
+
+  function handleUnlock(enteredPin) {
+    const profile = profiles.find((p) => p.id === selectedId);
+    if (!profile) return;
+    if (hashPin(enteredPin) === profile.pinHash) {
+      setActiveProfileId(profile.id);
+      onUnlocked(profile);
+    } else {
+      setPin('');
+      setPinError('Wrong PIN — try again');
+      setTimeout(() => setPinError(''), 2000);
+    }
+  }
+
+  function handleCreate() {
+    if (!cName.trim() || !cFarm.trim()) { setCError('Please fill in your name and farm name.'); return; }
+    setCStep(2); setCError('');
+  }
+
+  function handlePinSet(p) {
+    setCPin(p);
+    if (p.length === 4) { setCStep(3); setCPin2(''); }
+  }
+
+  function handlePinConfirm(p) {
+    setCPin2(p);
+    if (p.length === 4) {
+      if (p !== cPin) {
+        setCError('PINs don\'t match — try again');
+        setCPin(''); setCPin2(''); setCStep(2);
+        setTimeout(() => setCError(''), 2500);
+      } else {
+        finalizeCreate(p);
+      }
+    }
+  }
+
+  function finalizeCreate(confirmedPin) {
+    const id = Math.random().toString(36).slice(2, 12);
+    const profile = { id, name: cName.trim(), farmName: cFarm.trim(), pinHash: hashPin(confirmedPin), createdAt: new Date().toISOString() };
+    const updated = [...profiles, profile];
+    saveProfiles(updated);
+    setProfiles(updated);
+    setActiveProfileId(id);
+
+    // If there is legacy data in the old key and this is the FIRST profile,
+    // migrate it to the new profile key automatically.
+    if (hasMigrationData && profiles.length === 0) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) localStorage.setItem(PROFILE_DATA_KEY(id), raw);
+        // Keep the legacy key for now (don't delete) so there's a backup.
+      } catch {}
+    }
+
+    onUnlocked(profile);
+  }
+
+  const selectedProfile = profiles.find((p) => p.id === selectedId);
+
+  /* ── Render ── */
+  const cardStyle = {
+    background: 'rgba(30,30,30,0.98)', borderRadius: 20, padding: '32px 28px',
+    boxShadow: '0 24px 60px rgba(0,0,0,0.6)', width: '100%', maxWidth: 360,
+    border: '1px solid rgba(255,255,255,0.08)',
+  };
+
+  if (screen === 'unlock') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 40 }}>🌾</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>{selectedProfile?.farmName || 'AI Farms'}</div>
+            <div style={{ fontSize: 14, color: '#888', marginTop: 2 }}>Welcome back, {selectedProfile?.name}</div>
+          </div>
+          <PinPad value={pin} onChange={(v) => { setPin(v); setPinError(''); }} onSubmit={handleUnlock} label="Enter your 4-digit PIN" error={pinError} />
+          <button type="button" onClick={() => { setScreen('list'); setPin(''); setPinError(''); setSelectedId(null); }}
+            style={{ display: 'block', margin: '20px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+            ← Switch profile
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'create') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 36 }}>🌾</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+            <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+              {profiles.length === 0 ? 'Set up your farm profile to get started' : 'Create a new farm profile'}
+            </div>
+          </div>
+
+          {cStep === 1 && (
+            <div>
+              {hasMigrationData && profiles.length === 0 && (
+                <div style={{ background: 'rgba(212,165,55,0.1)', border: '1px solid rgba(212,165,55,0.3)', borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#D4A537', lineHeight: 1.5 }}>
+                  ✅ We found your existing farm data. It will be linked to your new profile automatically.
+                </div>
+              )}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Your Name</div>
+                <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. Gilbert"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Farm Name</div>
+                <input value={cFarm} onChange={(e) => setCFarm(e.target.value)} placeholder="e.g. AI Farms"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              {cError && <div style={{ color: '#e05c5c', fontSize: 13, marginBottom: 10 }}>{cError}</div>}
+              <button type="button" onClick={handleCreate}
+                style={{ width: '100%', padding: '13px', borderRadius: 12, background: '#D4A537', border: 'none', color: '#000', fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>
+                Next →
+              </button>
+            </div>
+          )}
+
+          {cStep === 2 && (
+            <div>
+              <PinPad value={cPin} onChange={handlePinSet} onSubmit={() => {}} label="Choose a 4-digit PIN" error={cError} />
+            </div>
+          )}
+
+          {cStep === 3 && (
+            <div>
+              <PinPad value={cPin2} onChange={handlePinConfirm} onSubmit={() => {}} label="Confirm your PIN" error={cError} />
+            </div>
+          )}
+
+          {profiles.length > 0 && (
+            <button type="button" onClick={() => { setScreen('list'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+              style={{ display: 'block', margin: '18px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+              ← Back
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // screen === 'list'
+  return (
+    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+      <div style={cardStyle}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ fontSize: 36 }}>🌾</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+          <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>Select your farm profile</div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+          {profiles.map((p) => (
+            <button key={p.id} type="button"
+              onClick={() => { setSelectedId(p.id); setPin(''); setPinError(''); setScreen('unlock'); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 14,
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                color: '#fff', cursor: 'pointer', textAlign: 'left',
+              }}>
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(212,165,55,0.2)', border: '2px solid rgba(212,165,55,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+                🧑‍🌾
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{p.farmName}</div>
+              </div>
+              <div style={{ marginLeft: 'auto', color: '#555', fontSize: 18 }}>›</div>
+            </button>
+          ))}
+        </div>
+
+        <button type="button" onClick={() => { setScreen('create'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+          style={{ width: '100%', padding: '12px', borderRadius: 12, background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.3)', color: '#D4A537', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+          + Add new farm profile
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function AppRoot() {
+  const [activeProfile, setActiveProfile] = useState(getActiveProfile);
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('aifarms_theme') || 'dark'; } catch { return 'dark'; }
+  });
+  const toggleTheme = () => setTheme((t) => {
+    const next = t === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('aifarms_theme', next); } catch {}
+    return next;
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  if (!activeProfile) {
+    return (
+      <ThemeContext.Provider value={{ theme, toggleTheme }}>
+        <ProfileGate onUnlocked={(profile) => setActiveProfile(profile)} />
+      </ThemeContext.Provider>
+    );
+  }
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      <ToastConfirmProvider>
+        <AppInner
+          profileId={activeProfile.id}
+          profileName={activeProfile.name}
+          farmName={activeProfile.farmName}
+          onSwitchProfile={() => {
+            setActiveProfileId(null);
+            setActiveProfile(null);
+          }}
+        />
+      </ToastConfirmProvider>
+    </ThemeContext.Provider>
+  );
+}
+
+function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   const { showToast, askConfirm } = useToastConfirm();
-  const [data, setData] = useState(loadData);
+  const [data, setData] = useState(() => loadData(profileId));
   const [workspace, setWorkspace] = useState('poultry');
   const [tab, setTab] = useState('dashboard');
   const [modal, setModal] = useState(null); // 'log' | 'feed' | 'med' | 'vax' | 'flock' | 'sale' | 'reminder' | null
@@ -641,6 +2139,14 @@ function AppInner() {
   const [cloudReady, setCloudReady] = useState(isCloudConfigured);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
+  const [showBuyerBook, setShowBuyerBook] = useState(false);
+  const [showDrugStock, setShowDrugStock] = useState(false);
+  const [showGoalTracker, setShowGoalTracker] = useState(false);
+  const [showDailyTasks, setShowDailyTasks] = useState(false);
+  const [showPettyCosts, setShowPettyCosts] = useState(false);
+  const [showWeeklySummary, setShowWeeklySummary] = useState(false);
+  const [showAdvisor, setShowAdvisor] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     // Kept synchronous and un-debounced on purpose: this app's core promise
@@ -648,12 +2154,10 @@ function AppInner() {
     // window is exactly where an edit could vanish if the tab closes before
     // it fires. Only real gap was the missing guard against Safari private
     // mode / storage quota throwing here.
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) {
-      console.warn('Local save failed (storage full or unavailable):', e);
-    }
-  }, [data]);
+    saveData(profileId, data);
+  }, [data, profileId]);
+
+  // Migration removed — was causing data loss on refresh across all devices.
 
   const activeFlock = data.flocks.find((f) => f.id === activeFlockId) || data.flocks[0];
   const flockStandard = STANDARDS[activeFlock.standardKey] || FEED_STANDARD;
@@ -806,6 +2310,7 @@ function AppInner() {
       date: fmtDate(r.date).slice(0, 6),
       actual: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
       standard: hylineLayStandardForWeek(wk),
+      eggs: Number(r.eggs) || 0,
     };
   }), [dailyLog, activeFlock.startDate]);
 
@@ -826,7 +2331,9 @@ function AppInner() {
   const coopCharge = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + chargedToDate(e), 0);
   const coopInvested = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const flockRunning = flockExpenses.filter((e) => !e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const flockCost = totalFeedCost + litterCost + coopCharge + flockRunning + (Number(activeFlock.setupCost) || 0);
+  // Petty / running costs logged in the Petty Costs panel for 'poultry'
+  const flockPettyCost = (data.pettyCosts || []).filter((c) => c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const flockCost = totalFeedCost + litterCost + coopCharge + flockRunning + flockPettyCost + (Number(activeFlock.setupCost) || 0);
   const flockMargin = totalRevenue - flockCost;
 
   // Feed run-out projection: average daily use over the last 7 logged days.
@@ -913,6 +2420,65 @@ function AppInner() {
     used: e.kind === 'usage' ? e.ref.feedGiven : e.ref.used,
   })), [feedLedger]);
 
+  // ── Revenue chart: monthly breakdown by section, from earliest record to today ──
+  const revenueChartData = useMemo(() => {
+    // Gather all dated revenue events across every section
+    const allEvents = [];
+    // Poultry sales
+    (data.sales || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'Poultry', amount: Number(s.amount) }); });
+    // Pepper harvests
+    (data.pepper?.harvests || []).forEach((h) => {
+      const amt = harvestRev(h);
+      if (h.date && amt) allEvents.push({ date: h.date, section: 'Pepper', amount: amt });
+    });
+    // Goat sales (revenue field is `price`)
+    (data.goats?.sales || []).forEach((s) => { if (s.date && Number(s.price)) allEvents.push({ date: s.date, section: 'Goats', amount: Number(s.price) }); });
+    // Custom farms (livestock salesLog only — crop harvests have no price)
+    (data.customFarms || []).forEach((farm) => {
+      if (farm.category === 'livestock') {
+        (farm.salesLog || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'My Farms', amount: Number(s.amount) }); });
+      }
+    });
+    if (allEvents.length === 0) return [];
+    // Find the earliest date across all events
+    const dates = allEvents.map((e) => new Date(e.date)).filter((d) => !isNaN(d));
+    const earliest = new Date(Math.min(...dates));
+    const today = new Date();
+    // Build ordered list of YYYY-MM keys from earliest month to current month
+    const months = [];
+    const cur = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+    while (cur <= today) {
+      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    // Aggregate events into monthly buckets
+    const buckets = {};
+    months.forEach((m) => { buckets[m] = { month: m, Poultry: 0, Pepper: 0, Goats: 0, 'My Farms': 0 }; });
+    allEvents.forEach((e) => {
+      const m = e.date.slice(0, 7);
+      if (buckets[m]) buckets[m][e.section] = (buckets[m][e.section] || 0) + e.amount;
+    });
+    return months.map((m) => ({
+      ...buckets[m],
+      label: new Date(m + '-01').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }),
+    }));
+  }, [data.sales, data.pepper?.harvests, data.goats?.sales, data.customFarms]);
+
+  // ── Notification alerts ──
+  const notifications = useNotifications({
+    data, activeFlock, feedDaysLeft, vaxPending, litterDue, litterCondition,
+    weeksToPOL, flockMargin, flockCost, dailyLog, daysSinceLastEntry,
+  });
+
+  // ── Navigation handler for notifications & search results ──
+  function handleNavigate({ workspace: ws, tab }) {
+    if (ws === '__backup__') { backupData(); return; }
+    setWorkspace(ws);
+    setModal(null);
+    // Tabs inside workspaces can't be set from here directly,
+    // but switching workspace is enough to orient the user.
+  }
+
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
       overwritten by an older remote copy on the next sync. */
@@ -975,8 +2541,33 @@ function AppInner() {
     setData((d) => touch({ ...d, weightSamples: [...(d.weightSamples || []), { ...entry, flockId: activeFlock.id }] }));
   }
   function addSale(entry) {
-    setData((d) => touch({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id }] }));
+    setData((d) => touch({ ...d, sales: [...(d.sales || []), { ...entry, flockId: activeFlock.id, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] }));
   }
+  function updateSale(id, patch) {
+    setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function addSalePayment(saleId, payment) {
+    setData((d) => touch({
+      ...d,
+      sales: (d.sales || []).map((r) => {
+        if (r.id !== saleId) return r;
+        // Append payment to the ledger; creditAmount stays immutable (original credit at sale time).
+        // calcOwed derives outstanding = creditAmount - sum(payments).
+        return { ...r, payments: [...(r.payments || []), payment] };
+      }),
+    }));
+  }
+  /* ── Buyer advances (egg deposits) ── */
+  function addBuyerAdvance(entry) {
+    setData((d) => touch({ ...d, buyerAdvances: [...(d.buyerAdvances || []), entry] }));
+  }
+  function updateBuyerAdvance(id, patch) {
+    setData((d) => touch({ ...d, buyerAdvances: (d.buyerAdvances || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function deleteBuyerAdvance(id) {
+    setData((d) => touch({ ...d, buyerAdvances: (d.buyerAdvances || []).filter((r) => r.id !== id) }));
+  }
+
   function addLitter(entry) {
     setData((d) => touch({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
   }
@@ -1070,11 +2661,11 @@ function AppInner() {
     setData((d) => touch({ ...d, customFarms: (d.customFarms || []).filter((f) => f.id !== farmId) }));
   }
   function addCustomFarmField(farmId, field) {
-    patchCustomFarm(farmId, (f) => ({ ...f, fields: [...(f.fields || []), withAutoProgramme(null, field)] }));
+    patchCustomFarm(farmId, (f) => ({ ...f, fields: [...(f.fields || []), field] }));
   }
   function updateCustomFarmField(farmId, fieldId, patch) {
     patchCustomFarm(farmId, (f) => ({
-      ...f, fields: (f.fields || []).map((fl) => (fl.id === fieldId ? withAutoProgramme(fl, { ...fl, ...patch }) : fl)),
+      ...f, fields: (f.fields || []).map((fl) => (fl.id === fieldId ? { ...fl, ...patch } : fl)),
     }));
   }
   function deleteCustomFarmField(farmId, fieldId) {
@@ -1096,6 +2687,13 @@ function AppInner() {
   const customFeedH = customFarmListHandlers('feedLog');
   const customSalesH = customFarmListHandlers('salesLog');
 
+  function updateCustomSale(farmId, saleId, patch) {
+    patchCustomFarm(farmId, (f) => ({ ...f, salesLog: (f.salesLog || []).map((s) => s.id === saleId ? { ...s, ...patch } : s) }));
+  }
+  function addCustomSalePayment(farmId, saleId, payment) {
+    patchCustomFarm(farmId, (f) => ({ ...f, salesLog: (f.salesLog || []).map((s) => s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s) }));
+  }
+
   function openInvoiceFromSale(sale) {
     setInvoicePrefill({
       kind: 'invoice', date: sale.date, buyerName: sale.buyer || '',
@@ -1106,8 +2704,9 @@ function AppInner() {
     setInvoicePrefill({
       kind: 'invoice', date: harvest.date, buyerName: harvest.buyer || '',
       item: `Bell peppers${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
-      quantity: harvest.weightKg, unitPrice: harvest.pricePerKg,
-      amount: (Number(harvest.weightKg) || 0) * (Number(harvest.pricePerKg) || 0),
+      quantity: (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
+      unitPrice: (harvest.unit && harvest.unit !== 'kg') ? harvest.pricePerUnit : harvest.pricePerKg,
+      amount: harvestRev(harvest),
     });
   }
   function openInvoiceFromGoatSale(sale, goatLabel) {
@@ -1132,6 +2731,17 @@ function AppInner() {
   }
   function deleteInput(id) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).filter((i) => i.id !== id) } }));
+  }
+
+  // ── Crop expenses (per-field cash expense log) ───────────────────────────
+  function addCropExpense(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: [...(d.pepper.cropExpenses || []), entry] } }));
+  }
+  function updateCropExpense(id, patch) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: (d.pepper.cropExpenses || []).map((e) => (e.id === id ? { ...e, ...patch } : e)) } }));
+  }
+  function deleteCropExpense(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: (d.pepper.cropExpenses || []).filter((e) => e.id !== id) } }));
   }
 
   /** Load a breed vaccination programme, skipping any shot already recorded. */
@@ -1179,6 +2789,168 @@ function AppInner() {
   }
   function deleteReminder(id) {
     setData((d) => touch({ ...d, reminders: (d.reminders || []).filter((r) => r.id !== id) }));
+  }
+
+  /* ---- buyer phonebook ---- */
+  function saveBuyer(buyer) {
+    setData((d) => {
+      const exists = (d.buyers || []).some((b) => b.id === buyer.id);
+      const buyers = exists
+        ? (d.buyers || []).map((b) => (b.id === buyer.id ? buyer : b))
+        : [...(d.buyers || []), buyer];
+      return touch({ ...d, buyers });
+    });
+  }
+  function deleteBuyer(id) {
+    setData((d) => touch({ ...d, buyers: (d.buyers || []).filter((b) => b.id !== id) }));
+  }
+
+  /* ---- drug / medicine stock ---- */
+  function saveDrugStock(item) {
+    setData((d) => {
+      const exists = (d.drugStock || []).some((x) => x.id === item.id);
+      const drugStock = exists
+        ? (d.drugStock || []).map((x) => (x.id === item.id ? item : x))
+        : [...(d.drugStock || []), item];
+      return touch({ ...d, drugStock });
+    });
+  }
+  function adjustDrugStock(id, delta, note) {
+    setData((d) => {
+      const drugStock = (d.drugStock || []).map((x) => {
+        if (x.id !== id) return x;
+        const newQty = Math.max(0, (Number(x.quantityOnHand) || 0) + delta);
+        const adj = { id: newId(), date: todayISO(), delta, note: note || '', balanceAfter: newQty };
+        return { ...x, quantityOnHand: newQty, adjustments: [...(x.adjustments || []), adj] };
+      });
+      return touch({ ...d, drugStock });
+    });
+  }
+  function deleteDrugStock(id) {
+    setData((d) => touch({ ...d, drugStock: (d.drugStock || []).filter((x) => x.id !== id) }));
+  }
+
+  /* ---- expense templates ---- */
+  function saveExpenseTemplate(tpl) {
+    setData((d) => {
+      const exists = (d.expenseTemplates || []).some((t) => t.id === tpl.id);
+      const expenseTemplates = exists
+        ? (d.expenseTemplates || []).map((t) => (t.id === tpl.id ? tpl : t))
+        : [...(d.expenseTemplates || []), tpl];
+      return touch({ ...d, expenseTemplates });
+    });
+  }
+  function deleteExpenseTemplate(id) {
+    setData((d) => touch({ ...d, expenseTemplates: (d.expenseTemplates || []).filter((t) => t.id !== id) }));
+  }
+  function applyExpenseTemplate(tplId) {
+    const tpl = (data.expenseTemplates || []).find((t) => t.id === tplId);
+    if (!tpl) return;
+    const entry = { id: newId(), date: todayISO(), category: tpl.category, description: tpl.description, amount: tpl.amount, scope: tpl.scope || 'whole farm', notes: `From template: ${tpl.name}` };
+    setData((d) => touch({ ...d, expenses: [...(d.expenses || []), entry] }));
+    showToast(`Expense logged: ${tpl.name} — GH₵ ${num(tpl.amount, 2)}`, 'green');
+  }
+
+  /* ---- revenue goals ---- */
+  function saveRevenueGoal(goal) {
+    setData((d) => {
+      const exists = (d.revenueGoals || []).some((g) => g.id === goal.id);
+      const revenueGoals = exists
+        ? (d.revenueGoals || []).map((g) => (g.id === goal.id ? goal : g))
+        : [...(d.revenueGoals || []), goal];
+      return touch({ ...d, revenueGoals });
+    });
+  }
+  function deleteRevenueGoal(id) {
+    setData((d) => touch({ ...d, revenueGoals: (d.revenueGoals || []).filter((g) => g.id !== id) }));
+  }
+
+  /* ---- daily farm tasks ---- */
+  function saveDailyTask(task) {
+    setData((d) => {
+      const exists = (d.dailyTasks || []).some((t) => t.id === task.id);
+      const dailyTasks = exists
+        ? (d.dailyTasks || []).map((t) => (t.id === task.id ? task : t))
+        : [...(d.dailyTasks || []), task];
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function toggleDailyTask(id) {
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === id ? { ...t, done: !t.done } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function deleteDailyTask(id) {
+    setData((d) => touch({ ...d, dailyTasks: (d.dailyTasks || []).filter((t) => t.id !== id) }));
+  }
+  function updateDailyTask(id, patch) {
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) => t.id === id ? { ...t, ...patch } : t);
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function pushDailyTask(task, toDate) {
+    // Push: update the task's date (move it) and mark not done
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === task.id ? { ...t, date: toDate, done: false, pushedFrom: task.date } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
+  function sendSprayEventToTask(ev) {
+    // Build a daily task from a spray programme event
+    const taskText = ev.rate
+      ? `${ev.title} — ${ev.rate}`
+      : ev.title;
+    const task = {
+      id: newId(),
+      date: ev.date,           // the event's resolved date
+      farm: 'pepper',
+      text: taskText,
+      priority: 'normal',
+      done: false,
+      createdAt: new Date().toISOString(),
+      fieldId: ev.fieldId || null,
+      chemical: ev.title || null,
+    };
+    saveDailyTask(task);
+  }
+
+  function sendTaskToSpray(task) {
+    // Build a spray record from the task's saved data
+    const spray = {
+      id: newId(),
+      date: task.date || todayISO(),
+      fieldId: task.fieldId || null,
+      type: 'spray',
+      product: task.chemical || task.text || null,
+      activeIngredient: null,
+      rate: null,
+      quantityUsed: null,
+      cost: null,
+      phiDays: null,
+      notes: task.text || null,
+    };
+    addSpray(spray);
+    // Mark the task as sent so the button turns into a badge
+    setData((d) => {
+      const dailyTasks = (d.dailyTasks || []).map((t) =>
+        t.id === task.id ? { ...t, sentToSpray: true } : t
+      );
+      return touch({ ...d, dailyTasks });
+    });
+  }
+
+  /* ---- petty / running costs ---- */
+  function addPettyCost(entry) {
+    setData((d) => touch({ ...d, pettyCosts: [...(d.pettyCosts || []), { ...entry, id: newId() }] }));
+  }
+  function deletePettyCost(id) {
+    setData((d) => touch({ ...d, pettyCosts: (d.pettyCosts || []).filter((c) => c.id !== id) }));
   }
 
   /* ---- cloud sync ---- */
@@ -1321,6 +3093,7 @@ function AppInner() {
     a.download = `ai-farms-backup-v${SCHEMA_VERSION}-${todayISO()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    try { localStorage.setItem('aifarms_last_backup', todayISO()); } catch {}
   }
   function restoreData(file) {
     const reader = new FileReader();
@@ -1363,52 +3136,119 @@ function AppInner() {
   function exportWeeklyReport() {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 7);
-    const recent = dailyLog.filter((r) => new Date(r.date) >= cutoff);
+    const recent = dailyLog.filter((r) => new Date(r.date) >= cutoff).sort((a, b) => new Date(a.date) - new Date(b.date));
     const weekMortality = recent.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
     const weekFeed = recent.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
     const weekEggs = recent.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
-    const lines = [
-      `${data.farmProfile.farmName || 'Farm'} — ${activeFlock.flockName} — Weekly Report`,
-      `Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}`,
-      '',
-      `Current flock: ${num(currentBirds)} birds (${num(survivalRate, 1)}% survival)`,
-      `Mortality (last 7 days logged): ${num(weekMortality)}`,
-      `Feed used (last 7 days logged): ${num(weekFeed, 1)} kg`,
-      `Eggs collected (last 7 days logged): ${num(weekEggs)}`,
-      `Feed store balance: ${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}`,
-      `Total feed cost to date: ${totalFeedCost ? 'GH₵ ' + num(totalFeedCost, 2) : '—'}`,
-      `Current feed phase: ${currentFeedPhase || '—'}`,
-      `Weeks to point-of-lay (standard): ${weeksToPOL > 0 ? weeksToPOL : 'reached'}`,
-      '',
-      'Vaccination status:',
-      ...vaxStatus.map((v) => `  - ${v.disease || v.vaccine}: last given ${fmtDate(v.date)}`),
-      '',
-      `Entries logged this week: ${recent.length}`,
-      ...recent.map((r) => `  ${fmtDate(r.date)} — closing ${num(r.closing)}, deaths ${num(r.mortality)}, feed ${r.feedGiven ?? '—'}kg, eggs ${r.eggs ?? '—'}${r.notes ? ' — ' + r.notes : ''}`),
-    ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ai-farms-weekly-report-${todayISO()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const farmName = data.farmProfile.farmName || 'AI Farms';
+    const phone = data.farmProfile.phone || '';
+    const location = data.farmProfile.location || activeFlock.location || '';
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${farmName} — Weekly Report</title>
+<style>
+  body { font-family: Arial, sans-serif; color: #1a1a1a; max-width: 720px; margin: 0 auto; padding: 32px 24px; font-size: 13px; }
+  h1 { font-size: 22px; margin: 0 0 2px; color: #B8860B; }
+  .sub { color: #555; font-size: 12px; margin: 0 0 18px; }
+  .section { margin: 18px 0 8px; font-size: 14px; font-weight: 700; color: #333; border-bottom: 1px solid #D4A537; padding-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .card { background: #fdf6e3; border: 1px solid #e8d9a0; border-radius: 8px; padding: 10px 14px; }
+  .card-val { font-size: 20px; font-weight: 700; color: #B8860B; }
+  .card-lbl { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+  th { background: #f9f0d3; color: #6b5120; text-align: left; padding: 6px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td { padding: 5px 8px; border-bottom: 1px solid #f0e8cc; }
+  tr:last-child td { border-bottom: none; }
+  .footer { margin-top: 28px; font-size: 11px; color: #aaa; border-top: 1px solid #eee; padding-top: 10px; }
+  @media print { body { padding: 12px; } }
+</style>
+</head>
+<body>
+<h1>${farmName} — ${activeFlock.flockName}</h1>
+<p class="sub">Weekly Report · Generated ${fmtDate(todayISO())} · Day ${dayNumber} · Week ${weekNumber}${location ? ' · ' + location : ''}${phone ? ' · ' + phone : ''}</p>
+
+<div class="section">Flock Summary</div>
+<div class="grid">
+  <div class="card"><div class="card-val">${num(currentBirds)}</div><div class="card-lbl">Birds on hand</div></div>
+  <div class="card"><div class="card-val">${num(survivalRate, 1)}%</div><div class="card-lbl">Survival rate</div></div>
+  <div class="card"><div class="card-val">${num(weekMortality)}</div><div class="card-lbl">Deaths this week</div></div>
+  <div class="card"><div class="card-val">${num(weekFeed, 1)} kg</div><div class="card-lbl">Feed used (7d)</div></div>
+  <div class="card"><div class="card-val">${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}</div><div class="card-lbl">Feed in store</div></div>
+  <div class="card"><div class="card-val">${num(weekEggs)}</div><div class="card-lbl">Eggs collected (7d)</div></div>
+  <div class="card"><div class="card-val">${currentFeedPhase || '—'}</div><div class="card-lbl">Feed phase</div></div>
+  <div class="card"><div class="card-val">GH₵ ${totalFeedCost ? num(totalFeedCost, 2) : '—'}</div><div class="card-lbl">Total feed cost</div></div>
+  <div class="card"><div class="card-val">${weeksToPOL > 0 ? weeksToPOL + ' wks' : 'Reached'}</div><div class="card-lbl">Weeks to POL</div></div>
+</div>
+
+<div class="section">Financials</div>
+<div class="grid">
+  <div class="card"><div class="card-val">GH₵ ${num(totalRevenue, 2)}</div><div class="card-lbl">Total revenue</div></div>
+  <div class="card"><div class="card-val">GH₵ ${num(flockCost, 2)}</div><div class="card-lbl">Total cost</div></div>
+  <div class="card"><div class="card-val" style="color:${flockMargin >= 0 ? '#2e7d32' : '#c62828'}">GH₵ ${num(flockMargin, 2)}</div><div class="card-lbl">Margin</div></div>
+</div>
+
+<div class="section">Vaccination Status</div>
+<table>
+  <thead><tr><th>Vaccine / Disease</th><th>Last Given</th></tr></thead>
+  <tbody>
+    ${vaxStatus.length ? vaxStatus.map((v) => `<tr><td>${v.disease || v.vaccine || '—'}</td><td>${fmtDate(v.date)}</td></tr>`).join('') : '<tr><td colspan="2" style="color:#aaa">No vaccinations logged</td></tr>'}
+  </tbody>
+</table>
+
+<div class="section">Daily Log — Last 7 Days</div>
+<table>
+  <thead><tr><th>Date</th><th>Closing</th><th>Deaths</th><th>Feed (kg)</th><th>Eggs</th><th>Notes</th></tr></thead>
+  <tbody>
+    ${recent.length ? recent.map((r) => `<tr>
+      <td>${fmtDate(r.date)}</td>
+      <td>${num(r.closing)}</td>
+      <td style="color:${Number(r.mortality) > 0 ? '#c62828' : 'inherit'}">${num(r.mortality)}</td>
+      <td>${r.feedGiven != null ? num(r.feedGiven, 1) : '—'}</td>
+      <td>${r.eggs != null ? num(r.eggs) : '—'}</td>
+      <td style="color:#666">${r.notes || ''}</td>
+    </tr>`).join('') : '<tr><td colspan="6" style="color:#aaa">No entries in last 7 days</td></tr>'}
+  </tbody>
+</table>
+
+<div class="footer">${farmName} · AI Farms Tracker · ${fmtDate(todayISO())} · Use File → Print / Save as PDF to save this report.</div>
+</body>
+</html>`;
+    const win = window.open('', '_blank');
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+      setTimeout(() => win.print(), 400);
+    }
   }
 
   function updateField(id, patch) {
-    setData((d) => touch({
-      ...d,
-      pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? withAutoProgramme(f, { ...f, ...patch }) : f)) },
-    }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
   }
-  function addPepperField(field) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: [...d.pepper.fields, withAutoProgramme(null, field)] } }));
+  /** Adds a new bell pepper field with its own crop cycle, spray programme and soil targets. */
+  function addPepperField(name) {
+    const id = newId();
+    setData((d) => {
+      const n = d.pepper.fields.length + 1;
+      const field = {
+        id, name: (name || '').trim() || `Field ${n}`,
+        variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70,
+        setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults(),
+      };
+      return touch({ ...d, pepper: { ...d.pepper, fields: [...d.pepper.fields, field] } });
+    });
+    return id;
   }
+  /** Removes a field. The UI only offers this for fields with no records and never the last field. */
   function deletePepperField(id) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } }));
+    setData((d) => {
+      if (d.pepper.fields.length <= 1) return d;
+      return touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } });
+    });
   }
-  function renamePepperModule(name) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, moduleName: name } }));
+  function updatePepperEnterpriseName(name) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, enterpriseName: name || 'Crops' } }));
   }
   function addManureReading(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: [...(d.pepper.manureReadings || []), entry] } }));
@@ -1423,17 +3263,12 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, soilReadings: (d.pepper.soilReadings || []).filter((r) => r.id !== id) } }));
   }
   /** Closes out the field's current planting as a historical batch, then
-      starts the new one as the field's live crop-cycle state. With
-      `freshProgramme`, the field's current spray programme is archived with
-      the old batch and a clean one for the new planting is loaded from the
-      field's programme type; otherwise the current programme stays and simply
-      re-dates itself from the new start date. */
-  function startNewBatch(fieldId, newBatch, freshProgramme = false) {
+      starts the new one as the field's live crop-cycle state. */
+  function startNewBatch(fieldId, newBatch) {
     setData((d) => {
       const field = d.pepper.fields.find((f) => f.id === fieldId);
       const closedBatches = [...(d.pepper.batches || [])];
       if (field && field.transplantDate) {
-        const oldEvents = programmeEventsOf(field);
         closedBatches.push({
           id: newId(), fieldId,
           batchLabel: field.currentBatchLabel || 'Batch 1',
@@ -1442,17 +3277,9 @@ function AppInner() {
           expectedHarvestDAT: field.expectedHarvestDAT, setupCost: field.setupCost,
           manureAppliedDate: field.manureAppliedDate, notes: field.notes,
           status: 'closed', closedDate: newBatch.transplantDate,
-          ...(freshProgramme && oldEvents.length ? { programmeKey: field.programmeKey || '', sprayProgramme: { events: oldEvents } } : {}),
         });
       }
-      const fields = d.pepper.fields.map((f) => {
-        if (f.id !== fieldId) return f;
-        const merged = { ...f, ...newBatch };
-        // Fresh start (or an empty programme) -> let the field's programme
-        // type load a clean one for the new planting date.
-        const base = freshProgramme ? { ...merged, sprayProgramme: { events: [] } } : merged;
-        return withAutoProgramme(null, base);
-      });
+      const fields = d.pepper.fields.map((f) => (f.id === fieldId ? { ...f, ...newBatch } : f));
       return touch({ ...d, pepper: { ...d.pepper, fields, batches: closedBatches } });
     });
   }
@@ -1474,8 +3301,8 @@ function AppInner() {
   /** Moves a nursery batch into the field it's ready for — closes out any
       current planting on that field the same way "+ New Batch" does, and
       marks the nursery batch transplanted so it drops off the active list. */
-  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch, freshProgramme = false) {
-    startNewBatch(fieldId, newBatch, freshProgramme);
+  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch) {
+    startNewBatch(fieldId, newBatch);
     updateNurseryBatch(nurseryBatchId, {
       status: 'transplanted', transplantedDate: newBatch.transplantDate, transplantedToFieldId: fieldId,
     });
@@ -1484,10 +3311,39 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, scouting: [...d.pepper.scouting, entry] } }));
   }
   function addSpray(entry) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry] } }));
+    setData((d) => {
+      // Auto-deduct from pepper input stock if product name matches
+      let inputs = d.pepper?.inputs || [];
+      if (entry.product) {
+        const matchIdx = inputs.findIndex(
+          (inp) => inp.name?.toLowerCase().trim() === entry.product?.toLowerCase().trim()
+        );
+        if (matchIdx !== -1) {
+          const matched = inputs[matchIdx];
+          const used = Number(entry.quantityUsed) || 0;
+          if (used > 0) {
+            const newQty = Math.max(0, (Number(matched.quantityOnHand) || 0) - used);
+            inputs = inputs.map((inp, i) => i === matchIdx ? { ...inp, quantityOnHand: newQty } : inp);
+          }
+        }
+      }
+      return touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry], inputs } });
+    });
+  }
+  function addCustomSprayProduct(product) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, customSprayProducts: [...(d.pepper.customSprayProducts || []), product] } }));
+  }
+  function deleteCustomSprayProduct(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, customSprayProducts: (d.pepper.customSprayProducts || []).filter((p) => p.id !== id) } }));
   }
   function addHarvest(entry) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, entry] } }));
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
+  }
+  function updateHarvest(id, patch) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).map((h) => (h.id === id ? { ...h, ...patch } : h)) } }));
+  }
+  function addHarvestPayment(harvestId, payment) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).map((h) => h.id === harvestId ? { ...h, payments: [...(h.payments || []), payment] } : h) } }));
   }
 
   /* ---- Goats ---- */
@@ -1537,8 +3393,14 @@ function AppInner() {
     setData((d) => touch({ ...d, goats: { ...d.goats, weights: (d.goats.weights || []).filter((r) => r.id !== id) } }));
   }
   function addGoatSale(entry) {
-    setData((d) => touch({ ...d, goats: { ...d.goats, sales: [...(d.goats.sales || []), entry] } }));
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: [...(d.goats.sales || []), { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
     if (entry.animalId) updateGoat(entry.animalId, { status: 'sold' });
+  }
+  function updateGoatSale(id, patch) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) } }));
+  }
+  function addGoatSalePayment(saleId, payment) {
+    setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).map((r) => r.id === saleId ? { ...r, payments: [...(r.payments || []), payment] } : r) } }));
   }
   function deleteGoatSale(id) {
     setData((d) => touch({ ...d, goats: { ...d.goats, sales: (d.goats.sales || []).filter((r) => r.id !== id) } }));
@@ -1569,7 +3431,7 @@ function AppInner() {
         <button
           className={`ws-btn${workspace === 'pepper' ? ' active pepper' : ''}`}
           onClick={() => { setWorkspace('pepper'); setModal(null); }}
-        >{data.pepper.moduleName || 'Bell Pepper'}</button>
+        >{(data.pepper?.enterpriseName) || 'Bell Pepper Fields'}</button>
         <button
           className={`ws-btn${workspace === 'goats' ? ' active goats' : ''}`}
           onClick={() => { setWorkspace('goats'); setModal(null); }}
@@ -1582,16 +3444,221 @@ function AppInner() {
           className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
           onClick={() => { setWorkspace('farm'); setModal(null); }}
         >Whole Farm</button>
+        <button
+          className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
+          onClick={() => { setWorkspace('financials'); setModal(null); }}
+        >💰 Financials</button>
       </div>
+
+      {/* ── Global search + notification bell + tools ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px 14px', background: 'rgba(0,0,0,0.25)',
+        borderBottom: '1px solid rgba(212,165,55,0.12)',
+      }}>
+        <GlobalSearch data={data} flocks={data.flocks || []} onNavigate={handleNavigate} />
+        <NotificationBell alerts={notifications} onNavigate={handleNavigate} />
+        {/* WhatsApp quick-share */}
+        <button
+          title="Share farm summary via WhatsApp"
+          onClick={() => {
+            const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 7);
+            const recent7 = data.dailyLog.filter((r) => new Date(r.date) >= cutoff);
+            const w7 = recent7.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
+            const f7 = recent7.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
+            const e7 = recent7.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+            const msg = [
+              `🌾 *${data.farmProfile.farmName || 'AI Farms'} — Weekly Summary*`,
+              `📅 ${fmtDate(todayISO())} · ${activeFlock.flockName}`,
+              ``,
+              `🐔 Birds: ${num(currentBirds)} (${num(survivalRate, 1)}% survival)`,
+              `💀 Deaths (7d): ${num(w7)}`,
+              `🌾 Feed used (7d): ${num(f7, 1)} kg`,
+              `🥚 Eggs (7d): ${num(e7)}`,
+              `📦 Feed in store: ${feedBalance != null ? num(feedBalance, 1) + ' kg' : '—'}`,
+              `💰 Revenue: GH₵ ${num(totalRevenue, 2)}`,
+              `📈 Margin: GH₵ ${num(flockMargin, 2)}`,
+            ].join('\n');
+            window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+          }}
+          style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 16, flexShrink: 0, lineHeight: 1 }}
+        >💬</button>
+        {/* Theme toggle */}
+        <button
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          onClick={toggleTheme}
+          style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', color: '#D4A537', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 16, flexShrink: 0, lineHeight: 1 }}
+        >{theme === 'dark' ? '☀️' : '🌙'}</button>
+        {/* Tool shortcuts */}
+        <button title="Buyer Phonebook" onClick={() => setShowBuyerBook(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>📒</button>
+        <button title="Medicine / Drug Stock" onClick={() => setShowDrugStock(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>💊</button>
+        <button title="Revenue Goals" onClick={() => setShowGoalTracker(true)}
+          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0 }}>🎯</button>
+        {/* Daily Farm Tasks */}
+        {(() => {
+          const today = todayISO();
+          const todayTasks = (data.dailyTasks || []).filter((t) => t.date === today);
+          const doneCnt = todayTasks.filter((t) => t.done).length;
+          const hasPending = todayTasks.length > 0 && doneCnt < todayTasks.length;
+          return (
+            <button
+              title={`Daily Farm Tasks${todayTasks.length > 0 ? ` — ${doneCnt}/${todayTasks.length} done today` : ''}`}
+              onClick={() => setShowDailyTasks(true)}
+              style={{
+                background: hasPending ? 'rgba(212,165,55,0.18)' : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${hasPending ? 'rgba(212,165,55,0.5)' : 'rgba(255,255,255,0.1)'}`,
+                color: hasPending ? '#D4A537' : '#ccc',
+                borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+                position: 'relative',
+              }}
+            >
+              ✅
+              {hasPending && (
+                <span style={{
+                  position: 'absolute', top: -4, right: -4,
+                  background: '#D4A537', color: '#000', borderRadius: '50%',
+                  fontSize: 10, fontWeight: 700, width: 16, height: 16,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+                }}>{todayTasks.length - doneCnt}</span>
+              )}
+            </button>
+          );
+        })()}
+        {/* Running / Petty Costs */}
+        <button
+          title="Running Costs — petty expenses per farm"
+          onClick={() => setShowPettyCosts(true)}
+          style={{
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+          }}
+        >🧾</button>
+        {/* Weekly Farm Summary */}
+        <button
+          title="Week in Review — farm summary report"
+          onClick={() => setShowWeeklySummary(true)}
+          style={{
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            color: '#ccc', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15, flexShrink: 0,
+          }}
+        >📊</button>
+      </div>
+
+      {/* ── Farm Advisor floating button ── */}
+      {(() => {
+        const advAlerts = runAdvisor(data);
+        const critCount = advAlerts.filter((a) => a.severity === 'critical').length;
+        const warnCount = advAlerts.filter((a) => a.severity === 'warning').length;
+        const badgeCount = critCount + warnCount;
+        const badgeColor = critCount > 0 ? '#ff5252' : '#D4A537';
+        return (
+          <button
+            title="Farm Advisor — monitoring alerts and recommendations"
+            onClick={() => setShowAdvisor(true)}
+            style={{
+              position: 'fixed', bottom: 24, right: 18, zIndex: 9000,
+              width: 54, height: 54, borderRadius: '50%',
+              background: critCount > 0 ? 'rgba(198,40,40,0.9)' : warnCount > 0 ? 'rgba(212,165,55,0.9)' : 'rgba(30,30,30,0.95)',
+              border: `2px solid ${critCount > 0 ? '#ff5252' : warnCount > 0 ? '#D4A537' : 'rgba(212,165,55,0.4)'}`,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+              cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'transform 0.15s',
+            }}
+          >
+            🌱
+            {badgeCount > 0 && (
+              <span style={{
+                position: 'absolute', top: -4, right: -4,
+                background: badgeColor, color: '#000',
+                borderRadius: '50%', width: 20, height: 20,
+                fontSize: 11, fontWeight: 800,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>{badgeCount > 9 ? '9+' : badgeCount}</span>
+            )}
+          </button>
+        );
+      })()}
+
+      {showAdvisor && (
+        <AdvisorPanel
+          data={data}
+          onClose={() => setShowAdvisor(false)}
+          onNavigate={(action) => {
+            if (action?.workspace) { setWorkspace(action.workspace); setModal(null); }
+            if (action?.tab) setTab(action.tab);
+          }}
+        />
+      )}
+
+      {showBuyerBook && (
+        <BuyerPhonebook
+          buyers={data.buyers || []}
+          onSave={saveBuyer}
+          onDelete={deleteBuyer}
+          onClose={() => setShowBuyerBook(false)}
+        />
+      )}
+      {showDrugStock && (
+        <DrugStockPanel
+          items={data.drugStock || []}
+          onSave={saveDrugStock}
+          onAdjust={adjustDrugStock}
+          onDelete={deleteDrugStock}
+          onClose={() => setShowDrugStock(false)}
+        />
+      )}
+      {showGoalTracker && (
+        <RevenueGoalTracker
+          goals={data.revenueGoals || []}
+          data={data}
+          onSave={saveRevenueGoal}
+          onDelete={deleteRevenueGoal}
+          onClose={() => setShowGoalTracker(false)}
+        />
+      )}
+      {showDailyTasks && (
+        <DailyTasksPanel
+          tasks={data.dailyTasks || []}
+          pepperFields={data.pepper?.fields || []}
+          onSave={saveDailyTask}
+          onToggle={toggleDailyTask}
+          onDelete={deleteDailyTask}
+          onUpdate={updateDailyTask}
+          onPush={pushDailyTask}
+          onSendToSpray={sendTaskToSpray}
+          onClose={() => setShowDailyTasks(false)}
+        />
+      )}
+      {showPettyCosts && (
+        <PettyCostPanel
+          costs={data.pettyCosts || []}
+          fuelExpenses={(data.expenses || []).filter((e) => e.category === 'Fuel')}
+          pepperFields={data.pepper?.fields || []}
+          onAdd={addPettyCost}
+          onDelete={deletePettyCost}
+          onClose={() => setShowPettyCosts(false)}
+        />
+      )}
+      {showWeeklySummary && (
+        <WeeklySummaryPanel
+          data={data}
+          onClose={() => setShowWeeklySummary(false)}
+        />
+      )}
 
       <SyncBar
         sync={sync}
         user={user}
         cloudReady={cloudReady}
+        profileName={profileName}
+        farmName={farmName}
         onSetupCloud={() => setShowCloudSetup(true)}
         onSync={() => syncNow('auto')}
         onPull={() => syncNow('pull')}
         onSignOut={handleSignOut}
+        onSwitchProfile={onSwitchProfile}
         onEditProfile={() => setShowProfileForm(true)}
       />
 
@@ -1679,6 +3746,7 @@ function AppInner() {
           ['growth', 'Growth'],
           ...(activeFlock.type === 'layer' ? [['laying', 'Laying & Eggs']] : []),
           ['sales', 'Sales & Profit'],
+          ['advances', 'Buyer Advances'],
           ['health', 'Health'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
@@ -1725,6 +3793,7 @@ function AppInner() {
           growthChartData={growthChartData}
           vaxStatus={vaxStatus}
           vaxPending={vaxPending}
+          revenueChartData={revenueChartData}
           onExport={exportWeeklyReport}
         />
       )}
@@ -1736,6 +3805,31 @@ function AppInner() {
           onAdd={() => { setEditingLog(null); setModal('log'); }}
           onEdit={(entry) => { setEditingLog(entry); setModal('log'); }}
           onDelete={deleteDailyLog}
+          onLogDestroyed={({ date, count, cause, matchEntry }) => {
+            if (matchEntry) {
+              // patch the existing entry — add to any existing cracked count
+              const prev = Number(matchEntry.eggsCracked) || 0;
+              updateDailyLog(matchEntry.id, {
+                eggsCracked: prev + count,
+                crackedCause: cause,
+              });
+            } else {
+              // no log entry for that date — store as a standalone destroyed-eggs note
+              addDailyLog({
+                id: newId(),
+                date,
+                flockId: activeFlock.id,
+                opening: latest ? latest.closing : activeFlock.initialBirds,
+                mortality: 0,
+                culls: 0,
+                closing: latest ? latest.closing : activeFlock.initialBirds,
+                eggs: null,
+                eggsCracked: count,
+                crackedCause: cause,
+                notes: `Destroyed eggs logged: ${cause}`,
+              });
+            }
+          }}
         />
       )}
 
@@ -1811,6 +3905,8 @@ function AppInner() {
           crackedValueLost={crackedValueLost}
           layDropAlert={layDropAlert}
           growerLayerMismatch={growerLayerMismatch}
+          totalGradeA={dailyLog.reduce((s, r) => s + (Number(r.gradeA) || 0), 0)}
+          totalGradeB={dailyLog.reduce((s, r) => s + (Number(r.gradeB) || 0), 0)}
         />
       )}
 
@@ -1826,9 +3922,26 @@ function AppInner() {
           coopCharge={coopCharge}
           coopInvested={coopInvested}
           flockRunning={flockRunning}
+          flockPettyCost={flockPettyCost}
+          feedRecords={feed}
+          litterRecords={litter}
+          allPettyCosts={data.pettyCosts || []}
+          allFlockExpenses={flockExpenses}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
+          onUpdateSale={updateSale}
+          onLogPayment={addSalePayment}
+        />
+      )}
+
+      {tab === 'advances' && (
+        <BuyerAdvancesTab
+          advances={data.buyerAdvances || []}
+          onAdd={addBuyerAdvance}
+          onUpdate={updateBuyerAdvance}
+          onDelete={deleteBuyerAdvance}
+          onAddSale={addSale}
         />
       )}
 
@@ -1979,9 +4092,10 @@ function AppInner() {
           reminders={data.reminders || []}
           expenses={data.expenses || []}
           onUpdateField={updateField}
+          onRenameField={(id, name) => updateField(id, { name })}
+          onRenameEnterprise={updatePepperEnterpriseName}
           onAddField={addPepperField}
           onDeleteField={deletePepperField}
-          onRenameModule={renamePepperModule}
           onAddScouting={addScouting}
           onAddSpray={addSpray}
           onAddHarvest={addHarvest}
@@ -2002,6 +4116,14 @@ function AppInner() {
           onDeleteNurseryBatch={deleteNurseryBatch}
           onTransplantNurseryBatch={transplantNurseryBatch}
           onInvoiceHarvest={openInvoiceFromHarvest}
+          onUpdateHarvest={updateHarvest}
+          onHarvestPayment={addHarvestPayment}
+          onSendEventToTask={sendSprayEventToTask}
+          onAddCropExpense={addCropExpense}
+          onUpdateCropExpense={updateCropExpense}
+          onDeleteCropExpense={deleteCropExpense}
+          onAddCustomProduct={addCustomSprayProduct}
+          onDeleteCustomProduct={deleteCustomSprayProduct}
         />
       )}
 
@@ -2028,6 +4150,8 @@ function AppInner() {
           onDeleteWeight={deleteGoatWeight}
           onAddSale={addGoatSale}
           onDeleteSale={deleteGoatSale}
+          onUpdateSale={updateGoatSale}
+          onLogPayment={addGoatSalePayment}
           onAddReminder={addReminder}
           onToggleReminder={toggleReminder}
           onDeleteReminder={deleteReminder}
@@ -2056,6 +4180,8 @@ function AppInner() {
           onDeleteFeedLog={customFeedH.delete}
           onAddSale={customSalesH.add}
           onDeleteSale={customSalesH.delete}
+          onUpdateCustomSale={updateCustomSale}
+          onAddCustomSalePayment={addCustomSalePayment}
         />
       )}
 
@@ -2077,6 +4203,22 @@ function AppInner() {
           onDeleteOwnerLoan={deleteOwnerLoan}
           onAddLoanRepayment={addLoanRepayment}
           onDeleteLoanRepayment={deleteLoanRepayment}
+          onSaveExpenseTemplate={saveExpenseTemplate}
+          onDeleteExpenseTemplate={deleteExpenseTemplate}
+          onApplyExpenseTemplate={applyExpenseTemplate}
+        />
+      )}
+
+      {workspace === 'financials' && (
+        <FinancialsModule
+          data={data}
+          sales={data.sales || []}
+          expenses={data.expenses || []}
+          pepperHarvests={data.pepper?.harvests || []}
+          goatSales={data.goats?.sales || []}
+          customFarms={data.customFarms || []}
+          flocks={data.flocks || []}
+          farmProfile={data.farmProfile}
         />
       )}
 
@@ -2111,7 +4253,7 @@ function DashboardTab({
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
-  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, onExport,
+  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, revenueChartData, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
@@ -2242,6 +4384,78 @@ function DashboardTab({
         </div>
       </div>
 
+      {/* ── Production Trend (FIRST chart) ── */}
+      {!isBroiler && (
+        <div className="panel">
+          <div className="panel-head"><h3>Egg production trend — daily eggs &amp; hen-day %</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis yAxisId="eggs" tickLine={false} axisLine={false} />
+                <YAxis yAxisId="pct" orientation="right" tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
+                <Tooltip
+                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                  formatter={(val, name) => name === 'Hen-day %' ? [`${num(val, 1)}%`, name] : [num(val), name]}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Bar yAxisId="eggs" dataKey="eggs" name="Eggs collected" fill="#D4A537" opacity={0.85} barSize={8} radius={[3, 3, 0, 0]} />
+                <Line yAxisId="pct" type="monotone" dataKey="henDay" name="Hen-day %" stroke="#7A9A66" strokeWidth={2} dot={false} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+      {isBroiler && (
+        <div className="panel">
+          <div className="panel-head"><h3>Daily feed intake &amp; flock size trend</h3></div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
+                <YAxis yAxisId="left" tickLine={false} axisLine={false} />
+                <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Area yAxisId="left" type="monotone" dataKey="feedGiven" name="Feed (kg)" fill="#7A9A6622" stroke="#7A9A66" strokeWidth={2} />
+                <Line yAxisId="right" type="monotone" dataKey="closing" name="Birds" stroke="#D4A537" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ── Revenue by section — from first record to today ── */}
+      {revenueChartData && revenueChartData.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Revenue by farm section</h3>
+            <span style={{ fontSize: 11, color: '#83786A' }}>GH₵ · from first recorded sale</span>
+          </div>
+          <div className="chart-card">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={revenueChartData} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tickLine={false} axisLine={{ stroke: '#423827' }} tick={{ fontSize: 11 }} />
+                <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => `₵${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}`} />
+                <Tooltip
+                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                  formatter={(val, name) => [`GH₵ ${Number(val).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
+                <Bar dataKey="Poultry"  stackId="rev" fill="#D4A537" radius={[0,0,0,0]} />
+                <Bar dataKey="Pepper"   stackId="rev" fill="#7A9A66" radius={[0,0,0,0]} />
+                <Bar dataKey="Goats"    stackId="rev" fill="#C15F41" radius={[0,0,0,0]} />
+                <Bar dataKey="My Farms" stackId="rev" fill="#7AABBA" radius={[3,3,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ── Flock population & mortality ── */}
       <div className="panel">
         <div className="panel-head"><h3>Flock population &amp; daily mortality</h3></div>
         <div className="chart-card">
@@ -2368,9 +4582,119 @@ function DashboardTab({
   );
 }
 
+/* ---------------- Destroyed Eggs quick-log modal ---------------- */
+
+function DestroyedEggsModal({ dailyLog, onSave, onClose }) {
+  const yesterday = todayISO(); // default to today; user can change to yesterday
+  const [date, setDate] = useState(() => {
+    // default to most recent log date that has eggs
+    const last = [...dailyLog].reverse().find((r) => (Number(r.eggs) || 0) > 0);
+    return last ? last.date : todayISO();
+  });
+  const [count, setCount] = useState('');
+  const [cause, setCause] = useState('Mouse/rat eaten');
+
+  // find the matching log entry for the chosen date
+  const matchEntry = dailyLog.find((r) => r.date === date);
+  const existingCracked = matchEntry ? (Number(matchEntry.eggsCracked) || 0) : 0;
+  const newTotal = existingCracked + (Number(count) || 0);
+
+  function submit() {
+    const n = Number(count);
+    if (!n || n < 1) return;
+    onSave({ date, count: n, cause, matchEntry });
+  }
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: '#1e1e1e', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 480, padding: '20px 20px 32px',
+    boxShadow: '0 -4px 40px rgba(0,0,0,0.7)',
+    border: '1px solid rgba(224,92,92,0.25)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 18 }}>
+          <span style={{ fontSize: 22, marginRight: 10 }}>🐭</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: '#fff' }}>Log Destroyed Eggs</div>
+            <div style={{ fontSize: 12, color: '#888' }}>Eaten or broken — deducted from stock for that day</div>
+          </div>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#666', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Date */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>Which day?</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
+          {matchEntry
+            ? <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 4 }}>✓ Found log entry for this day — {Number(matchEntry.eggs) || 0} eggs collected{existingCracked > 0 ? `, ${existingCracked} already marked destroyed` : ''}</div>
+            : <div style={{ fontSize: 11, color: '#D4A537', marginTop: 4 }}>⚠ No log entry found for this day — destruction will be recorded as a note</div>
+          }
+        </div>
+
+        {/* Count */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>How many eggs destroyed?</label>
+          <input type="number" min="1" value={count} onChange={(e) => setCount(e.target.value)}
+            placeholder="e.g. 3"
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 20, fontWeight: 700, outline: 'none', boxSizing: 'border-box' }} />
+          {Number(count) > 0 && matchEntry && (
+            <div style={{ fontSize: 11, color: '#e05c5c', marginTop: 4 }}>
+              Total destroyed for {date}: {newTotal} egg{newTotal !== 1 ? 's' : ''}
+              {existingCracked > 0 ? ` (was ${existingCracked}, adding ${count})` : ''}
+            </div>
+          )}
+        </div>
+
+        {/* Cause */}
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#888', marginBottom: 4 }}>Cause</label>
+          <select value={cause} onChange={(e) => setCause(e.target.value)}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+              color: '#fff', borderRadius: 10, padding: '9px 12px', fontSize: 14, outline: 'none', boxSizing: 'border-box' }}>
+            <option value="Mouse/rat eaten">🐭 Mouse / rat eaten</option>
+            <option value="Broken in crate">📦 Broken in crate</option>
+            <option value="Broken at collection">🤲 Broken at collection</option>
+            <option value="Trampled by birds">🐔 Trampled by birds</option>
+            <option value="Thin shell">🥚 Thin shell</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={onClose}
+            style={{ flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+              color: '#aaa', borderRadius: 10, padding: '11px', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
+            Cancel
+          </button>
+          <button onClick={submit} disabled={!count || Number(count) < 1}
+            style={{ flex: 2, background: Number(count) >= 1 ? 'rgba(224,92,92,0.2)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${Number(count) >= 1 ? 'rgba(224,92,92,0.5)' : 'rgba(255,255,255,0.08)'}`,
+              color: Number(count) >= 1 ? '#e05c5c' : '#444',
+              borderRadius: 10, padding: '11px', cursor: Number(count) >= 1 ? 'pointer' : 'default',
+              fontSize: 14, fontWeight: 700 }}>
+            🐭 Record {count ? `${count} destroyed` : 'destroyed eggs'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Daily Log tab ---------------- */
 
-function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
+function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete, onLogDestroyed }) {
   const { askConfirm } = useToastConfirm();
   // A layer flock racks up hundreds of rows a year — render a page at a
   // time instead of the whole table, which gets sluggish to scroll well
@@ -2380,11 +4704,32 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
   const visible = dailyLog.slice(0, visibleCount);
   const hasMore = dailyLog.length > visibleCount;
 
+  const [showDestroyedModal, setShowDestroyedModal] = useState(false);
+
   return (
     <>
+      {showDestroyedModal && (
+        <DestroyedEggsModal
+          dailyLog={dailyLog}
+          onClose={() => setShowDestroyedModal(false)}
+          onSave={(payload) => {
+            onLogDestroyed && onLogDestroyed(payload);
+            setShowDestroyedModal(false);
+          }}
+        />
+      )}
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Daily Log</h3>
-        <button className="btn btn-gold" onClick={onAdd}>+ Log today's entry</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setShowDestroyedModal(true)}
+            style={{ background: 'rgba(224,92,92,0.15)', border: '1px solid rgba(224,92,92,0.4)',
+              color: '#e05c5c', borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+              fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}>
+            🐭 Destroyed eggs
+          </button>
+          <button className="btn btn-gold" onClick={onAdd}>+ Log today's entry</button>
+        </div>
       </div>
       <div className="table-wrap">
         <table className="data">
@@ -2414,7 +4759,10 @@ function LogTab({ dailyLog, flockStartDate, onAdd, onEdit, onDelete }) {
                 <td className="mono">{r.waterGiven != null ? num(r.waterGiven, 1) : '—'}</td>
                 <td className="mono">{r.lightHours != null ? num(r.lightHours, 1) : '—'}</td>
                 <td className="mono">{num(r.eggs)}</td>
-                <td className="mono">{num(r.eggsCracked)}</td>
+                <td className="mono">
+                  {num(r.eggsCracked)}
+                  {r.crackedCause && <div style={{ fontSize: 10, color: '#e05c5c', opacity: 0.8, whiteSpace: 'nowrap' }}>{r.crackedCause}</div>}
+                </td>
                 <td>{r.medication || '—'}</td>
                 <td className="notes">{r.notes || ''}</td>
                 <td>
@@ -2463,6 +4811,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
     lightHours: entry?.lightHours ?? '',
     eggs: entry?.eggs ?? '',
     eggsCracked: entry?.eggsCracked ?? '',
+    crackedCause: entry?.crackedCause || '',
     medication: entry?.medication || '',
     notes: entry?.notes || '',
   });
@@ -2497,6 +4846,7 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
       lightHours: f.lightHours === '' ? null : Number(f.lightHours),
       eggs: f.eggs === '' ? null : Number(f.eggs),
       eggsCracked: f.eggsCracked === '' ? null : Number(f.eggsCracked),
+      crackedCause: (f.eggsCracked && Number(f.eggsCracked) > 0 && f.crackedCause) ? f.crackedCause : null,
       medication: f.medication || null,
       notes: f.notes || null,
     });
@@ -2536,8 +4886,32 @@ function LogForm({ entry, lastClosing, flockStartDate, onClose, onSave }) {
         <Field label="Feed given (kg)"><input type="number" step="0.01" value={f.feedGiven} onChange={set('feedGiven')} /></Field>
         <Field label="Water given (L)"><input type="number" step="0.1" value={f.waterGiven} onChange={set('waterGiven')} /></Field>
         <Field label="Light hours"><input type="number" step="0.5" value={f.lightHours} onChange={set('lightHours')} /></Field>
-        <Field label="Eggs collected"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
-        <Field label="Eggs cracked/broken"><input type="number" value={f.eggsCracked} onChange={set('eggsCracked')} /></Field>
+        <Field label="Eggs collected (total)"><input type="number" value={f.eggs} onChange={set('eggs')} /></Field>
+        <Field label="🐭 Destroyed / lost eggs" span2>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="number" min="0" value={f.eggsCracked} onChange={set('eggsCracked')}
+              placeholder="0"
+              style={{ flex: '0 0 90px' }} />
+            <select value={f.crackedCause || ''} onChange={set('crackedCause')}
+              style={{ flex: 1, opacity: Number(f.eggsCracked) > 0 ? 1 : 0.45 }}
+              disabled={!Number(f.eggsCracked)}>
+              <option value="">— cause (optional) —</option>
+              <option value="Mouse/rat eaten">🐭 Mouse / rat eaten</option>
+              <option value="Broken in crate">📦 Broken in crate</option>
+              <option value="Broken at collection">🤲 Broken at collection</option>
+              <option value="Trampled by birds">🐔 Trampled by birds</option>
+              <option value="Thin shell">🥚 Thin shell</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          {Number(f.eggsCracked) > 0 && (
+            <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--rust)', opacity: 0.8 }}>
+              ⚠ {f.eggsCracked} egg{Number(f.eggsCracked) !== 1 ? 's' : ''} will be deducted from your stock
+            </p>
+          )}
+        </Field>
+        <Field label="Grade A eggs"><input type="number" value={f.gradeA ?? ''} onChange={set('gradeA')} placeholder="Large, clean" /></Field>
+        <Field label="Grade B eggs"><input type="number" value={f.gradeB ?? ''} onChange={set('gradeB')} placeholder="Small or stained" /></Field>
         <Field label="Medication / vaccine given" span2><input value={f.medication} onChange={set('medication')} /></Field>
         <Field label="Notes / observations" span2><textarea rows={3} value={f.notes} onChange={set('notes')} /></Field>
       </div>
@@ -3025,7 +5399,7 @@ function LayingEggsTab({
   eggLedger, eggsInStock, totalEggs, totalCracked,
   eggRevenue, eggRevenueToday, eggRevenueWeek, eggRevenueMonth,
   avgEggPrice, costPerEgg, eggMarginPerEgg, crackedValueLost,
-  layDropAlert, growerLayerMismatch,
+  layDropAlert, growerLayerMismatch, totalGradeA, totalGradeB,
 }) {
   const [chartWindow, setChartWindow] = useState(90);
   const windowed = chartWindow === 0 ? layTrendData : layTrendData.slice(-chartWindow);
@@ -3081,7 +5455,7 @@ function LayingEggsTab({
 
       <p className="section-title" style={{ marginTop: 0 }}>Laying rate</p>
       <div className="grid grid-4">
-        <StatCard title="Today" value={henDayPct != null ? `${num(henDayPct, 1)}%` : '—'} tone="green" foot="hen-day %" />
+        <StatCard title="Today" value={henDayPct != null ? `${num(layTrendData[layTrendData.length - 1]?.eggs || 0)} eggs` : '—'} tone="green" foot={henDayPct != null ? `${num(henDayPct, 1)}% hen-day` : 'no data'} />
         <StatCard title="7-Day Average" value={weeklyLayPct != null ? `${num(weeklyLayPct, 1)}%` : '—'} tone="gold" />
         <StatCard title="30-Day Average" value={monthlyLayPct != null ? `${num(monthlyLayPct, 1)}%` : '—'} />
         <StatCard
@@ -3107,20 +5481,25 @@ function LayingEggsTab({
         </div>
       </div>
       <div className="panel">
-        <div className="panel-head"><h3>Hen-day % — actual vs. Hy-Line standard</h3></div>
+        <div className="panel-head"><h3>Daily eggs collected &amp; hen-day % vs. Hy-Line standard</h3></div>
         <div className="chart-card">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={windowed} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <ComposedChart data={windowed} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
               <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
-              <YAxis domain={[0, 100]} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+              <YAxis yAxisId="eggs" tickLine={false} axisLine={false} />
+              <YAxis yAxisId="pct" orientation="right" tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
+              <Tooltip
+                contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                formatter={(val, name) => name === 'Actual %' || name === 'Hy-Line standard %' ? [`${num(val, 1)}%`, name] : [num(val), name]}
+              />
               <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-              <Line type="monotone" dataKey="actual" name="Actual %" stroke="#D4A537" strokeWidth={2} dot={false} connectNulls />
-              <Line type="monotone" dataKey="standard" name="Hy-Line standard %" stroke="#7A9A66" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
+              <Bar yAxisId="eggs" dataKey="eggs" name="Eggs collected" fill="#D4A537" opacity={0.75} barSize={8} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="pct" type="monotone" dataKey="actual" name="Actual %" stroke="#D4A537" strokeWidth={2} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="standard" name="Hy-Line standard %" stroke="#7A9A66" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
               {peakPoint && peakPoint.actual != null && (
                 <ReferenceDot
-                  x={peakPoint.date} y={peakPoint.actual} r={6}
+                  yAxisId="pct" x={peakPoint.date} y={peakPoint.actual} r={6}
                   fill="#D4A537" stroke="#241F18" strokeWidth={2}
                   label={{ value: `Peak ${num(layPeak.pct, 1)}%`, position: 'top', fill: '#D4A537', fontSize: 11 }}
                 />
@@ -3168,6 +5547,27 @@ function LayingEggsTab({
         <StatCard title="Cracked" value={num(totalCracked)} tone="rust" />
         <StatCard title="Sold" value={num(totalEggs - totalCracked - eggsInStock)} foot="pieces, lifetime" />
       </div>
+
+      {(totalGradeA > 0 || totalGradeB > 0) && (
+        <>
+          <p className="section-title">Egg grading</p>
+          <div className="grid grid-4" style={{ marginBottom: 14 }}>
+            <StatCard title="Grade A" value={num(totalGradeA)} tone="green" foot="large, clean" />
+            <StatCard title="Grade B" value={num(totalGradeB)} tone="gold" foot="small or stained" />
+            <StatCard
+              title="Grade A %"
+              value={totalGradeA + totalGradeB > 0 ? `${num((totalGradeA / (totalGradeA + totalGradeB)) * 100, 1)}%` : '—'}
+              tone="green"
+              foot="of graded eggs"
+            />
+            <StatCard
+              title="Ungraded"
+              value={num(Math.max(0, totalEggs - totalGradeA - totalGradeB - totalCracked))}
+              foot="no grade recorded"
+            />
+          </div>
+        </>
+      )}
       <div className="table-wrap">
         <table className="data">
           <thead><tr><th>Date</th><th>Event</th><th>Change</th><th>Balance after</th></tr></thead>
@@ -3237,6 +5637,41 @@ const PEST_OPTIONS = [
 const SEVERITY = ['Low', 'Medium', 'High'];
 const SPRAY_TYPES = ['Insecticide', 'Fungicide', 'Foliar feed', 'Fertigation', 'Other'];
 const GRADES = ['Grade A', 'Grade B', 'Reject / off-grade'];
+const HARVEST_UNITS = ['kg', 'sack', 'crate'];
+
+/** Calculates pepper harvest revenue regardless of unit type.
+ *  For kg:    weightKg × pricePerKg
+ *  For sack/crate: quantity × pricePerUnit
+ *  Falls back gracefully for old records that only have weightKg/pricePerKg. */
+function harvestRev(h) {
+  const unit = h.unit || 'kg';
+  if (unit === 'kg') {
+    return (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+  }
+  return (Number(h.quantity) || 0) * (Number(h.pricePerUnit) || 0);
+}
+
+/** Returns a short display string for harvest quantity e.g. "50 kg", "12 sacks", "5 crates" */
+function harvestQtyLabel(h) {
+  const unit = h.unit || 'kg';
+  if (unit === 'kg') return `${num(h.weightKg, 1)} kg`;
+  const qty = Number(h.quantity) || 0;
+  if (unit === 'sack') {
+    const s5 = sackToSize5(h);
+    return `${num(qty, 0)} sack${qty !== 1 ? 's' : ''} (${num(s5, 2)} Size 5)`;
+  }
+  return `${num(qty, 0)} ${unit}${qty !== 1 ? 's' : ''}`;
+}
+
+/** Converts farm 50 kg sacks to market Size 5 sacks.
+ *  Size 5 = 2.5 × 50 kg sacks, so Size 5 count = quantity ÷ 2.5.
+ *  sackWeightKg defaults to 50 for old records. */
+function sackToSize5(h) {
+  const sackKg = Number(h.sackWeightKg) || 50;
+  const size5Kg = 125; // 2.5 × 50 kg = 125 kg per Size 5
+  const totalKg = (Number(h.quantity) || 0) * sackKg;
+  return totalKg / size5Kg;
+}
 
 function sev2num(s) { return s === 'High' ? 3 : s === 'Medium' ? 2 : s === 'Low' ? 1 : 0; }
 function addDaysISO(iso, days) {
@@ -3365,55 +5800,30 @@ function nurseryStatus(batch, asOf = todayISO()) {
 }
 
 function PepperWorkspace({
-  pepper, farmProfile, reminders, expenses, onUpdateField, onAddField, onDeleteField, onRenameModule,
-  onAddScouting, onAddSpray, onAddHarvest,
+  pepper, farmProfile, reminders, expenses, onUpdateField, onRenameField, onRenameEnterprise, onAddField, onDeleteField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
-  onInvoiceHarvest,
+  onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
+  onSendEventToTask,
+  onAddCropExpense, onUpdateCropExpense, onDeleteCropExpense,
+  onAddCustomProduct, onDeleteCustomProduct,
 }) {
-  const { showToast, askConfirm } = useToastConfirm();
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
-  const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
+  const [scope, setScope] = useState('all');   // 'all' | any field id
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
   const [sprayPrefill, setSprayPrefill] = useState(null); // pre-fill data when opening SprayForm from the programme
+  const [editingEnterpriseName, setEditingEnterpriseName] = useState(false);
+  const [enterpriseNameDraft, setEnterpriseDraft] = useState('');
+  const [editingFieldId, setEditingFieldId] = useState(null); // which field name is being renamed inline
+  const [fieldNameDraft, setFieldNameDraft] = useState('');
 
   const fields = pepper.fields;
-  const moduleName = pepper.moduleName || 'Bell Pepper';
+  const enterpriseName = pepper.enterpriseName || 'Bell Pepper Fields';
   const inScope = (fieldId) => scope === 'all' || fieldId === scope;
   const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
-
-  /** Tells the farmer when a programme just loaded itself, so it never
-      appears silently. `prior` is the field before the save (null if new). */
-  function toastAutoProgramme(prior, saved) {
-    const key = autoProgrammeKey(prior, saved);
-    if (!key) return;
-    const t = PROGRAMME_TEMPLATES[key];
-    showToast(`Loaded the ${t.label} programme (${t.build().length} events) — Day 0 is ${fmtDate(saved.transplantDate)}.`, 'green');
-  }
-
-  /** Starting a new planting on a field that already has a programme: ask
-      whether to start a fresh one (old events stay archived with the old
-      batch) or keep the current one and just re-date it. */
-  async function startBatchFlow(fieldId, patch, run) {
-    const fld = fields.find((x) => x.id === fieldId);
-    const key = patch.programmeKey !== undefined ? patch.programmeKey : (fld && fld.programmeKey);
-    const existing = programmeEventsOf(fld).length;
-    let fresh = false;
-    if (key && PROGRAMME_TEMPLATES[key] && existing > 0) {
-      fresh = await askConfirm(
-        `${fld.name} already has ${existing} programme events. Start a fresh ${PROGRAMME_TEMPLATES[key].label} programme from the new date? ` +
-        'The old events stay archived with the previous batch. Cancel keeps the current programme and just re-dates it from the new start date.',
-        { danger: false, confirmLabel: 'Start fresh programme' },
-      );
-    }
-    run(fresh);
-    if (key && PROGRAMME_TEMPLATES[key] && (fresh || existing === 0) && patch.transplantDate) {
-      showToast(`Loaded the ${PROGRAMME_TEMPLATES[key].label} programme (${PROGRAMME_TEMPLATES[key].build().length} events) — Day 0 is ${fmtDate(patch.transplantDate)}.`, 'green');
-    }
-  }
 
   const scouting = useMemo(() => [...pepper.scouting].sort((a, b) => new Date(a.date) - new Date(b.date)), [pepper.scouting]);
   const sprays = useMemo(() => [...pepper.sprays].sort((a, b) => new Date(a.date) - new Date(b.date)), [pepper.sprays]);
@@ -3432,7 +5842,7 @@ function PepperWorkspace({
 
   const totalPlants = fieldsScoped.reduce((s, f) => s + (Number(f.plantCount) || 0), 0);
   const totalKg = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
-  const revenue = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const revenue = harvestScoped.reduce((s, h) => s + harvestRev(h), 0);
   const inputCost = sprayScoped.reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const setupCost = fieldsScoped.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
   // Structures (net houses, drip) charged over their life, plus running
@@ -3452,14 +5862,26 @@ function PepperWorkspace({
     ? (latestScout.severity === 'High' ? 'rust' : latestScout.severity === 'Medium' ? 'gold' : 'green')
     : undefined;
 
-  // Pre-harvest interval: is any field still inside its "don't harvest yet" window?
+  // Pre-harvest interval: track ALL active PHI countdowns simultaneously.
+  // Safe harvest date = the LATEST expiry across every spray still inside its window.
   const phiWindows = fields.map((f) => {
     const fs = sprays.filter((s) => s.fieldId === f.id && s.phiDays);
     if (!fs.length) return null;
-    const last = fs[fs.length - 1];
-    const safe = addDaysISO(last.date, last.phiDays);
-    const daysLeft = daysBetween(todayISO(), safe);
-    return daysLeft > 0 ? { field: f, safe, daysLeft, product: last.product } : null;
+    // Build an expiry entry for every spray with a PHI, then pick the one
+    // with the furthest-out safe date (i.e. the one still blocking harvest longest).
+    let maxSafe = null;
+    let maxProduct = null;
+    let maxDaysLeft = 0;
+    fs.forEach((s) => {
+      const safe = addDaysISO(s.date, s.phiDays);
+      const daysLeft = daysBetween(todayISO(), safe);
+      if (daysLeft > 0 && (!maxSafe || safe > maxSafe)) {
+        maxSafe = safe;
+        maxDaysLeft = daysLeft;
+        maxProduct = s.product;
+      }
+    });
+    return maxSafe ? { field: f, safe: maxSafe, daysLeft: maxDaysLeft, product: maxProduct } : null;
   }).filter(Boolean);
   const scopePhi = phiWindows.filter((w) => inScope(w.field.id));
   const soonestClear = scopePhi.length ? Math.min(...scopePhi.map((w) => w.daysLeft)) : null;
@@ -3522,7 +5944,7 @@ function PepperWorkspace({
   const harvestChart = harvestScoped.map((h) => ({
     date: fmtDate(h.date).slice(0, 6),
     kg: Number(h.weightKg) || 0,
-    revenue: Math.round((Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0)),
+    revenue: Math.round(harvestRev(h)),
   }));
   const pressureChart = scoutScoped.map((s) => ({
     date: fmtDate(s.date).slice(0, 6),
@@ -3530,23 +5952,44 @@ function PepperWorkspace({
     pest: s.pest,
   }));
 
-  const scopeOptions = [['all', 'All fields'], ...fields.map((f) => [f.id, f.name])];
+  const scopeOptions = [['all', fields.length > 1 ? 'All fields' : 'Whole farm'], ...fields.map((f) => [f.id, f.name])];
 
   return (
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · {moduleName}</p>
-          <h1 className="brand-title">
-            {moduleName}
-            <button
-              className="link-btn"
-              style={{ marginLeft: 10, fontSize: 13, fontWeight: 400, verticalAlign: 'middle' }}
-              onClick={() => setModal('rename-module')}
-            >Rename</button>
-          </h1>
+          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · Crops</p>
+          {editingEnterpriseName ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <input
+                autoFocus
+                value={enterpriseNameDraft}
+                onChange={(e) => setEnterpriseDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { onRenameEnterprise && onRenameEnterprise(enterpriseNameDraft.trim() || enterpriseName); setEditingEnterpriseName(false); }
+                  if (e.key === 'Escape') setEditingEnterpriseName(false);
+                }}
+                style={{ fontSize: 20, fontWeight: 700, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(212,165,55,0.5)', borderRadius: 6, padding: '4px 8px', color: '#fff', width: 220 }}
+              />
+              <button className="btn btn-gold" style={{ padding: '4px 12px', fontSize: 13 }}
+                onClick={() => { onRenameEnterprise && onRenameEnterprise(enterpriseNameDraft.trim() || enterpriseName); setEditingEnterpriseName(false); }}>
+                Save
+              </button>
+              <button className="btn" style={{ padding: '4px 10px', fontSize: 13 }}
+                onClick={() => setEditingEnterpriseName(false)}>
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <h1 className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+              title="Tap to rename"
+              onClick={() => { setEnterpriseDraft(enterpriseName); setEditingEnterpriseName(true); }}>
+              {enterpriseName}
+              <span style={{ fontSize: 13, fontWeight: 400, color: '#7A9A66', opacity: 0.7 }}>✏️</span>
+            </h1>
+          )}
           <p className="brand-sub">
-            {farmProfile.location || 'Location not set'} · {fields.length} field{fields.length === 1 ? '' : 's'}
+            {farmProfile.location || 'Location not set'} · {fields.length} fields
             {activeField ? ` · viewing ${activeField.name}` : ' · all fields combined'}
           </p>
         </div>
@@ -3573,9 +6016,51 @@ function PepperWorkspace({
       </header>
 
       <div className="field-seg">
-        {scopeOptions.map(([id, label]) => (
-          <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
-        ))}
+        {scopeOptions.map(([id, label]) => {
+          // 'all' pill — not editable
+          if (id === 'all') return (
+            <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
+          );
+          // Individual field pill — double-tap or long-press to rename
+          const isEditing = editingFieldId === id;
+          if (isEditing) {
+            return (
+              <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <input
+                  autoFocus
+                  value={fieldNameDraft}
+                  onChange={(e) => setFieldNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const n = fieldNameDraft.trim();
+                      if (n && onRenameField) onRenameField(id, n);
+                      setEditingFieldId(null);
+                    }
+                    if (e.key === 'Escape') setEditingFieldId(null);
+                  }}
+                  style={{ width: 110, fontSize: 13, padding: '3px 7px', borderRadius: 6, border: '1px solid #7A9A66', background: '#1e1e1e', color: '#fff' }}
+                />
+                <button style={{ background: '#7A9A66', border: 'none', borderRadius: 5, color: '#000', fontWeight: 700, fontSize: 12, padding: '3px 8px', cursor: 'pointer' }}
+                  onClick={() => { const n = fieldNameDraft.trim(); if (n && onRenameField) onRenameField(id, n); setEditingFieldId(null); }}>
+                  ✓
+                </button>
+                <button style={{ background: 'none', border: 'none', color: '#888', fontSize: 13, cursor: 'pointer', padding: '3px 4px' }}
+                  onClick={() => setEditingFieldId(null)}>×</button>
+              </span>
+            );
+          }
+          return (
+            <button key={id}
+              className={scope === id ? 'active' : ''}
+              onClick={() => setScope(id)}
+              onDoubleClick={() => { setFieldNameDraft(label); setEditingFieldId(id); }}
+              title="Double-tap to rename"
+            >
+              {label} <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 2 }}>✏️</span>
+            </button>
+          );
+        })}
+        <button onClick={() => setModal('add-field')} title="Add another field">+ Add field</button>
       </div>
 
       <nav className="tabs pepper">
@@ -3587,8 +6072,10 @@ function PepperWorkspace({
           ['soil', 'Soil & Batches'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
+          ['library', '🌿 Spray Library'],
           ['inputs', 'Input Stock'],
           ['harvest', 'Harvest & Sales'],
+          ['financials', '💰 Financials'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
           <button key={id} className={`tab${ptab === id ? ' active' : ''}`} onClick={() => setPtab(id)}>{label}</button>
@@ -3624,12 +6111,6 @@ function PepperWorkspace({
           fields={fieldsScoped} datOf={datOf}
           onEdit={(id) => setModal(`field:${id}`)}
           onNewBatch={(id) => setModal(`batch:${id}`)}
-          onAdd={() => setModal('field')}
-          onDelete={(id) => {
-            if (fields.length <= 1) { showToast("Can't delete your last field — add another one first.", 'rust'); return; }
-            if (scope === id) setScope('all');
-            onDeleteField(id);
-          }}
         />
       )}
 
@@ -3639,6 +6120,7 @@ function PepperWorkspace({
           reminders={reminders}
           onAddReminder={onAddReminder}
           onLogNow={(prefill) => { setSprayPrefill(prefill); setModal('spray'); }}
+          showPepperRules
           onAddEvent={(ev) => {
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ev] } });
@@ -3647,23 +6129,19 @@ function PepperWorkspace({
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
           }}
-          onLoadTemplate={(key) => {
+          onLoadTemplate={() => {
             const fld = activeField || fields[0];
-            onUpdateField(fld.id, { programmeKey: key, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } });
+            onUpdateField(fld.id, { sprayProgramme: { events: loadBellPepperTemplate() } });
           }}
-          onUploadCsv={(events, replace) => {
+          onUploadCsv={(events) => {
             const fld = activeField || fields[0];
-            const prior = replace ? [] : ((fld.sprayProgramme && fld.sprayProgramme.events) || []);
-            onUpdateField(fld.id, { sprayProgramme: { events: [...prior, ...events] } });
-          }}
-          onClearProgramme={() => {
-            const fld = activeField || fields[0];
-            onUpdateField(fld.id, { sprayProgramme: { events: [] } });
+            onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
           }}
           onDeleteEvent={(eventId) => {
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: ((fld.sprayProgramme && fld.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } });
           }}
+          onSendEventToTask={onSendEventToTask}
         />
       )}
 
@@ -3692,11 +6170,24 @@ function PepperWorkspace({
         />
       )}
 
+      {ptab === 'library' && (
+        <SprayLibraryTab
+          fields={fields}
+          sprays={pepper.sprays || []}
+          customProducts={pepper.customSprayProducts || []}
+          onAddCustomProduct={onAddCustomProduct}
+          onDeleteCustomProduct={onDeleteCustomProduct}
+          onAddSpray={onAddSpray}
+        />
+      )}
+
       {ptab === 'harvest' && (
         <HarvestTab
           rows={[...harvestScoped].reverse()} fieldName={fieldName} totalKg={totalKg} revenue={revenue}
           onAdd={() => setModal('harvest')}
           onInvoice={(h) => onInvoiceHarvest(h, fieldName(h.fieldId))}
+          onUpdateHarvest={onUpdateHarvest}
+          onHarvestPayment={onHarvestPayment}
         />
       )}
 
@@ -3731,29 +6222,35 @@ function PepperWorkspace({
         />
       )}
 
-      {(modal === 'field' || (modal && modal.startsWith('field:'))) && (
-        <FieldForm
-          field={modal === 'field' ? null : fields.find((f) => f.id === modal.split(':')[1])}
+      {ptab === 'financials' && (
+        <CropsFinancialsErrorBoundary>
+          <CropsFinancialsTab
+            fields={fields}
+            harvests={pepper.harvests || []}
+            sprays={pepper.sprays || []}
+            cropExpenses={pepper.cropExpenses || []}
+            onAddExpense={() => setModal('crop-expense')}
+            onDeleteExpense={onDeleteCropExpense}
+          />
+        </CropsFinancialsErrorBoundary>
+      )}
+
+      {modal === 'add-field' && (
+        <AddFieldForm
+          defaultName={`Field ${fields.length + 1}`}
+          existingNames={fields.map((f) => f.name)}
           onClose={() => setModal(null)}
-          onSave={(saved) => {
-            if (modal === 'field') {
-              toastAutoProgramme(null, saved);
-              onAddField(saved);
-            } else {
-              const id = modal.split(':')[1];
-              const prior = fields.find((f) => f.id === id);
-              toastAutoProgramme(prior, { ...prior, ...saved });
-              onUpdateField(id, saved);
-            }
-            setModal(null);
-          }}
+          onSave={(name) => { const id = onAddField(name); setScope(id); setModal(`field:${id}`); }}
         />
       )}
-      {modal === 'rename-module' && (
-        <ModuleNameForm
-          name={moduleName}
+      {modal && modal.startsWith('field:') && fields.find((f) => f.id === modal.split(':')[1]) && (
+        <FieldForm
+          field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
-          onSave={(name) => { onRenameModule(name); setModal(null); }}
+          onSave={(patch) => { onUpdateField(modal.split(':')[1], patch); setModal(null); }}
+          canDelete={fields.length > 1 && !fieldHasRecords(pepper, modal.split(':')[1])}
+          deleteBlockedReason={fields.length <= 1 ? 'A farm needs at least one field.' : (fieldHasRecords(pepper, modal.split(':')[1]) ? 'This field has scouting, spray, harvest, soil or batch records, so it cannot be deleted.' : '')}
+          onDelete={() => { const id = modal.split(':')[1]; if (scope === id) setScope('all'); onDeleteField(id); setModal(null); }}
         />
       )}
       {modal === 'scout' && (
@@ -3763,6 +6260,7 @@ function PepperWorkspace({
       {modal === 'spray' && (
         <SprayForm
           fields={fields}
+          inputStock={pepper.inputs || []}
           defaultField={sprayPrefill?.fieldId || (scope === 'all' ? fields[0].id : scope)}
           prefill={sprayPrefill}
           onClose={() => { setModal(null); setSprayPrefill(null); }}
@@ -3779,6 +6277,14 @@ function PepperWorkspace({
       {modal === 'input' && (
         <InputForm onClose={() => setModal(null)} onSave={(e) => { onAddInput(e); setModal(null); }} />
       )}
+      {modal === 'crop-expense' && (
+        <AddCropExpenseForm
+          fields={fields}
+          defaultField={scope === 'all' ? fields[0].id : scope}
+          onClose={() => setModal(null)}
+          onSave={(e) => { onAddCropExpense(e); setModal(null); }}
+        />
+      )}
       {modal === 'manure' && (
         <ManureReadingForm onClose={() => setModal(null)} onSave={(e) => { onAddManureReading(e); setModal(null); }} />
       )}
@@ -3790,11 +6296,7 @@ function PepperWorkspace({
         <NewBatchForm
           field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
-          onSave={(patch) => {
-            const id = modal.split(':')[1];
-            setModal(null);
-            startBatchFlow(id, patch, (fresh) => onStartNewBatch(id, patch, fresh));
-          }}
+          onSave={(patch) => { onStartNewBatch(modal.split(':')[1], patch); setModal(null); }}
         />
       )}
       {(modal === 'nursery' || (typeof modal === 'string' && modal.startsWith('nursery:'))) && (
@@ -3814,9 +6316,8 @@ function PepperWorkspace({
           fields={fields}
           onClose={() => setModal(null)}
           onSave={(fieldId, patch) => {
-            const nurseryId = modal.split(':')[1];
+            onTransplantNurseryBatch(modal.split(':')[1], fieldId, patch);
             setModal(null);
-            startBatchFlow(fieldId, patch, (fresh) => onTransplantNurseryBatch(nurseryId, fieldId, patch, fresh));
           }}
         />
       )}
@@ -3850,7 +6351,7 @@ function PepperDashboard({
   return (
     <>
       <div className="grid grid-4">
-        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'both fields' : 'in this field'} />
+        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'all fields' : 'in this field'} />
         <StatCard
           title="Pest Pressure"
           value={latestScout ? latestScout.severity : 'None yet'}
@@ -3872,6 +6373,12 @@ function PepperDashboard({
         <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot={margin >= 0 ? 'in profit' : 'below break-even'} />
         <StatCard title="Avg Price" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="per kg sold" />
       </div>
+
+      {/* Payment mode breakdown — pepper */}
+      {(() => {
+        const pm = calcPayModeTotals(harvestScoped, (h) => harvestRev(h));
+        return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />;
+      })()}
 
       <div className="panel" style={{ marginTop: 20 }}>
         <div className="panel-head"><h3>Alerts &amp; actions</h3></div>
@@ -3965,13 +6472,11 @@ function PepperDashboard({
 
 /* ---------------- Crop cycle ---------------- */
 
-function CropCycleTab({ fields, datOf, onEdit, onNewBatch, onAdd, onDelete }) {
-  const { askConfirm } = useToastConfirm();
+function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Crop Cycle</h3>
-        {onAdd && <button className="btn btn-green" onClick={onAdd}>+ Add field</button>}
       </div>
       <div className="field-card-grid">
         {fields.map((f) => {
@@ -3989,26 +6494,15 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch, onAdd, onDelete }) {
                 </span>
               </div>
               <div style={{ padding: '4px 0 10px' }}>
-                <div className="kv"><span className="k">Programme</span><span className="v">{(PROGRAMME_TEMPLATES[f.programmeKey] || {}).label || 'None'}</span></div>
                 <div className="kv"><span className="k">Variety</span><span className="v">{f.variety || '—'}</span></div>
-                <div className="kv"><span className="k">Transplanted / sown</span><span className="v">{f.transplantDate ? fmtDate(f.transplantDate) : '—'}</span></div>
-                <div className="kv"><span className="k">Days after planting</span><span className="v">{dat != null ? `${dat} (Wk ${week})` : '—'}</span></div>
+                <div className="kv"><span className="k">Transplanted</span><span className="v">{f.transplantDate ? fmtDate(f.transplantDate) : '—'}</span></div>
+                <div className="kv"><span className="k">Days after transplant</span><span className="v">{dat != null ? `${dat} (Wk ${week})` : '—'}</span></div>
                 <div className="kv"><span className="k">Plants in ground</span><span className="v">{num(f.plantCount)}</span></div>
                 <div className="kv"><span className="k">Spacing</span><span className="v">{f.spacing || '—'}</span></div>
                 <div className="kv"><span className="k">Expected 1st harvest</span><span className="v">{firstHarvest ? `${fmtDate(firstHarvest)}${toHarvest != null ? (toHarvest > 0 ? ` (${toHarvest}d)` : ' (due)') : ''}` : '—'}</span></div>
                 <div className="kv"><span className="k">Setup cost</span><span className="v">{f.setupCost != null ? `GH₵ ${num(f.setupCost, 2)}` : '—'}</span></div>
                 <div className="kv"><span className="k">Manure applied</span><span className="v">{f.manureAppliedDate ? fmtDate(f.manureAppliedDate) : '—'}</span></div>
                 {f.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{f.notes}</span></div>}
-                {onDelete && (
-                  <div style={{ marginTop: 10, textAlign: 'right' }}>
-                    <button
-                      className="link-btn rust"
-                      onClick={async () => {
-                        if (await askConfirm(`Delete ${f.name}? Its spray programme and history go with it.`)) onDelete(f.id);
-                      }}
-                    >Delete field</button>
-                  </div>
-                )}
               </div>
             </div>
           );
@@ -4017,7 +6511,6 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch, onAdd, onDelete }) {
       <p className="stat-foot" style={{ marginTop: 14 }}>
         Bell peppers usually reach first harvest around 60–90 days after transplant; the default is set to 70. Adjust per field once you see how your crop runs.
         Starting a <strong>New Batch</strong> archives the current planting to Soil &amp; Batches → Batch Performance and begins the next one.
-        Field names (and this module's own name, up at the top) are yours to rename any time — this isn't limited to peppers.
       </p>
     </>
   );
@@ -4091,14 +6584,12 @@ function pepperStageForWeek(week) {
 const PEPPER_CAT_LABEL = {
   transplant: 'Transplant', nutrition: 'Nutrition', pesticide: 'Pesticide', fungicide: 'Fungicide',
   neem: 'Neem Oil (5pm)', transition: 'Transition', flowering: 'Flowering', fruiting: 'Fruiting', harvest: 'Harvest',
-  sowing: 'Sowing', practice: 'Farm practice', monitoring: 'Scouting',
 };
 
 // What each category becomes in the Spray & Fertigation log's own Type field.
 const PEPPER_CAT_SPRAY_TYPE = {
   transplant: 'Insecticide', nutrition: 'Foliar feed', pesticide: 'Insecticide', fungicide: 'Fungicide',
   neem: 'Insecticide', transition: 'Foliar feed', flowering: 'Foliar feed', fruiting: 'Foliar feed', harvest: 'Other',
-  sowing: 'Other', practice: 'Other', monitoring: 'Other',
 };
 
 const PEPPER_RATES = {
@@ -4114,6 +6605,107 @@ const PEPPER_RATES = {
 };
 
 /* ============================================================= */
+/* =================== CUCUMBER PROGRAMME ======================= */
+/* 10-week open-field hybrid cucumber programme (65–70 DAP).      */
+/* Day offsets are from SOWING DATE (day 0 = day seeds go in).   */
+/* ============================================================= */
+
+const CUCUMBER_PROGRAMME = [
+  // ── WEEK 1 — Soil prep & germination ──
+  { day: 0,  week: 1, title: 'Sowing Day — Basal fertilizer (NPK 15-15-15) + Mulch beds', cat: 'nutrition', time: '7am' },
+  { day: 2,  week: 1, title: 'First irrigation check — keep soil moist, check germination spots', cat: 'scouting', time: '7am' },
+  { day: 5,  week: 1, title: 'Scout for damping-off; apply Metalaxyl+Mancozeb (Ridomil Gold) if soil wet', cat: 'fungicide', time: '7am' },
+
+  // ── WEEK 2 — Establishment ──
+  { day: 8,  week: 2, title: 'Seedling emergence check — thin to 1 plant/hole if double germination', cat: 'scouting', time: '7am' },
+  { day: 10, week: 2, title: 'First foliar: Nitrogen boost — Urea 5g/15L + Seaweed extract (Algua) 10ml/15L', cat: 'nutrition', time: '6am' },
+  { day: 12, week: 2, title: 'Neem Oil spray (EVENING) — aphid & whitefly prevention', cat: 'neem', time: '5pm' },
+  { day: 14, week: 2, title: 'Preventive fungicide: Mancozeb 30g/15L — downy mildew & damping-off', cat: 'fungicide', time: '6am' },
+
+  // ── WEEK 3 — Vegetative push ──
+  { day: 17, week: 3, title: 'Begin vine training / trellising — tie main stem, remove side shoots below 4th node', cat: 'cultural', time: '8am' },
+  { day: 18, week: 3, title: 'Top-dress: NPK 20-10-10 @ 50g/plant — vegetative push', cat: 'nutrition', time: '7am' },
+  { day: 19, week: 3, title: 'Insecticide: Abamectin 1.8EC 5ml/15L — spider mites & thrips', cat: 'pesticide', time: '6am' },
+  { day: 21, week: 3, title: 'Foliar: NPK 20-10-10 dissolved 20g/15L + Algua 10ml/15L', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 4 — Vegetative / pre-flower ──
+  { day: 24, week: 4, title: 'Fungicide rotation: Copper Hydroxide 35g/15L — alternaria & anthracnose', cat: 'fungicide', time: '6am' },
+  { day: 25, week: 4, title: 'Vine training — continue tying, remove tendrils from main stem', cat: 'cultural', time: '8am' },
+  { day: 26, week: 4, title: 'Foliar: Urea 5g/15L + Algua 10ml/15L + Boron 1g/15L (flower initiation)', cat: 'nutrition', time: '6am' },
+  { day: 28, week: 4, title: 'Scout: check for powdery mildew on undersides of leaves', cat: 'scouting', time: '7am' },
+
+  // ── WEEK 5 — Flower initiation ──
+  { day: 31, week: 5, title: 'Switch fertilizer: NPK 12-24-12 @ 50g/plant (root-zone top-dress) — flower support', cat: 'nutrition', time: '7am' },
+  { day: 32, week: 5, title: 'Neem Oil spray (EVENING) — repeat whitefly & mite buffer', cat: 'neem', time: '5pm' },
+  { day: 33, week: 5, title: 'Insecticide: Lambda-cyhalothrin 2.5EC 5ml/15L — cucumber beetles & aphids', cat: 'pesticide', time: '6am' },
+  { day: 35, week: 5, title: 'Fungicide: Metalaxyl+Mancozeb (Ridomil Gold) 30g/15L — prevent downy mildew before heavy flowering', cat: 'fungicide', time: '6am' },
+
+  // ── WEEK 6 — Full flowering (⚠️ protect pollinators) ──
+  { day: 38, week: 6, title: '⚠️ POLLINATOR WINDOW BEGINS — NO systemic insecticides until fruit set. Scout only.', cat: 'scouting', time: '7am' },
+  { day: 39, week: 6, title: 'Foliar: Calcium Nitrate 15g/15L + Potassium Sulphate 10g/15L (prevent blossom issues)', cat: 'nutrition', time: '6am' },
+  { day: 42, week: 6, title: 'Foliar: NPK 12-24-12 dissolved 20g/15L + Algua 10ml/15L — flower retention', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 7 — Fruit set ──
+  { day: 44, week: 7, title: 'Fruit set confirmed — resume insecticide: Abamectin 5ml/15L (mites, safe at fruit set)', cat: 'pesticide', time: '6am' },
+  { day: 45, week: 7, title: 'Foliar: Potassium Sulphate 20g/15L — fruit swell support', cat: 'nutrition', time: '6am' },
+  { day: 46, week: 7, title: 'Fungicide: Mancozeb 30g/15L — Anthracnose & powdery mildew prevention', cat: 'fungicide', time: '6am' },
+  { day: 49, week: 7, title: 'Calcium foliar: Calcium Nitrate 15g/15L — prevent blossom end rot', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 8 — Rapid fruit development ──
+  { day: 51, week: 8, title: 'Top-dress: Potassium Sulphate 50g/plant (root zone) — fruit quality', cat: 'nutrition', time: '7am' },
+  { day: 52, week: 8, title: 'Insecticide: Lambda-cyhalothrin 5ml/15L — beetles; rotate from Abamectin', cat: 'pesticide', time: '6am' },
+  { day: 53, week: 8, title: 'Neem Oil spray (EVENING) — continue mite & whitefly suppression', cat: 'neem', time: '5pm' },
+  { day: 55, week: 8, title: 'Fungicide: Copper Hydroxide 35g/15L — maintain fruit clean, prevent late blight', cat: 'fungicide', time: '6am' },
+  { day: 56, week: 8, title: 'Scout for angular leaf spot, gummosis on stems — record severity', cat: 'scouting', time: '7am' },
+
+  // ── WEEK 9 — First harvest window ──
+  { day: 59, week: 9, title: '🥒 FIRST HARVEST CHECK — inspect oldest fruits (check Day 65 target). Harvest when 15–20cm, firm & dark green.', cat: 'harvest', time: '6am' },
+  { day: 60, week: 9, title: 'Foliar: Potassium Sulphate 20g/15L + Calcium Nitrate 10g/15L — maintain fruit quality during harvest', cat: 'nutrition', time: '6am' },
+  { day: 62, week: 9, title: 'Fungicide: Metalaxyl+Mancozeb 30g/15L (PHI 7d) — last preventive before peak harvest', cat: 'fungicide', time: '6am' },
+  { day: 63, week: 9, title: 'Insecticide: Abamectin 5ml/15L (PHI 3d) — final pest control before continuous harvest', cat: 'pesticide', time: '6am' },
+
+  // ── WEEK 10 — Peak harvest ──
+  { day: 65, week: 10, title: '🥒 PEAK HARVEST BEGINS — pick every 2–3 days. Overripe fruits reduce vine productivity.', cat: 'harvest', time: '6am' },
+  { day: 67, week: 10, title: 'Harvest & inspect — remove yellowing / diseased fruits. Keep vine clean.', cat: 'harvest', time: '6am' },
+  { day: 70, week: 10, title: 'Final foliar: Potassium Sulphate 20g/15L — maintain sugar & crispness to end of crop', cat: 'nutrition', time: '6am' },
+  { day: 72, week: 10, title: '🥒 Last scheduled harvest — assess crop continuation vs. replant decision', cat: 'harvest', time: '6am' },
+];
+
+const CUCUMBER_CAT_LABEL = {
+  nutrition: 'Nutrition / Fertilizer', pesticide: 'Pesticide', fungicide: 'Fungicide',
+  neem: 'Neem Oil (5pm)', cultural: 'Farm Practice', scouting: 'Scouting', harvest: 'Harvest',
+};
+
+const CUCUMBER_RATES = {
+  nutrition: 'NPK 15-15-15 basal: 100–150g/plant preplant · NPK 20-10-10 veg: 50g/plant top-dress · NPK 12-24-12 flower: 50g/plant · Potassium Sulphate fruiting: 50g/plant root-zone or 20g/15L foliar · Calcium Nitrate foliar: 15g/15L · Urea foliar: 5g/15L · Algua: 10ml/15L',
+  pesticide: 'Abamectin 1.8EC: 5ml/15L (mites & thrips, PHI 3d) · Lambda-cyhalothrin 2.5EC: 5ml/15L (beetles & aphids, PHI 7d) · Rotate these two on alternate applications',
+  fungicide: 'Mancozeb 80WP: 30g/15L (preventive, weekly) · Metalaxyl+Mancozeb (Ridomil Gold 68WP): 30g/15L (downy mildew, PHI 7d) · Copper Hydroxide: 35g/15L (anthracnose, alternaria)',
+  neem: 'Neem Oil: 25ml/15L + 2ml dish soap · SPRAY ALONE — EVENING ONLY (after 5pm) · Never on same day as fungicide · Every 10–14 days',
+  cultural: 'Trellising: twine or bamboo poles at 1.5–2m · Tie main stem every 20–25cm · Remove all side shoots below the 4th node · 1 plant per hole, 60×90cm spacing recommended',
+  scouting: 'Check undersides of leaves for whitefly, mites, thrips. Look for yellowing (N deficiency), water-soaked lesions (downy mildew), white powder (powdery mildew). Record pest pressure 1–5 scale.',
+  harvest: 'Harvest at 15–20cm length, firm and dark green — do NOT wait for yellowing. Pick every 2–3 days. Harvest early morning (5–8am). Use clean sharp knife. Pack in shade.',
+};
+
+/** Converts the Cucumber 10-week template into the unified spray-programme
+    event format, with the anchor date shifted to sowing day (day 0).
+    Bakes dosage/rate text onto each event for self-contained records. */
+function loadCucumberTemplate(sowingDate) {
+  return CUCUMBER_PROGRAMME.map((ev) => ({
+    id: newId(),
+    dayOffset: ev.day,
+    // If a sowing date is supplied, resolve to absolute dates so they show
+    // without needing a separate anchor set on the field.
+    date: sowingDate ? addDaysISO(sowingDate, ev.day) : null,
+    title: ev.title,
+    cat: ev.cat,
+    rate: CUCUMBER_RATES[ev.cat] || null,
+    phi: null,
+    notes: `Week ${ev.week} · ${CUCUMBER_CAT_LABEL[ev.cat] || ev.cat}`,
+    week: ev.week,
+  }));
+}
+
+/* ============================================================= */
 /* ================= UNIFIED SPRAY PROGRAMME ENGINE ============= */
 /* Works identically whether the field is Bell Pepper or a custom */
 /* crop farm — one stored events array, three ways to populate it */
@@ -4123,7 +6715,6 @@ const PEPPER_RATES = {
 const SPRAY_CAT_TONE = {
   transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
   neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
-  sowing: 'green', practice: '', monitoring: 'gold',
 };
 
 /** Turns stored events (each carrying either a dayOffset from an anchor, or
@@ -4162,58 +6753,6 @@ function loadBellPepperTemplate() {
     id: newId(), dayOffset: ev.day, title: ev.title, cat: ev.cat,
     rate: PEPPER_RATES[ev.cat] || null, phi: null, notes: null,
   }));
-}
-
-/** Same idea for the cucumber programme — day-offset events from sowing day,
-    with rate AND notes baked onto each so they're fully self-contained. */
-function loadCucumberTemplate() {
-  return CUCUMBER_PROGRAMME
-    .map((ev, i) => ({ ev, i }))
-    .sort((a, b) => a.ev.day - b.ev.day || a.i - b.i)
-    .map(({ ev }) => ({
-      id: newId(), dayOffset: ev.day, title: ev.title, cat: ev.cat,
-      rate: ev.rate || null, phi: ev.phi == null ? null : ev.phi, notes: ev.notes || null,
-    }));
-}
-
-const PEPPER_RULES_TEXT =
-  'Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) · ' +
-  'CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any Alt Sulfur application.';
-
-/** Built-in crop programmes. A field's `programmeKey` picks one; the day-0
-    anchor is always that field's planting date (transplant or sowing). */
-const PROGRAMME_TEMPLATES = {
-  bell_pepper: {
-    label: 'Bell Pepper', build: loadBellPepperTemplate, defaultHarvestDAT: 70,
-    stageForWeek: pepperStageForWeek, rules: PEPPER_RULES_TEXT,
-  },
-  cucumber: {
-    label: 'Cucumber', build: loadCucumberTemplate, defaultHarvestDAT: 40,
-    stageForWeek: cucumberStageForWeek, rules: CUCUMBER_RULES,
-  },
-};
-
-function programmeEventsOf(field) {
-  return (field && field.sprayProgramme && field.sprayProgramme.events) || [];
-}
-
-/** Decides whether saving `next` (on top of `prev`) should auto-load the
-    field's programme. Only when the field has a programme type, a planting
-    date, and NO events — and only when the date or the type just changed, so
-    a farmer who cleared the programme on purpose isn't surprised by it
-    reappearing on an unrelated edit. Returns the template key or null. */
-function autoProgrammeKey(prev, next) {
-  const key = next && next.programmeKey;
-  if (!key || !PROGRAMME_TEMPLATES[key]) return null;
-  if (!next.transplantDate) return null;
-  if (programmeEventsOf(next).length > 0) return null;
-  const changed = !prev || prev.transplantDate !== next.transplantDate || prev.programmeKey !== next.programmeKey;
-  return changed ? key : null;
-}
-
-function withAutoProgramme(prev, next) {
-  const key = autoProgrammeKey(prev, next);
-  return key ? { ...next, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } } : next;
 }
 
 /** Parses an uploaded CSV into spray events. Expected columns (header row
@@ -4255,13 +6794,15 @@ function parseSprayCsv(rows) {
 }
 
 function SprayProgrammeTab({
-  field, reminders, onAddReminder, onLogNow,
-  onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent, onClearProgramme,
+  field, reminders, onAddReminder, onLogNow, showPepperRules,
+  onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent,
+  onSendEventToTask,
 }) {
   const { showToast, askConfirm } = useToastConfirm();
   const [filter, setFilter] = useState('all');
   const [openId, setOpenId] = useState(null);
-  const [modal, setModal] = useState(null); // 'event' | 'pattern' | null
+  const [modal, setModal] = useState(null); // 'event' | 'pattern' | 'cucumber-load' | null
+  const [cucumberSowingDate, setCucumberSowingDate] = useState(todayISO());
   const fileRef = useRef(null);
 
   if (!field) {
@@ -4269,7 +6810,6 @@ function SprayProgrammeTab({
   }
 
   const anchor = field.transplantDate || null;
-  const tpl = PROGRAMME_TEMPLATES[field.programmeKey] || null;
   const rawEvents = (field.sprayProgramme && field.sprayProgramme.events) || [];
   const resolved = materializeSprayEvents(rawEvents, anchor).map((ev) => ({
     ...ev,
@@ -4308,21 +6848,13 @@ function SprayProgrammeTab({
     if (!file) return;
     Papa.parse(file, {
       header: true, skipEmptyLines: true,
-      complete: async (results) => {
+      complete: (results) => {
         const { events, errors } = parseSprayCsv(results.data);
-        if (!events.length) {
-          if (errors.length) showToast(`Nothing imported — ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, 'rust');
-          return;
-        }
-        let replace = false;
-        if (resolved.length > 0) {
-          replace = await askConfirm(`${field.name} already has ${resolved.length} event(s). Replace them with this CSV's ${events.length} event(s)? Cancel adds these to what's already there instead.`);
-        }
-        onUploadCsv(events, replace);
+        if (events.length) onUploadCsv(events);
         if (errors.length) {
-          showToast(`Imported ${events.length} event(s)${replace ? ' (replaced existing)' : ''}, skipped ${errors.length}: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, 'gold');
+          showToast(`Imported ${events.length} event(s), skipped ${errors.length}: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, events.length ? 'gold' : 'rust');
         } else {
-          showToast(`Imported ${events.length} event(s) from CSV${replace ? ' (replaced existing)' : ''}.`, 'green');
+          showToast(`Imported ${events.length} event(s) from CSV.`, 'green');
         }
       },
       error: () => showToast('Could not read that CSV file.', 'rust'),
@@ -4352,12 +6884,7 @@ function SprayProgrammeTab({
             {isOpen && (
               <>
                 <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
-                  {ev.rate || ev.notes ? (
-                    <>
-                      {ev.rate && <div>{ev.rate}</div>}
-                      {ev.notes && <div style={{ marginTop: ev.rate ? 6 : 0, opacity: 0.85 }}>{ev.notes}</div>}
-                    </>
-                  ) : 'No rate/notes recorded for this event.'}
+                  {ev.rate || ev.notes || 'No rate/notes recorded for this event.'}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button
@@ -4373,6 +6900,26 @@ function SprayProgrammeTab({
                   >
                     ⤓ Log this spray now
                   </button>
+                  {onSendEventToTask && ev.resolvedDate && (
+                    <button
+                      className="btn"
+                      style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66', fontWeight: 700 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSendEventToTask({
+                          date: ev.resolvedDate,
+                          fieldId: field.id,
+                          fieldName: field.name,
+                          title: ev.title,
+                          cat: ev.cat,
+                          rate: ev.rate || null,
+                          week: ev.week,
+                        });
+                      }}
+                    >
+                      → Task List
+                    </button>
+                  )}
                   <button
                     className="link-btn rust"
                     onClick={async (e) => { e.stopPropagation(); if (await askConfirm('Remove this event from the programme?')) onDeleteEvent(ev.id); }}
@@ -4396,7 +6943,7 @@ function SprayProgrammeTab({
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
         {anchor
-          ? <>Day 0 = {fmtDate(anchor)} (this field's planting date) — day-offset events below are computed from it.</>
+          ? <>Anchored to {fmtDate(anchor)} — day-offset events below are computed from this date.</>
           : <>No start/transplant date set for {field.name} yet — day-offset events will show once you set one; events with their own fixed date still work regardless.</>}
         {' '}This is a plan, not a log — record what you actually spray in <strong>Spray &amp; Fertigation</strong> as you go.
       </p>
@@ -4405,39 +6952,20 @@ function SprayProgrammeTab({
         <button className="btn" onClick={() => setModal('event')}>+ Add event</button>
         <button className="btn" onClick={() => setModal('pattern')}>+ Repeating pattern</button>
         <button className="btn" onClick={() => fileRef.current && fileRef.current.click()}>⤒ Upload CSV</button>
-        {Object.entries(PROGRAMME_TEMPLATES).map(([key, t]) => (
-          <button
-            key={key}
-            className={`btn ${field.programmeKey === key ? 'btn-gold' : ''}`}
-            onClick={async () => {
-              if (resolved.length > 0 && !(await askConfirm(`Replace ${field.name}'s ${resolved.length} current event(s) with the ${t.label} programme?`, { danger: false, confirmLabel: 'Replace' }))) return;
-              onLoadTemplate(key);
-              showToast(`Loaded the ${t.label} programme (${t.build().length} events).`, 'green');
-            }}
-          >
-            Load {t.label} template
-          </button>
-        ))}
-        {resolved.length > 0 && (
-          <button
-            className="link-btn rust"
-            onClick={async () => {
-              if (await askConfirm(`Clear all ${resolved.length} events from ${field.name}'s programme? This can't be undone — do this before uploading a CSV or loading a template if you want to replace rather than add to what's here.`)) {
-                onClearProgramme();
-                showToast('Programme cleared.', 'default');
-              }
-            }}
-          >
-            Clear programme
-          </button>
-        )}
+        <button className="btn btn-gold" onClick={() => { onLoadTemplate(); showToast('Loaded the standard Bell Pepper 14-week programme.', 'green'); }}>
+          Load Bell Pepper template
+        </button>
+        <button className="btn" style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66', fontWeight: 700 }}
+          onClick={() => setModal('cucumber-load')}>
+          🥒 Load Cucumber template
+        </button>
         <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCsvFile} />
       </div>
 
       {resolved.length === 0 ? (
         <p className="empty" style={{ padding: '18px 0' }}>
           No spray programme yet for {field.name} — add events by hand, generate a repeating pattern,
-          upload a CSV, or load the Bell Pepper or Cucumber template as a starting point to edit from.
+          upload a CSV, or load the Bell Pepper or Cucumber standard template as a starting point to edit from.
         </p>
       ) : (
         <>
@@ -4454,7 +6982,7 @@ function SprayProgrammeTab({
             return (
               <div key={wk} style={{ marginBottom: 16 }}>
                 <div className="panel-head" style={{ marginBottom: 8 }}>
-                  <h3 style={{ fontSize: 14 }}>Week {wk}{tpl ? ` · ${tpl.stageForWeek(wk)}` : ''}</h3>
+                  <h3 style={{ fontSize: 14 }}>Week {wk}{showPepperRules ? ` · ${pepperStageForWeek(wk)}` : ''}</h3>
                   <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -4481,12 +7009,59 @@ function SprayProgrammeTab({
             ))}
           </div>
 
-          {tpl && (
+          {showPepperRules && (
             <div className="stale-banner" style={{ marginTop: 18 }}>
-              ⚠ <span>{tpl.rules}</span>
+              ⚠ <span>
+                Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
+                CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
+                Alt Sulfur application.
+              </span>
             </div>
           )}
         </>
+      )}
+
+      {modal === 'cucumber-load' && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 900, display: 'flex', alignItems: 'flex-end' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
+          <div style={{ background: '#1e1e1e', borderRadius: '18px 18px 0 0', padding: '28px 20px 36px', width: '100%', maxWidth: 480, margin: '0 auto', boxSizing: 'border-box' }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 18, color: '#7A9A66' }}>🥒 Load Cucumber Template</h3>
+            <p style={{ margin: '0 0 18px', fontSize: 13, color: '#aaa', lineHeight: 1.5 }}>
+              Loads a <strong style={{ color: '#fff' }}>40-event, 10-week open-field cucumber programme</strong> covering fungicides, pesticides, fertilizers, vine training, pollinator windows, and harvest checks.
+              Enter your sowing date and all task dates shift automatically.
+            </p>
+
+            {field.sprayProgramme?.events?.length > 0 && (
+              <div style={{ background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.35)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#D4A537' }}>
+                ⚠️ <strong>{field.sprayProgramme.events.length} existing event{field.sprayProgramme.events.length !== 1 ? 's' : ''}</strong> on {field.name} will be kept — cucumber tasks are added on top. Remove them manually if you want a clean slate.
+              </div>
+            )}
+
+            <label style={{ display: 'block', fontSize: 13, color: '#ccc', marginBottom: 6 }}>Sowing date</label>
+            <input
+              type="date"
+              value={cucumberSowingDate}
+              onChange={(e) => setCucumberSowingDate(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 8, border: '1px solid rgba(122,154,102,0.5)', background: '#111', color: '#fff', fontSize: 15, marginBottom: 20 }}
+            />
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                className="btn btn-gold"
+                style={{ flex: 1, padding: '12px 0', fontSize: 15, fontWeight: 700 }}
+                onClick={() => {
+                  const events = loadCucumberTemplate(cucumberSowingDate);
+                  onAddPattern(events);
+                  setModal(null);
+                  showToast(`Loaded 40 cucumber programme tasks from ${fmtDate(cucumberSowingDate)}.`, 'green');
+                }}
+              >
+                Load 40 tasks
+              </button>
+              <button className="btn" style={{ padding: '12px 18px' }} onClick={() => setModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modal === 'event' && (
@@ -4597,47 +7172,25 @@ function SprayPatternForm({ onClose, onSave }) {
 }
 
 
-/** Picks which built-in programme a field follows. The programme loads on its
-    own the first time a planting date is set on a field with an empty one. */
-function ProgrammeSelect({ value, onChange }) {
-  return (
-    <>
-      <select value={value || ''} onChange={(e) => onChange(e.target.value)}>
-        <option value="">None — I'll build my own</option>
-        {Object.entries(PROGRAMME_TEMPLATES).map(([key, t]) => <option key={key} value={key}>{t.label}</option>)}
-      </select>
-      <span className="stat-foot" style={{ display: 'block', margin: '4px 0 0' }}>
-        Loads automatically when you set a planting date and the field has no programme yet. Day 0 is that date.
-      </span>
-    </>
-  );
-}
-
-function FieldForm({ field, onClose, onSave }) {
-  const isNew = !field;
-  const soilDefaults = fieldSoilDefaults();
+function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedReason }) {
   const [section, setSection] = useState('crop'); // 'crop' | 'soil'
   const [f, setF] = useState({
-    name: field?.name || '',
-    programmeKey: field ? (field.programmeKey || '') : 'bell_pepper',
-    variety: field?.variety || '', transplantDate: field?.transplantDate || '',
-    plantCount: field?.plantCount ?? '', spacing: field?.spacing || '',
-    expectedHarvestDAT: field?.expectedHarvestDAT ?? 70, setupCost: field?.setupCost ?? '', notes: field?.notes || '',
-    manureAppliedDate: field?.manureAppliedDate || '',
-    targetECMin: field?.targetECMin ?? soilDefaults.targetECMin, targetECMax: field?.targetECMax ?? soilDefaults.targetECMax,
-    targetPHMin: field?.targetPHMin ?? soilDefaults.targetPHMin, targetPHMax: field?.targetPHMax ?? soilDefaults.targetPHMax,
-    targetNMin: field?.targetNMin ?? soilDefaults.targetNMin, targetNMax: field?.targetNMax ?? soilDefaults.targetNMax,
-    targetPMin: field?.targetPMin ?? soilDefaults.targetPMin, targetPMax: field?.targetPMax ?? soilDefaults.targetPMax,
-    targetKMin: field?.targetKMin ?? soilDefaults.targetKMin, targetKMax: field?.targetKMax ?? soilDefaults.targetKMax,
+    name: field.name || '',
+    variety: field.variety || '', transplantDate: field.transplantDate || '',
+    plantCount: field.plantCount ?? '', spacing: field.spacing || '',
+    expectedHarvestDAT: field.expectedHarvestDAT ?? 70, setupCost: field.setupCost ?? '', notes: field.notes || '',
+    manureAppliedDate: field.manureAppliedDate || '',
+    targetECMin: field.targetECMin ?? '', targetECMax: field.targetECMax ?? '',
+    targetPHMin: field.targetPHMin ?? '', targetPHMax: field.targetPHMax ?? '',
+    targetNMin: field.targetNMin ?? '', targetNMax: field.targetNMax ?? '',
+    targetPMin: field.targetPMin ?? '', targetPMax: field.targetPMax ?? '',
+    targetKMin: field.targetKMin ?? '', targetKMax: field.targetKMax ?? '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const num2 = (v) => (v === '' ? null : Number(v));
   function submit() {
-    if (!f.name.trim()) return;
     onSave({
-      id: field?.id || newId(),
-      name: f.name.trim(),
-      programmeKey: f.programmeKey || '',
+      name: (f.name || '').trim() || field.name,
       variety: f.variety || '', transplantDate: f.transplantDate || '',
       plantCount: f.plantCount === '' ? null : Number(f.plantCount),
       spacing: f.spacing || '',
@@ -4650,16 +7203,10 @@ function FieldForm({ field, onClose, onSave }) {
       targetNMin: num2(f.targetNMin), targetNMax: num2(f.targetNMax),
       targetPMin: num2(f.targetPMin), targetPMax: num2(f.targetPMax),
       targetKMin: num2(f.targetKMin), targetKMax: num2(f.targetKMax),
-      currentBatchLabel: field?.currentBatchLabel || 'Batch 1',
-      sprayProgramme: field?.sprayProgramme || { events: [] },
     });
   }
   return (
-    <Modal
-      title={isNew ? 'Add a field' : `Edit ${field.name}`}
-      sub="Crop cycle details and soil targets for this field."
-      onClose={onClose}
-    >
+    <Modal title={`Edit ${field.name}`} sub="Crop cycle details and soil targets for this field." onClose={onClose}>
       <div className="kind-toggle">
         <button className={section === 'crop' ? 'active' : ''} onClick={() => setSection('crop')}>Crop cycle</button>
         <button className={section === 'soil' ? 'active' : ''} onClick={() => setSection('soil')}>Soil targets</button>
@@ -4667,24 +7214,9 @@ function FieldForm({ field, onClose, onSave }) {
 
       {section === 'crop' ? (
         <div className="form-grid">
-          <Field label="Field name" span2>
-            <input value={f.name} onChange={set('name')} placeholder="e.g. Field A, Plot 1, Tomato patch" />
-          </Field>
-          <Field label="Crop programme" span2>
-            <ProgrammeSelect
-              value={f.programmeKey}
-              onChange={(key) => {
-                // Move the harvest-timing default along with the crop, but only
-                // if the farmer hasn't typed their own number.
-                const prevDefault = (PROGRAMME_TEMPLATES[f.programmeKey] || {}).defaultHarvestDAT;
-                const untouched = f.expectedHarvestDAT === '' || Number(f.expectedHarvestDAT) === (prevDefault ?? 70);
-                const nextDefault = (PROGRAMME_TEMPLATES[key] || {}).defaultHarvestDAT;
-                setF({ ...f, programmeKey: key, expectedHarvestDAT: untouched && nextDefault ? nextDefault : f.expectedHarvestDAT });
-              }}
-            />
-          </Field>
+          <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Field C, North plot" /></Field>
           <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
-          <Field label="Transplant / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+          <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
           <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
           <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
           <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
@@ -4713,9 +7245,40 @@ function FieldForm({ field, onClose, onSave }) {
         </>
       )}
 
+      {onDelete && (
+        <p className="stat-foot" style={{ marginTop: 12 }}>
+          {canDelete
+            ? <button className="btn" onClick={() => { if (window.confirm(`Delete ${field.name}? This cannot be undone.`)) onDelete(); }}>Delete this field</button>
+            : deleteBlockedReason}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" onClick={submit} disabled={!f.name.trim()}>{isNew ? 'Add field' : 'Save field'}</button>
+        <button className="btn btn-green" onClick={submit}>Save field</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** True when any record still points at this field, so deleting it would orphan data. */
+function fieldHasRecords(pepper, fieldId) {
+  const hit = (arr) => (arr || []).some((r) => r.fieldId === fieldId || r.transplantedToFieldId === fieldId);
+  return hit(pepper.scouting) || hit(pepper.sprays) || hit(pepper.harvests) || hit(pepper.soilReadings)
+    || hit(pepper.batches) || hit(pepper.nurseryBatches);
+}
+
+function AddFieldForm({ defaultName, existingNames, onClose, onSave }) {
+  const [name, setName] = useState(defaultName);
+  const clash = existingNames.some((n) => n.trim().toLowerCase() === name.trim().toLowerCase());
+  return (
+    <Modal title="Add field" sub="A new field gets its own crop cycle, spray programme, soil targets and records." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Field name" span2><input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+      </div>
+      {clash && <p className="stat-foot">Another field already uses that name.</p>}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" disabled={!name.trim() || clash} onClick={() => onSave(name)}>Add field</button>
       </div>
     </Modal>
   );
@@ -4800,6 +7363,575 @@ function ScoutForm({ fields, defaultField, onClose, onSave }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SPRAY LIBRARY MODULE
+// Injected before SprayTab function in App.jsx
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Built-in West African / Ghanaian product library (read-only) ────────────
+const BUILTIN_SPRAY_LIBRARY = [
+  // ── Gilbert's 13 products ──────────────────────────────────────────────
+  { id: 'sl_emacare', name: 'Emacare Plus', activeIngredient: 'Emamectin Benzoate 1.9% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['thrips','leafminers','armyworms','caterpillars','bollworms'], phi: 3, reentry: 12, whoClass: 'IV', resistanceRisk: 'Medium', rateML: 10, notes: 'Excellent for thrips under net house. Rotate with IRAC 5 or 4A.' },
+  { id: 'sl_klopar', name: 'Klopar 24 SC', activeIngredient: 'Chlorpyrifos 24% SC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['aphids','whitefly','thrips','caterpillars','stem borers','soil pests'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Broad spectrum. Resistance documented in whitefly — rotate frequently.' },
+  { id: 'sl_abamet', name: 'Abamet', activeIngredient: 'Abamectin 1.8% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['spider mites','broad mites','thrips','leafminers','whitefly'], phi: 3, reentry: 12, whoClass: 'III', resistanceRisk: 'Medium', rateML: 10, notes: 'Rotate with IRAC 13 or 25 for mites.' },
+  { id: 'sl_ataka', name: 'Ataka Super', activeIngredient: 'Cypermethrin + Chlorpyrifos', irac: '3A+1B', iracClass: 'Pyrethroid + Organophosphate', moa: 'Na⁺ channel disruptor + AChE inhibitor', mobility: 'Contact + Knockdown', pests: ['aphids','whitefly','caterpillars','thrips','beetles','armyworms'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Fast knockdown. Use max once per season.' },
+  { id: 'sl_spenoda', name: 'Spenoda', activeIngredient: 'Spinetoram (Spinosyn)', irac: '5', iracClass: 'Spinosyn', moa: 'nAChR allosteric activator', mobility: 'Contact + Ingestion', pests: ['thrips','leafminers','armyworms','caterpillars','fruit borers'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'IPM-friendly. Low impact on beneficials.' },
+  { id: 'sl_viper', name: 'Viper 46 EC', activeIngredient: 'Chlorpyrifos + Cypermethrin 46% EC', irac: '1B+3A', iracClass: 'Organophosphate + Pyrethroid', moa: 'AChE inhibitor + Na⁺ channel disruptor', mobility: 'Contact + Stomach', pests: ['aphids','caterpillars','whitefly','beetles','stem borers'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Reserve for heavy pressure. Max 1x/season.' },
+  { id: 'sl_away', name: 'Away', activeIngredient: 'Acetamiprid (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','mealybugs'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Medium-High', rateML: 10, notes: 'Systemic — good for pests in growing tips.' },
+  { id: 'sl_agrotimal', name: 'Agrotimal', activeIngredient: 'Thiamethoxam (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','soil pests'], phi: 3, reentry: 8, whoClass: 'III', resistanceRisk: 'High', rateML: 10, notes: 'Cross-resistance with imidacloprid. Consider drench application.' },
+  { id: 'sl_cydim', name: 'Cydim Super', activeIngredient: 'Cymoxanil + Dimethomorph', irac: 'FRAC 27+40', iracClass: 'Fungicide (Oomycide)', moa: 'Oomycete cell wall synthesis inhibitor', mobility: 'Systemic (fungicide)', pests: ['downy mildew','late blight','pythium'], phi: 3, reentry: 4, whoClass: 'III', resistanceRisk: 'N/A', rateML: 15, notes: '⚠️ FUNGICIDE — not an insecticide. Use in fungicide rotation only.' },
+  { id: 'sl_sunpyrifos', name: 'Sunpyrifos', activeIngredient: 'Chlorpyrifos (generic)', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['aphids','caterpillars','whitefly','soil pests','beetles'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Same class as Klopar — do not use in same rotation slot.' },
+  { id: 'sl_imida', name: 'Imida Super', activeIngredient: 'Imidacloprid (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','soil insects'], phi: 21, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Longest PHI (21d) among your neonics — plan harvest timing carefully.' },
+  { id: 'sl_emastar', name: 'Ema Star 112 EC', activeIngredient: 'Emamectin Benzoate 1.12% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['thrips','leafminers','armyworms','caterpillars','bollworms'], phi: 3, reentry: 12, whoClass: 'IV', resistanceRisk: 'Medium', rateML: 10, notes: 'Same IRAC 6 as Emacare Plus — do not use consecutively.' },
+  { id: 'sl_priazox', name: 'Priazox Plus', activeIngredient: 'Fenpyroximate 6.24% + Hexythiazox 3.12% SC', irac: '21A+10A', iracClass: 'METI acaricide + Mite growth inhibitor', moa: 'Mitochondrial Complex I inhibitor + Chitin synthesis inhibitor', mobility: 'Contact + Translaminar', pests: ['spider mites','broad mites','rust mites'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'Hits all mite life stages (adult + egg + larva). Excellent when mite pressure peaks.' },
+
+  // ── Broader West African / common products ─────────────────────────────
+  { id: 'sl_lambda', name: 'Lambda-cyhalothrin', activeIngredient: 'Lambda-cyhalothrin 25g/L EC', irac: '3A', iracClass: 'Pyrethroid', moa: 'Na⁺ channel modulator', mobility: 'Contact + Knockdown', pests: ['aphids','whitefly','caterpillars','beetles','stink bugs'], phi: 7, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Common pyrethroid. Fast knockdown. High resistance in many pests — rotate.' },
+  { id: 'sl_cypermethrin', name: 'Cypermethrin 10 EC', activeIngredient: 'Cypermethrin 10% EC', irac: '3A', iracClass: 'Pyrethroid', moa: 'Na⁺ channel modulator', mobility: 'Contact', pests: ['aphids','caterpillars','beetles','whitefly'], phi: 7, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 15, notes: 'Broad pyrethroid. Can worsen spider mite outbreaks — avoid during mite pressure.' },
+  { id: 'sl_dimethoate', name: 'Dimethoate 40 EC', activeIngredient: 'Dimethoate 400g/L EC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Systemic + Contact', pests: ['aphids','whitefly','thrips','mites','leafhoppers'], phi: 7, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Systemic OP. Phytotoxic on some crops at high temps — use with caution.' },
+  { id: 'sl_profenofos', name: 'Profenofos 50 EC', activeIngredient: 'Profenofos 500g/L EC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['thrips','armyworms','caterpillars','aphids','mites'], phi: 7, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Commonly used in Ghana for Spodoptera (armyworms). Rotate with non-OP.' },
+  { id: 'sl_indoxacarb', name: 'Indoxacarb 15 SC', activeIngredient: 'Indoxacarb 150g/L SC', irac: '22A', iracClass: 'Oxadiazine', moa: 'Na⁺ channel blocker (voltage-dependent)', mobility: 'Contact + Ingestion', pests: ['caterpillars','armyworms','fruit borers','diamondback moth'], phi: 3, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'Excellent for Lepidoptera (moths/butterflies). No cross-resistance with pyrethroids or OPs.' },
+  { id: 'sl_chlorfenapyr', name: 'Chlorfenapyr 36 SC', activeIngredient: 'Chlorfenapyr 360g/L SC', irac: '13', iracClass: 'Pyrrole (uncoupler)', moa: 'Mitochondrial oxidative phosphorylation uncoupler', mobility: 'Translaminar', pests: ['spider mites','thrips','whitefly','armyworms','caterpillars','aphids'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low', rateML: 15, notes: 'Broad spectrum — works on both insects AND mites. Unique MoA, no cross-resistance with OPs/pyrethroids/neonics.' },
+  { id: 'sl_spiromesifen', name: 'Spiromesifen (Oberon)', activeIngredient: 'Spiromesifen 240 SC', irac: '23', iracClass: 'Tetronic acid derivative', moa: 'Acetyl-CoA carboxylase inhibitor (lipid biosynthesis)', mobility: 'Translaminar', pests: ['spider mites','whitefly','broad mites'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low', rateML: 10, notes: 'Very safe profile. Excellent for mite and whitefly resistance management.' },
+  { id: 'sl_thiocyclam', name: 'Cartap / Thiocyclam', activeIngredient: 'Thiocyclam hydrogen oxalate', irac: '14', iracClass: 'Nereistoxin analogue', moa: 'nAChR channel blocker', mobility: 'Systemic + Contact', pests: ['caterpillars','stem borers','rice bugs','thrips'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 20, notes: 'Useful for stem borers. Different MoA from neonicotinoids despite targeting nAChR.' },
+  { id: 'sl_bifenazate', name: 'Bifenazate (Floramite)', activeIngredient: 'Bifenazate 24% SC', irac: '25', iracClass: 'Carbazate', moa: 'Mitochondrial electron transport inhibitor (Complex III)', mobility: 'Contact', pests: ['spider mites','broad mites'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low', rateML: 10, notes: 'Mite-specific. Excellent rotation partner with IRAC 6 (Abamectin/Avermectins).' },
+  { id: 'sl_mancozeb', name: 'Mancozeb 80 WP', activeIngredient: 'Mancozeb 800g/kg WP', irac: 'FRAC M3', iracClass: 'Fungicide (multi-site)', moa: 'Multi-site contact fungicide', mobility: 'Contact (fungicide)', pests: ['early blight','late blight','cercospora','downy mildew','anthracnose'], phi: 7, reentry: 24, whoClass: 'III', resistanceRisk: 'Very Low', rateML: 25, notes: 'FUNGICIDE. Broad spectrum protectant. Weekly preventive spray. No resistance risk (multi-site).' },
+  { id: 'sl_metalaxyl', name: 'Metalaxyl + Mancozeb', activeIngredient: 'Metalaxyl 8% + Mancozeb 64% WP', irac: 'FRAC 4+M3', iracClass: 'Fungicide (systemic + multi-site)', moa: 'RNA polymerase inhibitor + multi-site contact', mobility: 'Systemic (fungicide)', pests: ['late blight','downy mildew','pythium','phytophthora'], phi: 7, reentry: 4, whoClass: 'III', resistanceRisk: 'Medium', rateML: 25, notes: 'FUNGICIDE. Systemic + protectant. Metalaxyl resistance documented — rotate with FRAC 40 (Cydim).' },
+];
+
+// ── Pest master list (for pest-to-product lookup) ──────────────────────────
+const SPRAY_PEST_LIST = [
+  'aphids','whitefly','thrips','spider mites','broad mites','rust mites',
+  'armyworms','caterpillars','leafminers','fruit borers','stem borers',
+  'beetles','leafhoppers','mealybugs','soil pests','stink bugs',
+  'downy mildew','late blight','early blight','cercospora','anthracnose','pythium',
+];
+
+// ── IRAC rotation score for a field ────────────────────────────────────────
+function calcRotationScore(fieldSprays, allProducts) {
+  const insect = fieldSprays.filter((s) => {
+    const p = allProducts.find((x) => x.name === s.product);
+    return p && p.irac && !p.irac.startsWith('FRAC');
+  }).slice(-6); // last 6 insecticide sprays
+  if (insect.length < 2) return { score: 'green', label: 'Good', detail: 'Not enough data yet' };
+  const groups = insect.map((s) => {
+    const p = allProducts.find((x) => x.name === s.product);
+    return p ? p.irac : null;
+  }).filter(Boolean);
+  // Check consecutive repeats in last 3
+  const last3 = groups.slice(-3);
+  const uniqueLast3 = new Set(last3).size;
+  const consecutivePairs = last3.filter((g, i) => i > 0 && g === last3[i - 1]).length;
+  if (consecutivePairs >= 1) return { score: 'red', label: 'Poor — IRAC repeated consecutively', detail: `Same group used back-to-back in last 3 sprays` };
+  if (uniqueLast3 < 2) return { score: 'amber', label: 'Moderate', detail: 'Limited rotation in last 3 sprays' };
+  return { score: 'green', label: 'Good', detail: `${new Set(groups).size} different IRAC groups in last ${groups.length} sprays` };
+}
+
+// ── SprayLibraryTab component ───────────────────────────────────────────────
+function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, onDeleteCustomProduct, onAddSpray }) {
+  const [view, setView] = React.useState('log'); // 'log' | 'library' | 'lookup' | 'stock'
+  const [showAddProductForm, setShowAddProductForm] = React.useState(false);
+  const [showLogForm, setShowLogForm] = React.useState(false);
+  const [lookupPest, setLookupPest] = React.useState('');
+  const [librarySearch, setLibrarySearch] = React.useState('');
+  const [selectedProduct, setSelectedProduct] = React.useState(null);
+
+  const allProducts = React.useMemo(() => [
+    ...BUILTIN_SPRAY_LIBRARY,
+    ...(customProducts || []).map((p) => ({ ...p, _custom: true })),
+  ], [customProducts]);
+
+  const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
+
+  // ── Rotation scores per field ──────────────────────────────────────────
+  const rotationScores = React.useMemo(() => {
+    return fields.map((f) => {
+      const fs = sprays.filter((s) => s.fieldId === f.id).sort((a, b) => a.date.localeCompare(b.date));
+      return { field: f, ...calcRotationScore(fs, allProducts) };
+    });
+  }, [fields, sprays, allProducts]);
+
+  // ── Rotation warning for a pending spray ──────────────────────────────
+  function getRotationWarning(fieldId, iracGroup) {
+    if (!iracGroup || iracGroup.startsWith('FRAC')) return null;
+    const fs = sprays
+      .filter((s) => s.fieldId === fieldId && s.iracGroup && !s.iracGroup.startsWith('FRAC'))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const last3 = fs.slice(-3).map((s) => s.iracGroup);
+    if (last3.includes(iracGroup)) {
+      const positions = last3.map((g, i) => g === iracGroup ? last3.length - i : null).filter(Boolean);
+      return `⚠️ IRAC ${iracGroup} was used ${positions[0] === 1 ? 'last spray' : positions[0] + ' spray(s) ago'} on this field. Rotating reduces resistance risk.`;
+    }
+    return null;
+  }
+
+  // ── Pest lookup ────────────────────────────────────────────────────────
+  const pestMatches = React.useMemo(() => {
+    if (!lookupPest) return [];
+    const q = lookupPest.toLowerCase();
+    const matches = allProducts.filter((p) =>
+      p.pests && p.pests.some((pest) => pest.toLowerCase().includes(q))
+    );
+    // Rotation-aware ranking: products not used in last 3 sprays of ANY field first
+    const recentIracs = new Set(
+      sprays.slice(-9).map((s) => s.iracGroup).filter(Boolean)
+    );
+    return [...matches].sort((a, b) => {
+      const aRecent = recentIracs.has(a.irac) ? 1 : 0;
+      const bRecent = recentIracs.has(b.irac) ? 1 : 0;
+      return aRecent - bRecent;
+    });
+  }, [lookupPest, allProducts, sprays]);
+
+  const filteredLibrary = React.useMemo(() => {
+    if (!librarySearch) return allProducts;
+    const q = librarySearch.toLowerCase();
+    return allProducts.filter((p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.activeIngredient.toLowerCase().includes(q) ||
+      p.irac.toLowerCase().includes(q) ||
+      (p.pests || []).some((pest) => pest.toLowerCase().includes(q))
+    );
+  }, [librarySearch, allProducts]);
+
+  const scoreColor = { green: '#4caf50', amber: '#D4A537', red: '#ef5350' };
+  const whoColor = { 'I': '#ef5350', 'II': '#ff9800', 'III': '#D4A537', 'IV': '#4caf50' };
+
+  return (
+    <div>
+      {/* Sub-tab bar */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[['log','📋 Spray Log'],['library','📚 Product Library'],['lookup','🔍 Pest Lookup'],['stock','📊 Rotation Scores']].map(([id, label]) => (
+          <button key={id}
+            className={`tab${view === id ? ' active' : ''}`}
+            style={{ fontSize: 13, padding: '5px 12px' }}
+            onClick={() => setView(id)}
+          >{label}</button>
+        ))}
+      </div>
+
+      {/* ── SPRAY LOG view ─────────────────────────────────────────────── */}
+      {view === 'log' && (
+        <div>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 16 }}>Spray Log</h3>
+            <button className="btn btn-green" style={{ fontSize: 13 }} onClick={() => setShowLogForm(true)}>+ Log spray</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data" style={{ fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>Date</th><th>Field</th><th>Product</th><th>IRAC</th>
+                  <th>Target pest</th><th>Dose (ml/L)</th><th>PHI (d)</th>
+                  <th>Cost (GH₵)</th><th>Rain?</th><th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...sprays].reverse().map((r) => {
+                  const p = allProducts.find((x) => x.name === r.product);
+                  const irac = r.iracGroup || p?.irac || '—';
+                  return (
+                    <tr key={r.id}>
+                      <td className="mono">{fmtDate(r.date)}</td>
+                      <td>{fieldName(r.fieldId)}</td>
+                      <td style={{ fontWeight: 600 }}>{r.product || '—'}</td>
+                      <td><span style={{ background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '1px 6px', fontSize: 11 }}>{irac}</span></td>
+                      <td style={{ fontSize: 11 }}>{r.targetPest || '—'}</td>
+                      <td className="mono">{r.doseMlPerL != null ? `${r.doseMlPerL} ml/L` : (r.rate || '—')}</td>
+                      <td className="mono">{r.phiDays != null ? r.phiDays : '—'}</td>
+                      <td className="mono">{r.cost != null ? `GH₵${num(r.cost,2)}` : '—'}</td>
+                      <td style={{ textAlign: 'center' }}>{r.rainedWithin4h ? '🌧️' : ''}</td>
+                      <td className="notes" style={{ fontSize: 11 }}>{r.notes || ''}</td>
+                    </tr>
+                  );
+                })}
+                {sprays.length === 0 && <tr><td colSpan={10} className="empty">No sprays logged yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="stat-foot" style={{ marginTop: 10, fontSize: 11 }}>
+            Total sprays: <strong>{sprays.length}</strong> ·
+            Total cost: <strong>GH₵ {num(sprays.reduce((s, r) => s + (Number(r.cost) || 0), 0), 2)}</strong>
+          </p>
+        </div>
+      )}
+
+      {/* ── PRODUCT LIBRARY view ───────────────────────────────────────── */}
+      {view === 'library' && (
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              value={librarySearch}
+              onChange={(e) => setLibrarySearch(e.target.value)}
+              placeholder="Search product, AI, IRAC, or pest…"
+              style={{ flex: 1, minWidth: 200, padding: '7px 12px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', fontSize: 13 }}
+            />
+            <button className="btn btn-green" style={{ fontSize: 13 }} onClick={() => setShowAddProductForm(true)}>+ Add custom product</button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filteredLibrary.map((p) => (
+              <div key={p.id}
+                style={{
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 9, padding: '12px 14px', cursor: 'pointer',
+                  borderLeft: `3px solid ${p._custom ? '#D4A537' : 'rgba(255,255,255,0.15)'}`,
+                }}
+                onClick={() => setSelectedProduct(selectedProduct?.id === p.id ? null : p)}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 6 }}>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{p.name}</span>
+                    {p._custom && <span style={{ marginLeft: 8, fontSize: 10, background: 'rgba(212,165,55,0.2)', color: '#D4A537', borderRadius: 4, padding: '1px 6px' }}>Custom</span>}
+                    <span style={{ display: 'block', fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>{p.activeIngredient}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '2px 8px' }}>IRAC {p.irac}</span>
+                    <span style={{ fontSize: 11, background: `rgba(${p.whoClass==='II'?'255,152,0':'76,175,80'},0.15)`, color: whoColor[p.whoClass] || '#aaa', borderRadius: 4, padding: '2px 8px' }}>WHO {p.whoClass}</span>
+                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 8px' }}>PHI {p.phi}d</span>
+                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 8px' }}>{p.mobility}</span>
+                  </div>
+                </div>
+                {selectedProduct?.id === p.id && (
+                  <div style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div><strong>Mode of action:</strong> {p.moa}</div>
+                    <div><strong>Class:</strong> {p.iracClass}</div>
+                    <div><strong>Target pests:</strong> {(p.pests || []).join(', ')}</div>
+                    <div><strong>Re-entry interval:</strong> {p.reentry} hrs</div>
+                    <div><strong>Resistance risk:</strong> <span style={{ color: p.resistanceRisk === 'High' ? '#ef5350' : p.resistanceRisk === 'Low' ? '#4caf50' : '#D4A537' }}>{p.resistanceRisk}</span></div>
+                    <div><strong>Default dose:</strong> {p.rateML} ml/L</div>
+                    {p.notes && <div style={{ color: '#aaa', fontStyle: 'italic' }}>{p.notes}</div>}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                      <button className="btn btn-green" style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); setShowLogForm({ prefillProduct: p }); }}>Log spray with this product</button>
+                      {p._custom && <button className="btn" style={{ fontSize: 12, background: 'rgba(239,83,80,0.15)', color: '#ef5350', border: '1px solid rgba(239,83,80,0.3)' }} onClick={(e) => { e.stopPropagation(); onDeleteCustomProduct(p.id); setSelectedProduct(null); }}>Delete custom</button>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {filteredLibrary.length === 0 && <p className="empty">No products match "{librarySearch}".</p>}
+          </div>
+        </div>
+      )}
+
+      {/* ── PEST LOOKUP view ───────────────────────────────────────────── */}
+      {view === 'lookup' && (
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 10 }}>🔍 Pest-to-Product Lookup</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 12 }}>
+            Products are sorted by rotation priority — products from IRAC groups not recently used appear first.
+          </p>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              {SPRAY_PEST_LIST.map((pest) => (
+                <button key={pest}
+                  onClick={() => setLookupPest(pest)}
+                  style={{
+                    fontSize: 11, padding: '4px 10px', borderRadius: 20,
+                    background: lookupPest === pest ? '#D4A537' : 'rgba(255,255,255,0.07)',
+                    color: lookupPest === pest ? '#000' : 'var(--text)',
+                    border: lookupPest === pest ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                    cursor: 'pointer',
+                  }}
+                >{pest}</button>
+              ))}
+            </div>
+            <input
+              value={lookupPest}
+              onChange={(e) => setLookupPest(e.target.value)}
+              placeholder="Or type a pest name…"
+              style={{ width: '100%', padding: '7px 12px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+            />
+          </div>
+          {lookupPest && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {pestMatches.length === 0 && <p className="empty">No products found for "{lookupPest}"</p>}
+              {pestMatches.map((p, i) => {
+                const recentIracs = new Set(sprays.slice(-9).map((s) => s.iracGroup).filter(Boolean));
+                const isRecent = recentIracs.has(p.irac);
+                return (
+                  <div key={p.id} style={{
+                    background: 'rgba(255,255,255,0.04)', border: `1px solid ${isRecent ? 'rgba(239,83,80,0.3)' : 'rgba(76,175,80,0.3)'}`,
+                    borderRadius: 9, padding: '10px 14px',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{p.name}</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {!isRecent && <span style={{ fontSize: 10, background: 'rgba(76,175,80,0.2)', color: '#4caf50', borderRadius: 4, padding: '2px 7px' }}>✓ Rotation-ready</span>}
+                        {isRecent && <span style={{ fontSize: 10, background: 'rgba(239,83,80,0.15)', color: '#ef5350', borderRadius: 4, padding: '2px 7px' }}>⚠ Used recently</span>}
+                        <span style={{ fontSize: 11, background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '2px 7px' }}>IRAC {p.irac}</span>
+                        <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 7px' }}>PHI {p.phi}d</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>{p.activeIngredient} · {p.mobility}</div>
+                    {p.notes && <div style={{ fontSize: 11, color: '#888', marginTop: 4, fontStyle: 'italic' }}>{p.notes}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!lookupPest && <p style={{ fontSize: 13, color: 'var(--text-faint)', textAlign: 'center', marginTop: 24 }}>Select a pest above or type to search.</p>}
+        </div>
+      )}
+
+      {/* ── ROTATION SCORES view ───────────────────────────────────────── */}
+      {view === 'stock' && (
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 6 }}>📊 IRAC Rotation Scores</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+            Based on last 6 insecticide sprays per field. Repeating the same IRAC group accelerates resistance.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {rotationScores.map(({ field, score, label, detail }) => (
+              <div key={field.id} style={{
+                background: 'rgba(255,255,255,0.04)', border: `1px solid ${scoreColor[score]}40`,
+                borderLeft: `4px solid ${scoreColor[score]}`, borderRadius: 9, padding: '12px 16px',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{field.name}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor[score], background: `${scoreColor[score]}20`, borderRadius: 5, padding: '3px 10px' }}>{score === 'green' ? '✓ ' : score === 'amber' ? '⚠ ' : '✗ '}{label}</span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{detail}</div>
+                {/* Last 3 sprays on this field */}
+                {(() => {
+                  const fs = sprays.filter((s) => s.fieldId === field.id).sort((a, b) => a.date.localeCompare(b.date)).slice(-3).reverse();
+                  if (!fs.length) return <p style={{ fontSize: 11, color: '#666', marginTop: 6 }}>No sprays yet on this field.</p>;
+                  return (
+                    <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {fs.map((s, i) => {
+                        const p = allProducts.find((x) => x.name === s.product);
+                        const irac = s.iracGroup || p?.irac || '?';
+                        return (
+                          <span key={s.id} style={{ fontSize: 11, background: 'rgba(255,255,255,0.07)', borderRadius: 5, padding: '3px 8px', color: '#ccc' }}>
+                            {i === 0 ? '🔵 ' : i === 1 ? '⚪ ' : '⚪ '}{s.product || 'Unknown'} <span style={{ color: '#D4A537' }}>IRAC {irac}</span> <span style={{ color: '#666' }}>({fmtDate(s.date)})</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            ))}
+          </div>
+
+          {/* Cost summary */}
+          <div style={{ marginTop: 20, background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 9, padding: '14px 16px' }}>
+            <h4 style={{ fontSize: 13, color: '#D4A537', marginBottom: 10 }}>💰 Spray Cost Summary</h4>
+            {fields.map((f) => {
+              const fs = sprays.filter((s) => s.fieldId === f.id);
+              const totalCost = fs.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+              const perSpray = fs.length ? totalCost / fs.length : 0;
+              return (
+                <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 6, marginBottom: 6 }}>
+                  <span style={{ color: 'var(--text)' }}>{f.name}</span>
+                  <span style={{ color: '#aaa' }}>{fs.length} sprays · <strong style={{ color: '#D4A537' }}>GH₵ {num(totalCost, 2)}</strong> total · <span style={{ color: '#888' }}>avg GH₵ {num(perSpray, 2)}/spray</span></span>
+                </div>
+              );
+            })}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, paddingTop: 4 }}>
+              <span style={{ fontWeight: 700, color: 'var(--text)' }}>All fields total</span>
+              <span style={{ fontWeight: 700, color: '#D4A537' }}>GH₵ {num(sprays.reduce((s, r) => s + (Number(r.cost) || 0), 0), 2)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Log spray form ─────────────────────────────────────────────── */}
+      {showLogForm && (
+        <SprayLibraryLogForm
+          fields={fields}
+          allProducts={allProducts}
+          sprays={sprays}
+          prefillProduct={typeof showLogForm === 'object' ? showLogForm.prefillProduct : null}
+          getRotationWarning={getRotationWarning}
+          onClose={() => setShowLogForm(false)}
+          onSave={(entry) => { onAddSpray(entry); setShowLogForm(false); }}
+        />
+      )}
+
+      {/* ── Add custom product form ────────────────────────────────────── */}
+      {showAddProductForm && (
+        <AddCustomProductForm
+          onClose={() => setShowAddProductForm(false)}
+          onSave={(p) => { onAddCustomProduct(p); setShowAddProductForm(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── SprayLibraryLogForm ─────────────────────────────────────────────────────
+function SprayLibraryLogForm({ fields, allProducts, sprays, prefillProduct, getRotationWarning, onClose, onSave }) {
+  const [f, setF] = React.useState({
+    date: todayISO(),
+    fieldId: fields[0]?.id || '',
+    product: prefillProduct?.name || '',
+    iracGroup: prefillProduct?.irac || '',
+    activeIngredient: prefillProduct?.activeIngredient || '',
+    targetPest: '',
+    doseMlPerL: prefillProduct?.rateML || '',
+    quantityUsed: '',
+    cost: '',
+    phiDays: prefillProduct?.phi || '',
+    rainedWithin4h: false,
+    notes: '',
+  });
+  const set = (k) => (e) => setF((prev) => ({ ...prev, [k]: e.target.value }));
+
+  // Auto-fill from product library when product changes
+  function handleProductSelect(name) {
+    const p = allProducts.find((x) => x.name === name);
+    // Pre-fill dose with last used dose for this product
+    const lastUsed = [...sprays].reverse().find((s) => s.product === name && s.doseMlPerL);
+    setF((prev) => ({
+      ...prev,
+      product: name,
+      iracGroup: p?.irac || prev.iracGroup,
+      activeIngredient: p?.activeIngredient || prev.activeIngredient,
+      phiDays: p?.phi || prev.phiDays,
+      doseMlPerL: lastUsed?.doseMlPerL || p?.rateML || prev.doseMlPerL,
+    }));
+  }
+
+  const rotationWarn = f.fieldId && f.iracGroup ? getRotationWarning(f.fieldId, f.iracGroup) : null;
+  const safeDate = f.phiDays && f.date ? addDaysISO(f.date, Number(f.phiDays)) : null;
+
+  function submit() {
+    if (!f.date || !f.fieldId || !f.product) return;
+    onSave({
+      id: newId(),
+      date: f.date,
+      fieldId: f.fieldId,
+      type: 'Insecticide',
+      product: f.product,
+      iracGroup: f.iracGroup || null,
+      activeIngredient: f.activeIngredient || null,
+      targetPest: f.targetPest || null,
+      doseMlPerL: f.doseMlPerL === '' ? null : Number(f.doseMlPerL),
+      rate: f.doseMlPerL ? `${f.doseMlPerL} ml/L` : null,
+      quantityUsed: f.quantityUsed === '' ? null : Number(f.quantityUsed),
+      cost: f.cost === '' ? null : Number(f.cost),
+      phiDays: f.phiDays === '' ? null : Number(f.phiDays),
+      rainedWithin4h: f.rainedWithin4h,
+      notes: f.notes || null,
+    });
+  }
+
+  return (
+    <Modal title="Log spray — Spray Library" sub={safeDate ? `PHI clears ${fmtDate(safeDate)}.` : 'Fill in product details.'} onClose={onClose}>
+      {rotationWarn && (
+        <div style={{ background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.3)', borderRadius: 7, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#ffb74d' }}>
+          {rotationWarn}
+        </div>
+      )}
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Field">
+          <select value={f.fieldId} onChange={set('fieldId')}>
+            {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Product" span2>
+          <select value={f.product} onChange={(e) => handleProductSelect(e.target.value)} style={{ marginBottom: 4 }}>
+            <option value="">— select from library —</option>
+            {allProducts.map((p) => <option key={p.id} value={p.name}>{p.name}{p._custom ? ' ★' : ''}</option>)}
+            <option value="__other__">Other (type below)</option>
+          </select>
+          {(f.product === '__other__' || !allProducts.find((p) => p.name === f.product)) && (
+            <input value={f.product === '__other__' ? '' : f.product} onChange={(e) => setF((prev) => ({ ...prev, product: e.target.value }))} placeholder="Product name" />
+          )}
+        </Field>
+        <Field label="IRAC Group"><input value={f.iracGroup} onChange={set('iracGroup')} placeholder="e.g. 4A" /></Field>
+        <Field label="Active Ingredient"><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="auto-filled from library" /></Field>
+        <Field label="Target pest">
+          <select value={f.targetPest} onChange={set('targetPest')}>
+            <option value="">— select pest —</option>
+            {SPRAY_PEST_LIST.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="Dose (ml/L)"><input type="number" step="0.1" value={f.doseMlPerL} onChange={set('doseMlPerL')} placeholder="pre-fills from last use" /></Field>
+        <Field label="Qty used (ml)"><input type="number" step="1" value={f.quantityUsed} onChange={set('quantityUsed')} placeholder="total ml used" /></Field>
+        <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
+        <Field label="PHI (days)"><input type="number" value={f.phiDays} onChange={set('phiDays')} placeholder="from label" /></Field>
+        <Field label="Rained within 4hrs?">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+            <input type="checkbox" checked={f.rainedWithin4h} onChange={(e) => setF((prev) => ({ ...prev, rainedWithin4h: e.target.checked }))} />
+            Yes — may need re-application
+          </label>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="observations, conditions, etc." /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit} disabled={!f.product || !f.fieldId || !f.date}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── AddCustomProductForm ────────────────────────────────────────────────────
+function AddCustomProductForm({ onClose, onSave }) {
+  const [f, setF] = React.useState({
+    name: '', activeIngredient: '', irac: '', iracClass: '', moa: '',
+    mobility: 'Contact', pests: '', phi: '', reentry: '', whoClass: 'III',
+    resistanceRisk: 'Medium', rateML: '', notes: '',
+  });
+  const set = (k) => (e) => setF((prev) => ({ ...prev, [k]: e.target.value }));
+
+  function submit() {
+    if (!f.name || !f.activeIngredient || !f.irac) return;
+    onSave({
+      id: `custom_${Date.now()}`,
+      name: f.name, activeIngredient: f.activeIngredient, irac: f.irac,
+      iracClass: f.iracClass, moa: f.moa,
+      mobility: f.mobility,
+      pests: f.pests.split(',').map((p) => p.trim()).filter(Boolean),
+      phi: f.phi === '' ? null : Number(f.phi),
+      reentry: f.reentry === '' ? null : Number(f.reentry),
+      whoClass: f.whoClass, resistanceRisk: f.resistanceRisk,
+      rateML: f.rateML === '' ? null : Number(f.rateML),
+      notes: f.notes,
+      _custom: true,
+    });
+  }
+
+  return (
+    <Modal title="Add custom product" sub="Saved to your app — not to the built-in library." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Product name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Confidor 200 SL" /></Field>
+        <Field label="Active ingredient" span2><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="e.g. Imidacloprid 200g/L" /></Field>
+        <Field label="IRAC group"><input value={f.irac} onChange={set('irac')} placeholder="e.g. 4A" /></Field>
+        <Field label="IRAC class"><input value={f.iracClass} onChange={set('iracClass')} placeholder="e.g. Neonicotinoid" /></Field>
+        <Field label="Mode of action" span2><input value={f.moa} onChange={set('moa')} placeholder="e.g. nAChR agonist" /></Field>
+        <Field label="Mobility">
+          <select value={f.mobility} onChange={set('mobility')}>
+            {['Contact','Systemic','Translaminar','Contact + Stomach','Contact + Knockdown'].map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="WHO class">
+          <select value={f.whoClass} onChange={set('whoClass')}>
+            {['I','II','III','IV'].map((c) => <option key={c} value={c}>WHO {c}</option>)}
+          </select>
+        </Field>
+        <Field label="PHI (days)"><input type="number" value={f.phi} onChange={set('phi')} /></Field>
+        <Field label="Re-entry (hrs)"><input type="number" value={f.reentry} onChange={set('reentry')} /></Field>
+        <Field label="Default dose (ml/L)"><input type="number" step="0.1" value={f.rateML} onChange={set('rateML')} /></Field>
+        <Field label="Resistance risk">
+          <select value={f.resistanceRisk} onChange={set('resistanceRisk')}>
+            {['Low','Low-Medium','Medium','Medium-High','High','Very Low','N/A'].map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="Target pests (comma-separated)" span2><input value={f.pests} onChange={set('pests')} placeholder="e.g. aphids, whitefly, thrips" /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit} disabled={!f.name || !f.activeIngredient || !f.irac}>Add product</button>
+      </div>
+    </Modal>
+  );
+}
+
+
 /* ---------------- Spray & fertigation ---------------- */
 
 function SprayTab({ rows, fieldName, scopePhi, scopeResistance, onAdd }) {
@@ -4854,23 +7986,39 @@ function SprayTab({ rows, fieldName, scopePhi, scopeResistance, onAdd }) {
   );
 }
 
-function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
+function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, onSave }) {
   const [f, setF] = useState({
     date: todayISO(), fieldId: defaultField, type: prefill?.type || 'Insecticide',
     product: prefill?.product || '', activeIngredient: '', rate: prefill?.rate || '',
-    cost: '', phiDays: '', notes: prefill?.notes || '',
+    quantityUsed: '', cost: '', phiDays: '', notes: prefill?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const safePreview = f.phiDays !== '' ? addDaysISO(f.date, f.phiDays) : null;
+
+  // When a stock product is selected, auto-fill active ingredient if available
+  function handleProductSelect(e) {
+    const name = e.target.value;
+    const matched = inputStock.find((i) => i.name === name);
+    setF((prev) => ({
+      ...prev,
+      product: name,
+      activeIngredient: matched?.activeIngredient || matched?.notes || prev.activeIngredient,
+    }));
+  }
+
   function submit() {
     if (!f.date || !f.fieldId) return;
     onSave({
       id: newId(), date: f.date, fieldId: f.fieldId, type: f.type,
       product: f.product || null, activeIngredient: f.activeIngredient || null, rate: f.rate || null,
+      quantityUsed: f.quantityUsed === '' ? null : Number(f.quantityUsed),
       cost: f.cost === '' ? null : Number(f.cost),
       phiDays: f.phiDays === '' ? null : Number(f.phiDays), notes: f.notes || null,
     });
   }
+
+  const stockNames = inputStock.map((i) => i.name).filter(Boolean);
+
   return (
     <Modal
       title={prefill ? 'Log spray — from programme' : 'Log spray / feed'}
@@ -4891,9 +8039,36 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
             {SPRAY_TYPES.map((t) => <option key={t}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Product"><input value={f.product} onChange={set('product')} placeholder="e.g. Imida Super" /></Field>
+        <Field label="Product">
+          {stockNames.length > 0 ? (
+            <select value={f.product} onChange={handleProductSelect}>
+              <option value="">— choose from stock —</option>
+              {stockNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              <option value="__other__">Other (type below)</option>
+            </select>
+          ) : null}
+          {(f.product === '__other__' || stockNames.length === 0) && (
+            <input
+              value={f.product === '__other__' ? '' : f.product}
+              onChange={(e) => setF({ ...f, product: e.target.value })}
+              placeholder="e.g. Priazox Plus"
+              style={{ marginTop: stockNames.length > 0 ? 6 : 0 }}
+            />
+          )}
+          {stockNames.length > 0 && f.product && f.product !== '__other__' && (() => {
+            const inp = inputStock.find((i) => i.name === f.product);
+            if (!inp) return null;
+            const qty = Number(inp.quantityOnHand) || 0;
+            return (
+              <span style={{ fontSize: 12, color: qty < 50 ? 'var(--rust)' : 'var(--text-faint)', marginTop: 4, display: 'block' }}>
+                Stock: {qty} {inp.unit || 'ml'} remaining
+              </span>
+            );
+          })()}
+        </Field>
         <Field label="Active ingredient"><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="e.g. Imidacloprid" /></Field>
         <Field label="Rate"><input value={f.rate} onChange={set('rate')} placeholder="e.g. 5ml / 15L" /></Field>
+        <Field label="Qty used (ml/g)"><input type="number" step="0.01" value={f.quantityUsed} onChange={set('quantityUsed')} placeholder="deducts from input stock" /></Field>
         <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
         <Field label="Pre-harvest interval (days)"><input type="number" value={f.phiDays} onChange={set('phiDays')} placeholder="from label" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
@@ -4908,63 +8083,186 @@ function SprayForm({ fields, defaultField, prefill, onClose, onSave }) {
 
 /* ---------------- Harvest & sales ---------------- */
 
-function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice }) {
+function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
+  const [payModal, setPayModal] = useState(null);
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const totalOwed = rows.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') {
+      s += calcOwed(r, harvestRev(r));
+    }
+    return s;
+  }, 0);
+
+  const visibleRows = filterByPeriod(rows, period, customStart, customEnd);
+  const periodKg = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0), 0);
+  const periodRev = visibleRows.reduce((s, r) => s + harvestRev(r), 0);
+  const periodSacks = visibleRows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+  const periodSize5 = visibleRows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + sackToSize5(r), 0);
+
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Harvest &amp; Sales</h3>
         <button className="btn btn-green" onClick={onAdd}>+ Log harvest</button>
       </div>
-      {rows.length > 0 && (
-        <p className="stat-foot" style={{ marginBottom: 10 }}>
-          Totals in view: <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong> ·
-          revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
+      {rows.length > 0 && (() => {
+        const allSacks = rows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+        const allSize5 = rows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + sackToSize5(r), 0);
+        return (
+          <p className="stat-foot" style={{ marginBottom: 10 }}>
+            All time:
+            {totalKg > 0 && <> <strong style={{ color: 'var(--green)' }}>{num(totalKg, 1)} kg</strong></>}
+            {allSacks > 0 && <> · <strong style={{ color: '#D4A537' }}>{num(allSacks, 0)} sacks</strong> ({num(allSize5, 2)} Size 5)</>}
+            {' '}· revenue <strong style={{ color: 'var(--gold)' }}>GH₵ {num(revenue, 2)}</strong>
+          </p>
+        );
+      })()}
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from pepper harvests.
+        </div>
+      )}
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+      {period !== 'all' && visibleRows.length > 0 && (
+        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+          {visibleRows.length} harvest(s)
+          {periodKg > 0 && <> · <strong style={{ color: 'var(--green)' }}>{num(periodKg, 1)} kg</strong></>}
+          {periodSacks > 0 && <> · <strong style={{ color: '#D4A537' }}>{num(periodSacks, 0)} sacks</strong> (<strong style={{ color: '#D4A537' }}>{num(periodSize5, 2)} Size 5</strong>)</>}
+          {' '}· Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRev, 2)}</strong>
         </p>
       )}
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Field</th><th>Weight (kg)</th><th>Grade</th><th>Price/kg</th><th>Revenue</th><th>Buyer</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Field</th><th>Qty / Weight</th><th>Unit</th><th>Size 5 equiv.</th><th>Grade</th><th>Price/unit</th><th>Revenue</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
-              const rev = (Number(r.weightKg) || 0) * (Number(r.pricePerKg) || 0);
+            {visibleRows.map((r) => {
+              const rev = harvestRev(r);
+              const unit = r.unit || 'kg';
+              const priceLabel = unit === 'kg' ? (r.pricePerKg != null ? `GH₵ ${num(r.pricePerKg, 2)}/kg` : '—')
+                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit}` : '—');
               return (
                 <tr key={r.id}>
                   <td className="mono">{fmtDate(r.date)}</td>
                   <td>{fieldName(r.fieldId)}</td>
-                  <td className="mono">{num(r.weightKg, 1)}</td>
+                  <td className="mono">{unit === 'sack' ? `${num(r.quantity, 0)} sack${Number(r.quantity) !== 1 ? 's' : ''}` : harvestQtyLabel(r)}</td>
+                  <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
+                  <td className="mono" style={{ color: unit === 'sack' ? '#D4A537' : '#666' }}>
+                    {unit === 'sack' ? `${num(sackToSize5(r), 2)}` : '—'}
+                  </td>
                   <td>{r.grade ? <span className={`tag ${r.grade.startsWith('Grade A') ? 'green' : r.grade.startsWith('Grade B') ? 'gold' : 'rust'}`}>{r.grade}</span> : '—'}</td>
-                  <td className="mono">{r.pricePerKg != null ? num(r.pricePerKg, 2) : '—'}</td>
+                  <td className="mono">{priceLabel}</td>
                   <td className="mono">{rev ? `GH₵ ${num(rev, 2)}` : '—'}</td>
                   <td>{r.buyer || '—'}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <CreditBadge sale={r} saleAmount={rev} />
+                      {(r.paymentStatus || 'paid') === 'paid' && onUpdateHarvest && (
+                        <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                          onClick={() => onUpdateHarvest(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                      )}
+                      {(r.paymentStatus || 'paid') === 'credit' && onHarvestPayment && (
+                        <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal({ ...r, _rev: harvestRev(r) })}>Log payment</button>
+                      )}
+                    </div>
+                  </td>
                   <td className="notes">{r.notes || ''}</td>
                   <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={9} className="empty">No harvest logged yet — record each pick to build your yield and revenue picture.</td></tr>}
+            {visibleRows.length === 0 && <tr><td colSpan={12} className="empty">{rows.length === 0 ? 'No harvest logged yet — record each pick to build your yield and revenue picture.' : 'No harvests in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={payModal._rev}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onHarvestPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateHarvest(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateHarvest(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
     </>
   );
 }
 
 function HarvestForm({ fields, defaultField, onClose, onSave }) {
-  const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, weightKg: '', grade: GRADES[0], pricePerKg: '', buyer: '', notes: '' });
+  const [f, setF] = useState({
+    date: todayISO(), fieldId: defaultField,
+    unit: 'kg',
+    weightKg: '',      // used when unit === 'kg'
+    quantity: '',      // used when unit === 'sack' or 'crate'
+    sackWeightKg: '50', // weight of each farm sack (default 50 kg)
+    grade: GRADES[0],
+    pricePerKg: '',    // used when unit === 'kg'
+    pricePerUnit: '',  // used when unit === 'sack' or 'crate'
+    buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '',
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const rev = (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0);
+
+  const isByWeight = f.unit === 'kg';
+  const isSack = f.unit === 'sack';
+  const rev = isByWeight
+    ? (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0)
+    : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
+
+  // Size 5 equivalent — only meaningful for sacks
+  const previewSize5 = isSack
+    ? ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125
+    : null;
+
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - rev) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
+
+  const canSave = f.date && f.fieldId && (isByWeight ? f.weightKg !== '' : f.quantity !== '');
+
   function submit() {
-    if (!f.date || !f.fieldId || f.weightKg === '') return;
-    onSave({
-      id: newId(), date: f.date, fieldId: f.fieldId, weightKg: Number(f.weightKg),
-      grade: f.grade || null, pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg),
+    if (!canSave) return;
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
+    const base = {
+      id: newId(), date: f.date, fieldId: f.fieldId,
+      unit: f.unit,
+      grade: f.grade || null,
       buyer: f.buyer || null, notes: f.notes || null,
-    });
+      cashAmount: hasAnySplit ? cash : rev,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
+    };
+    if (isByWeight) {
+      onSave({ ...base, weightKg: Number(f.weightKg), pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg) });
+    } else if (f.unit === 'sack') {
+      const sackKg = Number(f.sackWeightKg) || 50;
+      const size5Sacks = ((Number(f.quantity) || 0) * sackKg) / 125;
+      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+    } else {
+      onSave({ ...base, quantity: Number(f.quantity), pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+    }
   }
+
+  const unitLabel = f.unit === 'sack' ? 'sack' : f.unit === 'crate' ? 'crate' : 'kg';
+
   return (
-    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter weight and price to see revenue.'} onClose={onClose}>
+    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Field">
@@ -4972,20 +8270,68 @@ function HarvestForm({ fields, defaultField, onClose, onSave }) {
             {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
           </select>
         </Field>
-        <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
+
+        {/* Unit selector */}
+        <Field label="Sell by">
+          <select value={f.unit} onChange={set('unit')}>
+            <option value="kg">Weight (kg)</option>
+            <option value="sack">Sacks</option>
+            <option value="crate">Crates</option>
+          </select>
+        </Field>
+
+        {/* Quantity field — label changes with unit */}
+        {isByWeight
+          ? <Field label="Weight (kg)"><input type="number" step="0.1" min="0" value={f.weightKg} onChange={set('weightKg')} placeholder="e.g. 50" /></Field>
+          : <Field label={`No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
+        }
+
+        {/* Sack weight + Size 5 conversion — only shown when unit = sack */}
+        {isSack && (
+          <Field label="Each sack weighs (kg)">
+            <input type="number" step="1" min="1" value={f.sackWeightKg} onChange={set('sackWeightKg')} placeholder="50" />
+          </Field>
+        )}
+        {isSack && previewSize5 != null && Number(f.quantity) > 0 && (
+          <Field label="= Size 5 sacks (market)">
+            <input value={`${num(previewSize5, 2)} Size 5 sack${previewSize5 !== 1 ? 's' : ''}`} disabled style={{ color: '#D4A537', fontWeight: 600 }} />
+          </Field>
+        )}
+
         <Field label="Grade">
           <select value={f.grade} onChange={set('grade')}>
             {GRADES.map((g) => <option key={g}>{g}</option>)}
           </select>
         </Field>
-        <Field label="Price per kg (GH₵)"><input type="number" step="0.01" value={f.pricePerKg} onChange={set('pricePerKg')} /></Field>
-        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, etc." /></Field>
+
+        {/* Price field — label changes with unit */}
+        {isByWeight
+          ? <Field label="Price per kg (GH₵)"><input type="number" step="0.01" min="0" value={f.pricePerKg} onChange={set('pricePerKg')} placeholder="per kg" /></Field>
+          : <Field label={`Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={`per ${unitLabel}`} /></Field>
+        }
+
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, trader…" /></Field>
         <Field label="Revenue (auto)"><input value={rev ? `GH₵ ${num(rev, 2)}` : '—'} disabled /></Field>
+      </div>
+
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ revenue GH₵ {num(rev, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" onClick={submit}>Save harvest</button>
+        <button className="btn btn-green" onClick={submit} disabled={!canSave || (splitTotal > 0 && !splitOk)}>Save harvest</button>
       </div>
     </Modal>
   );
@@ -5022,38 +8368,6 @@ function FarmProfileForm({ profile, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit} disabled={!f.farmName}>Save profile</button>
-      </div>
-    </Modal>
-  );
-}
-
-/** Renames a workspace module (e.g. "Bell Pepper" → "Crops") without
-    touching any of its data — just the label shown across the app. */
-function ModuleNameForm({ name, onClose, onSave }) {
-  const [value, setValue] = useState(name || '');
-  function submit() {
-    if (!value.trim()) return;
-    onSave(value.trim());
-  }
-  return (
-    <Modal
-      title="Rename this section"
-      sub="Changes the label shown here and in the top navigation — your fields and history are unaffected."
-      onClose={onClose}
-    >
-      <div className="form-grid">
-        <Field label="Section name" span2>
-          <input
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="e.g. Crops"
-            autoFocus
-          />
-        </Field>
-      </div>
-      <div className="modal-actions">
-        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit} disabled={!value.trim()}>Save name</button>
       </div>
     </Modal>
   );
@@ -5131,41 +8445,775 @@ function FlockForm({ flock, onClose, onSave }) {
   );
 }
 
+/* ============================================================
+   CREDIT SALES — shared utilities for all 4 sections
+   ============================================================ */
+
+/* ── Period filter helpers ─────────────────────────────────────── */
+
+/**
+ * Returns { start, end } ISO strings for a given period preset relative to today.
+ * 'custom' returns null (caller must supply dates).
+ */
+function getPeriodRange(period, today) {
+  const d = today ? new Date(today) : new Date();
+  const iso = (dt) => dt.toISOString().slice(0, 10);
+  const startOfDay = (dt) => { const x = new Date(dt); x.setHours(0,0,0,0); return x; };
+  switch (period) {
+    case 'today': {
+      const s = startOfDay(d);
+      return { start: iso(s), end: iso(s) };
+    }
+    case 'week': {
+      const day = d.getDay(); // 0=Sun
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Mon
+      const s = startOfDay(new Date(d.setDate(diff)));
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    case 'month': {
+      const s = new Date(d.getFullYear(), d.getMonth(), 1);
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    case 'year': {
+      const s = new Date(d.getFullYear(), 0, 1);
+      return { start: iso(s), end: iso(new Date()) };
+    }
+    default: return null;
+  }
+}
+
+function filterByPeriod(records, period, customStart, customEnd, dateField = 'date') {
+  if (period === 'all') return records;
+  let start, end;
+  if (period === 'custom') {
+    start = customStart || '';
+    end = customEnd || '';
+  } else {
+    const r = getPeriodRange(period);
+    if (!r) return records;
+    start = r.start; end = r.end;
+  }
+  return records.filter((rec) => {
+    const d = (rec[dateField] || '').slice(0, 10);
+    if (start && d < start) return false;
+    if (end && d > end) return false;
+    return true;
+  });
+}
+
+const PERIOD_OPTS = [
+  { value: 'all', label: 'All time' },
+  { value: 'today', label: 'Today' },
+  { value: 'week', label: 'This week' },
+  { value: 'month', label: 'This month' },
+  { value: 'year', label: 'This year' },
+  { value: 'custom', label: 'Custom range' },
+];
+
+function PeriodFilter({ period, onPeriod, customStart, customEnd, onCustomStart, onCustomEnd }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 14 }}>
+      <span style={{ fontSize: 12, color: '#aaa', marginRight: 2 }}>Period:</span>
+      {PERIOD_OPTS.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onPeriod(o.value)}
+          style={{
+            padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer',
+            background: period === o.value ? 'var(--gold)' : 'rgba(255,255,255,0.07)',
+            color: period === o.value ? '#111' : '#ccc', fontWeight: period === o.value ? 700 : 400,
+          }}
+        >{o.label}</button>
+      ))}
+      {period === 'custom' && (
+        <>
+          <input type="date" value={customStart} onChange={(e) => onCustomStart(e.target.value)}
+            style={{ background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#fff', padding: '3px 8px', fontSize: 12 }} />
+          <span style={{ color: '#888', fontSize: 12 }}>to</span>
+          <input type="date" value={customEnd} onChange={(e) => onCustomEnd(e.target.value)}
+            style={{ background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#fff', padding: '3px 8px', fontSize: 12 }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────── */
+
+/** Compute how much of a sale has been paid and what's still owed */
+function calcOwed(sale, saleAmount) {
+  const paid = (sale.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return Math.max(0, (saleAmount || 0) - paid);
+}
+
+/**
+ * Sum cash / momo / credit across an array of sale or harvest records.
+ * Works for both old records (paymentStatus 'paid'/'credit') and new ones
+ * with explicit cashAmount / momoAmount / creditAmount fields.
+ * `getTotal(r)` extracts the total sale value from one record.
+ */
+function calcPayModeTotals(records, getTotal) {
+  let cash = 0, momo = 0, credit = 0;
+  records.forEach((r) => {
+    const total = Number(getTotal(r)) || 0;
+    if (r.cashAmount != null || r.momoAmount != null || r.creditAmount != null) {
+      // New-style: explicit split
+      cash   += Number(r.cashAmount)   || 0;
+      momo   += Number(r.momoAmount)   || 0;
+      credit += Number(r.creditAmount) || 0;
+    } else {
+      // Old-style: paymentStatus binary
+      if ((r.paymentStatus || 'paid') === 'credit') credit += total;
+      else cash += total; // treat old "paid" as cash
+    }
+  });
+  return { cash, momo, credit };
+}
+
+/** A row of Cash / MoMo / Credit breakdown tiles */
+function PayModeBreakdown({ cash, momo, credit }) {
+  const total = cash + momo + credit;
+  if (total === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+      {[
+        { label: '💵 Cash', val: cash, color: '#6abf6a' },
+        { label: '📱 MoMo', color: '#D4A537', val: momo },
+        { label: '📋 Credit', val: credit, color: credit > 0 ? '#e05c5c' : '#6abf6a' },
+      ].map(({ label, val, color }) => (
+        <div key={label} style={{
+          flex: 1, minWidth: 110, background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${color}44`, borderRadius: 8, padding: '8px 12px',
+        }}>
+          <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>{label}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color }}>{`GH₵ ${num(val, 2)}`}</div>
+          {total > 0 && <div style={{ fontSize: 10, color: '#555' }}>{Math.round((val/total)*100)}% of revenue</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Small badge: Paid / Credit / Part-paid */
+function CreditBadge({ sale, saleAmount }) {
+  const status = sale.paymentStatus || 'paid';
+  const owed = calcOwed(sale, saleAmount);
+  const hasPart = status === 'credit' && owed > 0 && (sale.payments || []).length > 0;
+  const label = status === 'paid' ? '✓ Paid' : hasPart ? '⬤ Part-paid' : '○ Credit';
+  const cls = status === 'paid' ? 'tag green' : hasPart ? 'tag gold' : 'tag rust';
+  return <span className={cls} style={{ fontSize: 11 }}>{label}</span>;
+}
+
+/** Modal to log a payment toward a credit sale */
+function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, onMarkPaid }) {
+  const owed = calcOwed(sale, saleAmount);
+  const [date, setDate] = useState(todayISO());
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const num2 = (v) => (isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+  function submit() {
+    const amt = Number(amount);
+    if (!date || !amt || amt <= 0) return;
+    const payment = { id: Math.random().toString(36).slice(2, 10), date, amount: amt, note: note || null };
+    onLogPayment(payment, amt >= owed);
+    onClose();
+  }
+  function markFullyPaid() {
+    // Create a synthetic payment covering the remaining owed balance so the
+    // payments ledger is complete. This keeps calcOwed and buildCreditSummary
+    // accurate — outstanding drops to zero and collected reflects reality.
+    if (owed > 0) {
+      const payment = { id: Math.random().toString(36).slice(2, 10), date, amount: owed, note: 'Marked as fully paid' };
+      onLogPayment(payment, true);
+    } else {
+      onMarkPaid();
+    }
+    onClose();
+  }
+
+  return (
+    <Modal title="Log payment" sub={`${buyerName || 'Customer'} owes GH₵ ${num2(owed)}`} onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Payment date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+        <Field label={`Amount (GH₵) — still owed: ${num2(owed)}`}>
+          <input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`max ${num2(owed)}`} />
+        </Field>
+        <Field label="Note (optional)" className="span-2"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. bank transfer" /></Field>
+      </div>
+      {(sale.payments || []).length > 0 && (
+        <div style={{ margin: '10px 0', fontSize: 12, color: '#888' }}>
+          <strong style={{ color: '#b9ad9a' }}>Payment history:</strong>
+          {[...(sale.payments || [])].sort((a, b) => a.date.localeCompare(b.date)).map((p) => (
+            <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              <span>{p.date}</span>
+              <span style={{ color: '#D4A537' }}>GH₵ {num2(p.amount)}</span>
+              <span>{p.note || ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="modal-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        {owed > 0 && <button className="btn btn-ghost" onClick={markFullyPaid} style={{ borderColor: '#7a9a66', color: '#7a9a66' }}>Mark fully paid</button>}
+        <button className="btn btn-gold" onClick={submit} disabled={!amount || Number(amount) <= 0}>Log payment</button>
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice }) {
-  const setup = Number(flock.setupCost) || 0;
+/* ─────────────────────────────────────────────
+   Buyer Advances Tab
+   Track advance payments from egg buyers.
+   Each record: id, date, buyer, amount, notes,
+   status ('pending'|'fulfilled'|'partial'),
+   fulfilledAmount (eggs supplied so far value)
+   ───────────────────────────────────────────── */
+function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete, onAddSale }) {
+  const [modal, setModal] = useState(null); // null | 'add' | advance record (for edit)
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCS] = useState('');
+  const [customEnd,   setCE] = useState('');
+  const [fulfillModal, setFulfillModal] = useState(null); // advance record to mark partial/full
+  const { askConfirm } = useToastConfirm();
+
+  const sorted = [...advances].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const visible = filterByPeriod(sorted, period, customStart, customEnd);
+
+  const totalReceived  = advances.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const totalFulfilled = advances.reduce((s, r) => s + (Number(r.fulfilledAmount) || 0), 0);
+  const totalOwed      = totalReceived - totalFulfilled; // eggs still owed to buyers
+
+  const pending    = advances.filter((r) => (r.status || 'pending') === 'pending');
+  const partial    = advances.filter((r) => (r.status || 'pending') === 'partial');
+  const fulfilled  = advances.filter((r) => (r.status || 'pending') === 'fulfilled');
+
+  function statusColor(s) {
+    if (s === 'fulfilled') return '#7A9A66';
+    if (s === 'partial')   return '#D4A537';
+    return '#e07070';
+  }
+  function statusLabel(r) {
+    const s = r.status || 'pending';
+    if (s === 'fulfilled') return '✓ Fulfilled';
+    if (s === 'partial') {
+      const left = (Number(r.amount) || 0) - (Number(r.fulfilledAmount) || 0);
+      return `⏳ Partial — GH₵ ${num(left, 2)} left`;
+    }
+    return `⚠️ Pending — GH₵ ${num(r.amount || 0, 2)} owed`;
+  }
+
   return (
     <>
-      <div className="panel-head" style={{ marginBottom: 14 }}>
+      <div className="panel-head" style={{ marginBottom: 10 }}>
+        <h3 style={{ fontSize: 18 }}>Buyer Advances</h3>
+        <button className="btn btn-gold" onClick={() => setModal('add')}>+ Record advance</button>
+      </div>
+
+      {/* Summary stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10, marginBottom: 14 }}>
+        <StatCard title="Total Received" value={`GH₵ ${num(totalReceived, 2)}`} tone="gold" foot={`${advances.length} advance(s)`} />
+        <StatCard title="Eggs Supplied" value={`GH₵ ${num(totalFulfilled, 2)}`} tone="green" foot="value delivered" />
+        <StatCard title="Still Owed" value={`GH₵ ${num(Math.max(0, totalOwed), 2)}`} tone={totalOwed > 0 ? 'rust' : 'green'} foot="eggs still to supply" />
+        <StatCard title="Pending" value={pending.length + partial.length} foot={`${fulfilled.length} fulfilled`} />
+      </div>
+
+      {(pending.length > 0 || partial.length > 0) && (
+        <div className="alert-banner" style={{ background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.35)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#D4A537' }}>
+          🥚 You owe eggs worth <strong>GH₵ {num(Math.max(0, totalOwed), 2)}</strong> to {pending.length + partial.length} buyer(s) who paid in advance.
+        </div>
+      )}
+
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCS} onCustomEnd={setCE}
+      />
+
+      {visible.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          {advances.length === 0
+            ? 'No advances recorded yet. When a buyer pays upfront for eggs, record it here to track what you owe them.'
+            : 'No advances in this period.'}
+        </p>
+      ) : (
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Buyer</th>
+                <th>Amount Paid (GH₵)</th>
+                <th>Value Supplied (GH₵)</th>
+                <th>Status</th>
+                <th>Notes</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => {
+                const status = r.status || 'pending';
+                return (
+                  <tr key={r.id}>
+                    <td className="mono">{fmtDate(r.date)}</td>
+                    <td><strong>{r.buyer || '—'}</strong></td>
+                    <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                    <td className="mono">{r.fulfilledAmount > 0 ? `GH₵ ${num(r.fulfilledAmount, 2)}` : '—'}</td>
+                    <td>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: statusColor(status) }}>
+                        {statusLabel(r)}
+                      </span>
+                    </td>
+                    <td className="notes">{r.notes || ''}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {status !== 'fulfilled' && (
+                        <button className="link-btn gold" style={{ marginRight: 8 }}
+                          onClick={() => setFulfillModal(r)}>
+                          Supply eggs
+                        </button>
+                      )}
+                      {status === 'fulfilled' && (
+                        <button className="link-btn" style={{ marginRight: 8, fontSize: 11, color: '#888' }}
+                          onClick={() => onUpdate(r.id, { status: 'pending', fulfilledAmount: 0 })}>
+                          Reopen
+                        </button>
+                      )}
+                      <button className="link-btn rust" onClick={async () => {
+                        if (await askConfirm('Delete this advance record?')) onDelete(r.id);
+                      }}>Delete</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add advance modal */}
+      {modal === 'add' && (
+        <BuyerAdvanceForm
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAdd(entry); setModal(null); }}
+        />
+      )}
+
+      {/* Supply eggs (fulfil) modal */}
+      {fulfillModal && (
+        <FulfilAdvanceModal
+          advance={fulfillModal}
+          onClose={() => setFulfillModal(null)}
+          onSave={({ deliveryDate, item, quantity, unitPrice, amount: deliveredAmount, notes }) => {
+            // 1. Update the advance record
+            const total = Number(fulfillModal.amount) || 0;
+            const newFulfilled = (Number(fulfillModal.fulfilledAmount) || 0) + deliveredAmount;
+            const newStatus = newFulfilled >= total - 0.01 ? 'fulfilled' : 'partial';
+            onUpdate(fulfillModal.id, { fulfilledAmount: newFulfilled, status: newStatus });
+            // 2. Auto-create a matching sale entry (paid via advance — already cash in hand)
+            if (onAddSale) {
+              onAddSale({
+                id: newId(),
+                date: deliveryDate,
+                item,
+                quantity: quantity || null,
+                unitPrice: unitPrice || null,
+                amount: deliveredAmount,
+                buyer: fulfillModal.buyer,
+                notes: notes || `Advance delivery — ref: ${fmtDate(fulfillModal.date)}`,
+                cashAmount: deliveredAmount,
+                momoAmount: 0,
+                creditAmount: 0,
+                paymentStatus: 'paid',
+                payments: [],
+                fromAdvance: fulfillModal.id,
+              });
+            }
+            setFulfillModal(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function BuyerAdvanceForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), buyer: '', amount: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date || !f.amount || !f.buyer) return;
+    onSave({
+      id: newId(),
+      date: f.date,
+      buyer: f.buyer,
+      amount: Number(f.amount),
+      notes: f.notes || null,
+      status: 'pending',
+      fulfilledAmount: 0,
+    });
+  }
+  return (
+    <Modal title="Record buyer advance" sub="Money paid upfront before eggs are delivered." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Buyer name"><input value={f.buyer} onChange={set('buyer')} placeholder="e.g. Madam Ama" /></Field>
+        <Field label="Amount paid (GH₵)"><input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} placeholder="0.00" /></Field>
+        <Field label="Notes"><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="e.g. 10 crates at GH₵ 30, delivery next week" /></Field>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 12, justifyContent: 'flex-end' }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit} disabled={!f.date || !f.amount || !f.buyer}>Save advance</button>
+      </div>
+    </Modal>
+  );
+}
+
+function FulfilAdvanceModal({ advance, onClose, onSave }) {
+  const remaining = (Number(advance.amount) || 0) - (Number(advance.fulfilledAmount) || 0);
+  const [f, setF] = useState({
+    deliveryDate: todayISO(),
+    item: 'Eggs (crates)',
+    quantity: '',
+    unitPrice: '',
+    amount: '',
+    notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
+  const deliveredAmount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  const overLimit = deliveredAmount > remaining + 0.01;
+  const canSave = deliveredAmount > 0 && !overLimit && f.deliveryDate;
+
+  return (
+    <Modal
+      title="Supply eggs against advance"
+      sub={`${advance.buyer} · GH₵ ${num(remaining, 2)} still to be covered`}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Delivery date">
+          <input type="date" value={f.deliveryDate} onChange={set('deliveryDate')} />
+        </Field>
+        <Field label="Item">
+          <select value={f.item} onChange={set('item')}>
+            <option>Eggs (crates)</option>
+            <option>Eggs (pieces)</option>
+          </select>
+        </Field>
+        <Field label="Quantity">
+          <input type="number" step="0.01" min="0" value={f.quantity} onChange={set('quantity')} placeholder={f.item === 'Eggs (crates)' ? 'crates' : 'pieces'} />
+        </Field>
+        <Field label="Unit price (GH₵)">
+          <input type="number" step="0.01" min="0" value={f.unitPrice} onChange={set('unitPrice')} placeholder="per crate / piece" />
+        </Field>
+        <Field label="Total value delivered (GH₵)">
+          <input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')}
+            placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : `up to ${num(remaining, 2)}`} />
+        </Field>
+        <Field label="Notes (optional)">
+          <input value={f.notes} onChange={set('notes')} placeholder="e.g. partial delivery" />
+        </Field>
+      </div>
+      {deliveredAmount > 0 && (
+        <p style={{ fontSize: 12, color: overLimit ? '#e05c5c' : '#aaa', margin: '4px 0 10px' }}>
+          {overLimit
+            ? `⚠️ GH₵ ${num(deliveredAmount, 2)} exceeds the remaining balance of GH₵ ${num(remaining, 2)}.`
+            : `Delivering GH₵ ${num(deliveredAmount, 2)} — ${num(remaining - deliveredAmount, 2) <= 0.01 ? 'this clears the advance ✓' : `GH₵ ${num(remaining - deliveredAmount, 2)} will remain outstanding`}.`}
+        </p>
+      )}
+      <p style={{ fontSize: 11, color: '#888', margin: '0 0 12px' }}>
+        A matching sale record will be created automatically in Sales &amp; Profit.
+      </p>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={() => canSave && onSave({ ...f, amount: deliveredAmount })} disabled={!canSave}>
+          Record delivery
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── Credit Summary helpers ── */
+/**
+ * Derive the original credit portion at time of sale.
+ * r.amount, r.cashAmount, r.momoAmount are immutable after save — they give the true split.
+ * r.creditAmount was historically mutated when payments came in (a bug now fixed), so we
+ * use derivedCredit = amount − cash − momo as the source of truth for origCredit.
+ * For very old records that predate split amounts (cashAmount == null), derivedCredit falls
+ * back to r.amount (all-credit sale).
+ */
+function saleOrigCredit(r) {
+  const amt = Number(r.amount) || 0;
+  if (r.cashAmount == null && r.momoAmount == null) {
+    // Pre-split record: paymentStatus 'credit' means the whole sale was on credit
+    return (r.paymentStatus === 'credit' || (r.payments || []).length > 0) ? amt : 0;
+  }
+  const derived = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
+  return Math.max(0, derived);
+}
+
+function buildCreditSummary(sales) {
+  let totalCash = 0, totalMomo = 0, totalCreditGiven = 0, totalCreditCollected = 0;
+  (sales || []).forEach((r) => {
+    totalCash  += Number(r.cashAmount)  || 0;
+    totalMomo  += Number(r.momoAmount)  || 0;
+    const origCredit = saleOrigCredit(r);
+    if (origCredit > 0 && (r.paymentStatus === 'credit' || (r.payments || []).length > 0)) {
+      totalCreditGiven += origCredit;
+      // collected = sum of all payments logged against this sale
+      const collected = (r.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      totalCreditCollected += Math.min(collected, origCredit);
+    }
+  });
+  const totalCreditOutstanding = Math.max(0, totalCreditGiven - totalCreditCollected);
+  return { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding };
+}
+
+/** Quick-glance card shown at top of Sales & Profit */
+function CreditSummaryCard({ sales }) {
+  const { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding } = buildCreditSummary(sales);
+  if (totalCash + totalMomo + totalCreditGiven === 0) return null;
+  const tiles = [
+    { label: '💵 Cash', val: totalCash, color: '#6abf6a' },
+    { label: '📱 MoMo', val: totalMomo, color: '#D4A537' },
+    { label: '📋 Credit Given', val: totalCreditGiven, color: '#9b8ec4' },
+    { label: '✅ Collected', val: totalCreditCollected, color: '#6abf6a' },
+    { label: '⚠️ Outstanding', val: totalCreditOutstanding, color: totalCreditOutstanding > 0 ? '#e05c5c' : '#6abf6a' },
+  ];
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid #333', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: '#888', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>Payment Summary</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {tiles.map(({ label, val, color }) => (
+          <div key={label} style={{ flex: 1, minWidth: 100, background: 'rgba(255,255,255,0.03)', border: `1px solid ${color}33`, borderRadius: 8, padding: '8px 10px' }}>
+            <div style={{ fontSize: 10, color: '#777', marginBottom: 2 }}>{label}</div>
+            <div style={{ fontWeight: 700, fontSize: 13, color }}>{`GH₵ ${num(val, 2)}`}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Full credit summary sub-tab with period filter and per-buyer breakdown */
+function CreditSummarySubTab({ sales }) {
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const filtered = filterByPeriod(sales || [], period, customStart, customEnd);
+  const { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding } = buildCreditSummary(filtered);
+
+  // Per-buyer credit breakdown — same origCredit logic as buildCreditSummary
+  const buyerMap = {};
+  filtered.forEach((r) => {
+    const origCredit = saleOrigCredit(r);
+    if (origCredit <= 0) return;
+    if (r.paymentStatus !== 'credit' && (r.payments || []).length === 0) return;
+    const buyer = r.buyer || 'Unknown buyer';
+    if (!buyerMap[buyer]) buyerMap[buyer] = { given: 0, collected: 0 };
+    buyerMap[buyer].given += origCredit;
+    const collected = (r.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    buyerMap[buyer].collected += Math.min(collected, origCredit);
+  });
+  const buyerRows = Object.entries(buyerMap).sort((a, b) => (b[1].given - b[1].collected) - (a[1].given - a[1].collected));
+
+  const statTile = (label, val, color, sub) => (
+    <div style={{ flex: 1, minWidth: 130, background: 'rgba(255,255,255,0.04)', border: `1px solid ${color}44`, borderRadius: 10, padding: '12px 14px' }}>
+      <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontWeight: 700, fontSize: 18, color }}>{`GH₵ ${num(val, 2)}`}</div>
+      {sub && <div style={{ fontSize: 10, color: '#555', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <PeriodFilter period={period} onPeriod={setPeriod} customStart={customStart} customEnd={customEnd} onCustomStart={setCustomStart} onCustomEnd={setCustomEnd} />
+
+      {/* Top stats */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        {statTile('💵 Cash Received', totalCash, '#6abf6a')}
+        {statTile('📱 MoMo Received', totalMomo, '#D4A537')}
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        {statTile('📋 Total Credit Given', totalCreditGiven, '#9b8ec4', 'All credit ever extended (paid + unpaid)')}
+        {statTile('✅ Credit Collected', totalCreditCollected, '#6abf6a', 'Payments received on credit sales')}
+        {statTile('⚠️ Credit Outstanding', totalCreditOutstanding, totalCreditOutstanding > 0 ? '#e05c5c' : '#6abf6a', 'Still owed to you')}
+      </div>
+
+      {/* Per-buyer credit breakdown */}
+      {buyerRows.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, color: '#888', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Credit by Buyer</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Buyer</th>
+                  <th>Credit Given</th>
+                  <th>Collected</th>
+                  <th>Outstanding</th>
+                </tr>
+              </thead>
+              <tbody>
+                {buyerRows.map(([buyer, { given, collected }]) => {
+                  const outstanding = Math.max(0, given - collected);
+                  return (
+                    <tr key={buyer}>
+                      <td>{buyer}</td>
+                      <td>GH₵ {num(given, 2)}</td>
+                      <td style={{ color: '#6abf6a' }}>GH₵ {num(collected, 2)}</td>
+                      <td style={{ color: outstanding > 0 ? '#e05c5c' : '#6abf6a', fontWeight: outstanding > 0 ? 700 : 400 }}>
+                        {outstanding > 0 ? `GH₵ ${num(outstanding, 2)}` : '✓ Cleared'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {buyerRows.length === 0 && (
+        <p style={{ color: '#555', fontSize: 13, textAlign: 'center', marginTop: 24 }}>No credit sales in this period.</p>
+      )}
+    </div>
+  );
+}
+
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
+  const setup = Number(flock.setupCost) || 0;
+  const [payModal, setPayModal] = useState(null);
+  const [editSale, setEditSale] = useState(null);
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [salesSubTab, setSalesSubTab] = useState('list');
+
+  // Period-filtered sales
+  const visibleSales = filterByPeriod(sales, period, customStart, customEnd);
+
+  // Period-filtered cost components — each source has a date field
+  const periodFeedCost  = filterByPeriod(feedRecords || [], period, customStart, customEnd)
+    .reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const periodLitterCost = filterByPeriod(litterRecords || [], period, customStart, customEnd)
+    .reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const periodPettyCost = filterByPeriod(
+    (allPettyCosts || []).filter((c) => c.farm === 'poultry'), period, customStart, customEnd
+  ).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const periodRunning = filterByPeriod(
+    (allFlockExpenses || []).filter((e) => !e.capital), period, customStart, customEnd
+  ).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  // Setup cost and coop depreciation are one-off charges — only include in 'all time' view
+  const periodSetup  = period === 'all' ? setup : 0;
+  const periodCoop   = period === 'all' ? (coopCharge || 0) : 0;
+
+  const periodRevenue  = visibleSales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const periodTotalCost = periodFeedCost + periodLitterCost + periodPettyCost + periodRunning + periodSetup + periodCoop;
+  const periodProfit   = periodRevenue - periodTotalCost;
+
+  const isFiltered = period !== 'all';
+  const periodLabel = isFiltered ? PERIOD_OPTS.find((o) => o.value === period)?.label || period : 'All time';
+
+  // saleOrigCredit gives the true credit portion at time of sale (immutable).
+  // calcOwed subtracts sum(payments) to get the remaining balance.
+  const totalOwed = sales.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, saleOrigCredit(r));
+    return s;
+  }, 0);
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 10 }}>
         <h3 style={{ fontSize: 18 }}>Sales &amp; Profit — {flock.flockName}</h3>
         <button className="btn btn-gold" onClick={onAdd}>+ Log sale</button>
       </div>
 
-      <div className="grid grid-4">
-        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s)`} />
-        <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
-        <StatCard title="Housing + Setup" value={`GH₵ ${num((litterCost || 0) + setup + (coopCharge || 0), 2)}`} foot={`litter ${num(litterCost || 0, 0)} + coop ${num(coopCharge || 0, 0)} + setup ${num(setup, 0)}`} />
-        <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
+      {/* ── Credit quick-glance card — always visible ── */}
+      <CreditSummaryCard sales={sales} />
+
+      {/* ── Sub-tab switcher ── */}
+      <div style={{ display: 'flex', gap: 6, margin: '10px 0 4px' }}>
+        {['list', 'summary'].map((t) => (
+          <button
+            key={t}
+            onClick={() => setSalesSubTab(t)}
+            style={{
+              padding: '5px 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
+              border: '1px solid',
+              borderColor: salesSubTab === t ? '#D4A537' : 'rgba(255,255,255,0.12)',
+              background: salesSubTab === t ? 'rgba(212,165,55,0.15)' : 'transparent',
+              color: salesSubTab === t ? '#D4A537' : '#aaa',
+              cursor: 'pointer', transition: 'all .15s',
+            }}
+          >
+            {t === 'list' ? 'Sales List' : 'Credit Summary'}
+          </button>
+        ))}
       </div>
 
-      <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
-        Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)}
-        + coop share GH₵ {num(coopCharge || 0, 2)} + other GH₵ {num(flockRunning || 0, 2)} + setup GH₵ {num(setup, 2)}).
-        {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> for chicks and brooding.
-        {coopInvested > 0 && (
-          <> Coops and housing: GH₵ {num(coopInvested, 2)} invested, charged over their working life
-          so one build doesn&apos;t swallow a single batch.</>
-        )}
+      {/* ── Credit Summary sub-tab ── */}
+      {salesSubTab === 'summary' && <CreditSummarySubTab sales={sales} />}
+
+      {salesSubTab === 'list' && <>
+      {/* ── Period selector at the top so KPIs respond to it ── */}
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+
+      {/* ── Hero P&L row — updates with period ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '14px 0 10px' }}>
+        <div style={{ background: 'rgba(122,154,102,0.10)', border: '1px solid rgba(122,154,102,0.25)', borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: '#7A9A66', fontWeight: 700 }}>Revenue</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: '#7A9A66' }}>GH₵ {num(periodRevenue, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>{visibleSales.length} sale(s) · {periodLabel}</p>
+        </div>
+        <div style={{ background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.22)', borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: '#e07070', fontWeight: 700 }}>Total Cost</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: '#e07070' }}>GH₵ {num(periodTotalCost, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>feed + litter + running{period === 'all' ? ' + setup' : ''}</p>
+        </div>
+        <div style={{ background: periodProfit >= 0 ? 'rgba(122,154,102,0.08)' : 'rgba(192,57,43,0.08)', border: `1px solid ${periodProfit >= 0 ? 'rgba(122,154,102,0.3)' : 'rgba(192,57,43,0.3)'}`, borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: periodProfit >= 0 ? '#7A9A66' : '#e07070', fontWeight: 700 }}>Net Profit</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: periodProfit >= 0 ? '#7A9A66' : '#e07070' }}>{periodProfit >= 0 ? '+' : ''}GH₵ {num(periodProfit, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>{periodRevenue > 0 ? `${num((periodProfit / periodRevenue) * 100, 1)}% margin` : 'no sales yet'}</p>
+        </div>
+      </div>
+
+      {/* ── Cost breakdown row ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 8, marginBottom: 14 }}>
+        <StatCard title="Feed Cost" value={`GH₵ ${num(periodFeedCost, 2)}`} tone="rust" foot={isFiltered ? periodLabel : 'from feed records'} />
+        <StatCard title="Litter" value={`GH₵ ${num(periodLitterCost, 2)}`} foot={isFiltered ? periodLabel : 'litter purchases'} />
+        <StatCard title="Running / Petty" value={`GH₵ ${num(periodPettyCost + periodRunning, 2)}`} tone="rust" foot="meds, labour, sundries" />
+        {period === 'all' && <StatCard title="Setup + Coop" value={`GH₵ ${num(periodSetup + periodCoop, 2)}`} foot="one-off charges" />}
+      </div>
+
+      {/* Payment mode breakdown */}
+      {(() => { const pm = calcPayModeTotals(visibleSales, (r) => r.amount); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
+
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed across {sales.filter((r) => (r.paymentStatus || 'paid') === 'credit' && calcOwed(r, saleOrigCredit(r)) > 0).length} sale(s).
+        </div>
+      )}
+
+      <p className="stat-foot" style={{ margin: '4px 0 14px' }}>
+        <button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> to update chick &amp; brooding cost.
+        {coopInvested > 0 && <> Coop investment GH₵ {num(coopInvested, 2)} is spread over its working life.</>}
+        {!isFiltered && <> Setup &amp; coop charges are included in all-time cost but excluded from period views.</>}
       </p>
 
       <div className="table-wrap">
         <table className="data">
           <thead>
-            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Notes</th><th></th></tr>
+            <tr><th>Date</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Amount</th><th>Buyer</th><th>Status</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
-            {sales.map((r) => (
+            {visibleSales.map((r) => (
               <tr key={r.id}>
                 <td className="mono">{fmtDate(r.date)}</td>
                 <td>{r.item}</td>
@@ -5173,35 +9221,102 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                 <td className="mono">{r.unitPrice != null ? num(r.unitPrice, 2) : '—'}</td>
                 <td className="mono">GH₵ {num(r.amount, 2)}</td>
                 <td>{r.buyer || '—'}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <CreditBadge sale={r} saleAmount={saleOrigCredit(r)} />
+                    {(r.paymentStatus || 'paid') === 'paid' && onUpdateSale && (
+                      <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                        onClick={() => onUpdateSale(r.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                    )}
+                    {(r.paymentStatus || 'paid') === 'credit' && onLogPayment && (
+                      <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal(r)}>Log payment</button>
+                    )}
+                  </div>
+                </td>
                 <td className="notes">{r.notes || ''}</td>
-                <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
+                <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button className="link-btn" onClick={() => setEditSale(r)}>Edit</button>
+                  <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
+                </td>
               </tr>
             ))}
-            {sales.length === 0 && <tr><td colSpan={8} className="empty">No sales logged yet — record egg or bird sales to build your profit picture.</td></tr>}
+            {visibleSales.length === 0 && <tr><td colSpan={9} className="empty">{sales.length === 0 ? 'No sales logged yet — record egg or bird sales to build your profit picture.' : 'No sales in this period.'}</td></tr>}
           </tbody>
         </table>
       </div>
+      </>}
+
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={saleOrigCredit(payModal)}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onLogPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateSale(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateSale(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
+      {editSale && (
+        <SaleForm
+          flock={flock}
+          prefill={editSale}
+          onClose={() => setEditSale(null)}
+          onSave={(updated) => { onUpdateSale(editSale.id, updated); setEditSale(null); }}
+        />
+      )}
     </>
   );
 }
 
-function SaleForm({ flock, onClose, onSave }) {
+function SaleForm({ flock, onClose, onSave, prefill }) {
   const layer = flock.type === 'layer';
-  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '' });
+  const isEdit = !!prefill;
+  const [f, setF] = useState(() => {
+    if (prefill) {
+      return {
+        date: prefill.date || todayISO(),
+        item: prefill.item || (layer ? 'Eggs (crates)' : 'Broilers'),
+        quantity: prefill.quantity != null ? String(prefill.quantity) : '',
+        unitPrice: prefill.unitPrice != null ? String(prefill.unitPrice) : '',
+        amount: prefill.amount != null ? String(prefill.amount) : '',
+        buyer: prefill.buyer || '',
+        notes: prefill.notes || '',
+        cashAmount: prefill.cashAmount != null ? String(prefill.cashAmount) : '',
+        momoAmount: prefill.momoAmount != null ? String(prefill.momoAmount) : '',
+        creditAmount: prefill.creditAmount != null ? String(prefill.creditAmount) : '',
+      };
+    }
+    return { date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' };
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
   const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - amount) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
   function submit() {
     if (!f.date || (f.quantity === '' && f.amount === '')) return;
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
     onSave({
-      id: newId(), date: f.date, item: f.item,
+      date: f.date, item: f.item,
       quantity: f.quantity === '' ? null : Number(f.quantity),
       unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
       amount, buyer: f.buyer || null, notes: f.notes || null,
+      cashAmount: hasAnySplit ? cash : amount,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      ...(isEdit ? {} : { id: newId(), payments: [] }),
     });
   }
   return (
-    <Modal title="Log sale" sub={amount ? `Amount: GH₵ ${num(amount, 2)}.` : 'Enter quantity × unit price, or type the amount directly.'} onClose={onClose}>
+    <Modal title={isEdit ? 'Edit sale' : 'Log sale'} sub={amount ? `Amount: GH₵ ${num(amount, 2)}.` : 'Enter quantity × unit price, or type the amount directly.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Item">
@@ -5213,11 +9328,25 @@ function SaleForm({ flock, onClose, onSave }) {
         <Field label="Unit price (GH₵)"><input type="number" step="0.01" value={f.unitPrice} onChange={set('unitPrice')} /></Field>
         <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : 'or type total'} /></Field>
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
-        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split the total across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
+        <Field label="Notes"><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ sale amount GH₵ {num(amount, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>{isEdit ? 'Update sale' : 'Save sale'}</button>
       </div>
     </Modal>
   );
@@ -5350,7 +9479,7 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut, onEditProfile }) {
+function SyncBar({ sync, user, cloudReady, profileName, farmName, onSetupCloud, onSync, onPull, onSignOut, onSwitchProfile, onEditProfile }) {
   const configured = cloudReady;
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
@@ -5360,15 +9489,32 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
     : when ? `${sync.message || 'Auto-saved to cloud'} · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : (user ? 'Auto-sync on — saving shortly' : 'Not synced yet this session');
 
+  const isOffline = !navigator.onLine;
+  const pendingSync = configured && (sync.status === 'error' || isOffline);
+
   return (
     <div className={`sync-bar${sync.status === 'error' ? ' error' : ''}`}>
       <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
       <span className="sync-label">
         {label}
-        {user && <span className="sync-user"> · {user.email}</span>}
+        {profileName && <span className="sync-user"> · 🧑‍🌾 {profileName}</span>}
+        {user && !profileName && <span className="sync-user"> · {user.email}</span>}
+        {pendingSync && (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 10,
+            background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.3)',
+            borderRadius: 20, padding: '1px 8px', fontSize: 11, color: '#fbbf24',
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24', display: 'inline-block' }} />
+            {isOffline ? 'Offline — sync pending' : 'Sync pending'}
+          </span>
+        )}
       </span>
       <span className="sync-actions">
         <button className="link-btn" onClick={onEditProfile}>Farm Profile</button>
+        {onSwitchProfile && (
+          <button className="link-btn" onClick={onSwitchProfile}>Switch profile</button>
+        )}
         {!configured && (
           <button className="link-btn" onClick={onSetupCloud}>Set up cloud sync</button>
         )}
@@ -6177,7 +10323,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'scouting', label: `${p.moduleName || 'Bell Pepper'} — Scouting`, rows: p.scouting || [],
+      key: 'scouting', label: 'Bell Pepper — Scouting', rows: p.scouting || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'pest', label: 'Pest / Issue' }, { key: 'severity', label: 'Severity' },
@@ -6185,7 +10331,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'sprays', label: `${p.moduleName || 'Bell Pepper'} — Spray & Fertigation`, rows: p.sprays || [],
+      key: 'sprays', label: 'Bell Pepper — Spray & Fertigation', rows: p.sprays || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'type', label: 'Type' }, { key: 'product', label: 'Product' }, { key: 'activeIngredient', label: 'Active Ingredient' },
@@ -6194,7 +10340,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'harvests', label: `${p.moduleName || 'Bell Pepper'} — Harvest & Sales`, rows: p.harvests || [],
+      key: 'harvests', label: 'Bell Pepper — Harvest & Sales', rows: p.harvests || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'weightKg', label: 'Weight (kg)' }, { key: 'grade', label: 'Grade' }, { key: 'pricePerKg', label: 'Price/kg' },
@@ -6202,7 +10348,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'manureReadings', label: `${p.moduleName || 'Bell Pepper'} — Manure Readings`, rows: p.manureReadings || [],
+      key: 'manureReadings', label: 'Bell Pepper — Manure Readings', rows: p.manureReadings || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
         { key: 'ec', label: 'EC' }, { key: 'ph', label: 'pH' }, { key: 'n', label: 'N' }, { key: 'p', label: 'P' }, { key: 'k', label: 'K' },
@@ -6210,7 +10356,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'soilReadings', label: `${p.moduleName || 'Bell Pepper'} — Soil Readings`, rows: p.soilReadings || [],
+      key: 'soilReadings', label: 'Bell Pepper — Soil Readings', rows: p.soilReadings || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
@@ -6219,7 +10365,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'batches', label: `${p.moduleName || 'Bell Pepper'} — Planting Batches`, rows: p.batches || [],
+      key: 'batches', label: 'Bell Pepper — Planting Batches', rows: p.batches || [],
       columns: [
         { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) }, { key: 'batchLabel', label: 'Batch' },
         { key: 'variety', label: 'Variety' }, { key: 'transplantDate', label: 'Transplanted' },
@@ -6228,7 +10374,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'nurseryBatches', label: `${p.moduleName || 'Bell Pepper'} — Nursery`, rows: p.nurseryBatches || [],
+      key: 'nurseryBatches', label: 'Bell Pepper — Nursery', rows: p.nurseryBatches || [],
       columns: [
         { key: 'batchLabel', label: 'Batch' }, { key: 'variety', label: 'Variety' }, { key: 'seedSowDate', label: 'Sown' },
         { key: 'method', label: 'Method' }, { key: 'quantitySown', label: 'Qty Sown' },
@@ -6240,7 +10386,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'inputs', label: `${p.moduleName || 'Bell Pepper'} — Input Stock`, rows: p.inputs || [],
+      key: 'inputs', label: 'Bell Pepper — Input Stock', rows: p.inputs || [],
       columns: [
         { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'activeIngredient', label: 'Active Ingredient' },
         { key: 'quantity', label: 'Quantity' }, { key: 'unit', label: 'Unit' }, { key: 'reorderAt', label: 'Reorder At' },
@@ -6688,6 +10834,109 @@ function inbreedingBadge(level) {
   return <span className="tag green">🟢 Clear</span>;
 }
 
+function GoatFinancialsPanel({ sales, revenue, purchaseCost, healthCost, margin, activeAnimals, goatLabel, onAddSale, onDeleteSale, onUpdateSale, onLogPayment, onInvoiceSale }) {
+  const [payModal, setPayModal] = useState(null);
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const totalOwed = sales.reduce((s, r) => {
+    if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.price) || 0);
+    return s;
+  }, 0);
+
+  const sorted = [...sales].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const visibleSales = filterByPeriod(sorted, period, customStart, customEnd);
+  const periodRevenue = visibleSales.reduce((s, r) => s + (Number(r.price) || 0), 0);
+
+  return (
+    <>
+      <div className="grid grid-4" style={{ marginBottom: 18 }}>
+        <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="all time goat sales" />
+        <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
+        <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
+        <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
+      </div>
+
+      {/* Payment mode breakdown */}
+      {(() => { const pm = calcPayModeTotals(sales, (r) => r.price); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
+
+      {totalOwed > 0 && (
+        <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
+          ⚠️ Outstanding credit: <strong>GH₵ {num(totalOwed, 2)}</strong> still owed from goat sales.
+        </div>
+      )}
+      <div className="panel-head" style={{ marginBottom: 14 }}>
+        <h3 style={{ fontSize: 18 }}>Sales</h3>
+        <button className="btn btn-green" onClick={onAddSale} disabled={!activeAnimals.length}>+ Record sale</button>
+      </div>
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+      {period !== 'all' && (
+        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+          {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
+        </p>
+      )}
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {visibleSales.map((s) => (
+              <tr key={s.id}>
+                <td className="mono">{fmtDate(s.date)}</td>
+                <td>{goatLabel(s.animalId)}</td>
+                <td>{s.buyer || '—'}</td>
+                <td className="mono">{s.weightKg ? num(s.weightKg, 1) : '—'}</td>
+                <td className="mono">GH₵ {num(s.price, 2)}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <CreditBadge sale={s} saleAmount={Number(s.price) || 0} />
+                    {(s.paymentStatus || 'paid') === 'paid' && onUpdateSale && (
+                      <button className="link-btn" style={{ fontSize: 11, color: '#888' }}
+                        onClick={() => onUpdateSale(s.id, { paymentStatus: 'credit' })}>→ Credit</button>
+                    )}
+                    {(s.paymentStatus || 'paid') === 'credit' && onLogPayment && (
+                      <button className="link-btn" style={{ fontSize: 11 }} onClick={() => setPayModal(s)}>Log payment</button>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={() => onInvoiceSale(s, goatLabel(s.animalId))}>Invoice</button>
+                    <button className="link-btn rust" onClick={() => onDeleteSale(s.id)}>Delete</button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {visibleSales.length === 0 && <tr><td colSpan={7} className="empty">{sales.length === 0 ? 'No goat sales yet.' : 'No sales in this period.'}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="stat-foot" style={{ marginTop: 14 }}>
+        Running goat costs (housing, mineral licks, general vet visits) are logged as expenses in
+        <strong> Whole Farm → Profit &amp; loss</strong> with enterprise set to "Goats" — they flow into this
+        margin automatically. Full CSV export for every goat dataset is in <strong>Whole Farm → Export</strong>.
+      </p>
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal}
+          saleAmount={Number(payModal.price) || 0}
+          buyerName={payModal.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            onLogPayment(payModal.id, payment);
+            if (fullyPaid) onUpdateSale(payModal.id, { paymentStatus: 'paid' });
+          }}
+          onMarkPaid={() => onUpdateSale(payModal.id, { paymentStatus: 'paid' })}
+        />
+      )}
+    </>
+  );
+}
+
 function GoatWorkspace({
   goats, farmProfile, reminders, expenses,
   onAddGoat, onUpdateGoat, onDeleteGoat,
@@ -6697,7 +10946,7 @@ function GoatWorkspace({
   onAddKidMortality, onDeleteKidMortality,
   onAddHealth, onDeleteHealth,
   onAddWeight, onDeleteWeight,
-  onAddSale, onDeleteSale,
+  onAddSale, onDeleteSale, onUpdateSale, onLogPayment,
   onAddReminder, onToggleReminder, onDeleteReminder,
   onInvoiceSale,
 }) {
@@ -7114,46 +11363,15 @@ function GoatWorkspace({
       )}
 
       {gtab === 'financials' && (
-        <>
-          <div className="grid grid-4" style={{ marginBottom: 18 }}>
-            <StatCard title="Revenue" value={`GH₵ ${num(revenue, 2)}`} tone="green" foot="goat sales" />
-            <StatCard title="Purchase Cost" value={`GH₵ ${num(purchaseCost, 2)}`} tone="rust" foot="animals bought in" />
-            <StatCard title="Health Cost" value={`GH₵ ${num(healthCost, 2)}`} tone="rust" foot="deworm, vax, treatment" />
-            <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot="revenue − all cost" />
-          </div>
-          <div className="panel-head" style={{ marginBottom: 14 }}>
-            <h3 style={{ fontSize: 18 }}>Sales</h3>
-            <button className="btn btn-green" onClick={() => setModal('sale')} disabled={!activeAnimals.length}>+ Record sale</button>
-          </div>
-          <div className="table-wrap">
-            <table className="data">
-              <thead><tr><th>Date</th><th>Animal</th><th>Buyer</th><th>Weight (kg)</th><th>Price</th><th></th></tr></thead>
-              <tbody>
-                {[...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).map((s) => (
-                  <tr key={s.id}>
-                    <td className="mono">{fmtDate(s.date)}</td>
-                    <td>{goatLabel(s.animalId)}</td>
-                    <td>{s.buyer || '—'}</td>
-                    <td className="mono">{s.weightKg ? num(s.weightKg, 1) : '—'}</td>
-                    <td className="mono">GH₵ {num(s.price, 2)}</td>
-                    <td>
-                      <span style={{ display: 'flex', gap: 8 }}>
-                        <button className="link-btn" onClick={() => onInvoiceSale(s, goatLabel(s.animalId))}>Invoice</button>
-                        <button className="link-btn rust" onClick={() => onDeleteSale(s.id)}>Delete</button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {sales.length === 0 && <tr><td colSpan={6} className="empty">No goat sales yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <p className="stat-foot" style={{ marginTop: 14 }}>
-            Running goat costs (housing, mineral licks, general vet visits) are logged as expenses in
-            <strong> Whole Farm → Profit &amp; loss</strong> with enterprise set to "Goats" — they flow into this
-            margin automatically. Full CSV export for every goat dataset is in <strong>Whole Farm → Export</strong>.
-          </p>
-        </>
+        <GoatFinancialsPanel
+          sales={sales} revenue={revenue} purchaseCost={purchaseCost} healthCost={healthCost} margin={margin}
+          activeAnimals={activeAnimals} goatLabel={goatLabel}
+          onAddSale={() => setModal('sale')}
+          onDeleteSale={onDeleteSale}
+          onUpdateSale={onUpdateSale}
+          onLogPayment={onLogPayment}
+          onInvoiceSale={onInvoiceSale}
+        />
       )}
 
       {gtab === 'reminders' && (
@@ -7803,11 +12021,26 @@ function GoatWeightForm({ animals, onClose, onSave }) {
 }
 
 function GoatSaleForm({ animals, onClose, onSave }) {
-  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '' });
+  const [f, setF] = useState({ animalId: animals[0]?.id || '', date: todayISO(), buyer: '', weightKg: '', price: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const price = Number(f.price) || 0;
+  const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
+  const splitOk = splitTotal === 0 || Math.abs(splitTotal - price) < 0.01;
+  const hasCreditSplit = (Number(f.creditAmount) || 0) > 0;
   function submit() {
     if (!f.animalId || f.price === '') return;
-    onSave({ ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price: Number(f.price) });
+    const cash = Number(f.cashAmount) || 0;
+    const momo = Number(f.momoAmount) || 0;
+    const credit = Number(f.creditAmount) || 0;
+    const hasAnySplit = cash + momo + credit > 0;
+    onSave({
+      ...f, weightKg: f.weightKg === '' ? null : Number(f.weightKg), price,
+      cashAmount: hasAnySplit ? cash : price,
+      momoAmount: hasAnySplit ? momo : 0,
+      creditAmount: hasAnySplit ? credit : 0,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
+    });
   }
   return (
     <Modal title="Record goat sale" sub="Ghana goat prices spike around Christmas, Easter, funerals, and Eid — this builds your own seasonal price history." onClose={onClose}>
@@ -7817,11 +12050,25 @@ function GoatSaleForm({ animals, onClose, onSave }) {
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
         <Field label="Weight (kg)"><input type="number" step="0.1" value={f.weightKg} onChange={set('weightKg')} /></Field>
         <Field label="Price (GH₵)"><input type="number" step="0.01" value={f.price} onChange={set('price')} /></Field>
+      </div>
+      {/* Payment mode split */}
+      <div style={{ margin: '10px 0 4px', fontSize: 12, color: '#aaa', fontWeight: 600 }}>
+        💰 How was it paid? <span style={{ color: '#666', fontWeight: 400 }}>(split across modes — leave blank if all cash)</span>
+      </div>
+      <div className="form-grid">
+        <Field label="💵 Cash (GH₵)"><input type="number" step="0.01" min="0" value={f.cashAmount} onChange={set('cashAmount')} placeholder="0.00" /></Field>
+        <Field label="📱 MoMo (GH₵)"><input type="number" step="0.01" min="0" value={f.momoAmount} onChange={set('momoAmount')} placeholder="0.00" /></Field>
+        <Field label="📋 Credit (GH₵)"><input type="number" step="0.01" min="0" value={f.creditAmount} onChange={set('creditAmount')} placeholder="0.00" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
+      {splitTotal > 0 && !splitOk && (
+        <p style={{ color: '#e05c5c', fontSize: 12, margin: '4px 0 8px' }}>
+          ⚠️ Split total GH₵ {num(splitTotal, 2)} ≠ price GH₵ {num(price, 2)}
+        </p>
+      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save sale</button>
       </div>
     </Modal>
   );
@@ -7841,6 +12088,7 @@ function FarmsWorkspace({
   onAddField, onUpdateField, onDeleteField,
   onAddReminder, onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
   onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale,
+  onUpdateCustomSale, onAddCustomSalePayment,
 }) {
   const { askConfirm } = useToastConfirm();
   const [activeFarmId, setActiveFarmId] = useState(farms[0]?.id || null);
@@ -7908,6 +12156,8 @@ function FarmsWorkspace({
           onDeleteFeedLog={(id) => onDeleteFeedLog(activeFarm.id, id)}
           onAddSale={(entry) => onAddSale(activeFarm.id, entry)}
           onDeleteSale={(id) => onDeleteSale(activeFarm.id, id)}
+          onUpdateSale={onUpdateCustomSale}
+          onLogPayment={onAddCustomSalePayment}
         />
       )}
 
@@ -8000,7 +12250,7 @@ function CropFarmDetail({
   farm, reminders, onAddField, onUpdateField, onDeleteField, onAddReminder,
   onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
 }) {
-  const { showToast, askConfirm } = useToastConfirm();
+  const { askConfirm } = useToastConfirm();
   const [view, setView] = useState('fields'); // 'fields' | 'programme' | 'scouting' | 'harvest'
   const [modal, setModal] = useState(null);
   const [activeFieldId, setActiveFieldId] = useState(farm.fields?.[0]?.id || null);
@@ -8063,11 +12313,11 @@ function CropFarmDetail({
               reminders={reminders}
               onAddReminder={onAddReminder}
               onLogNow={() => {}}
+              showPepperRules={false}
               onAddEvent={(ev) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ev] } })}
               onAddPattern={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
-              onLoadTemplate={(key) => onUpdateField(activeField.id, { programmeKey: key, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } })}
-              onUploadCsv={(events, replace) => onUpdateField(activeField.id, { sprayProgramme: { events: [...(replace ? [] : ((activeField.sprayProgramme && activeField.sprayProgramme.events) || [])), ...events] } })}
-              onClearProgramme={() => onUpdateField(activeField.id, { sprayProgramme: { events: [] } })}
+              onLoadTemplate={() => onUpdateField(activeField.id, { sprayProgramme: { events: loadBellPepperTemplate() } })}
+              onUploadCsv={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
               onDeleteEvent={(eventId) => onUpdateField(activeField.id, { sprayProgramme: { events: ((activeField.sprayProgramme && activeField.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } })}
             />
           </>
@@ -8095,13 +12345,7 @@ function CropFarmDetail({
           field={typeof modal === 'string' && modal.startsWith('field:') ? fields.find((fl) => fl.id === modal.split(':')[1]) : null}
           onClose={() => setModal(null)}
           onSave={(fl) => {
-            const prior = fields.find((x) => x.id === fl.id);
-            const key = autoProgrammeKey(prior || null, { ...(prior || {}), ...fl });
-            if (key) {
-              const t = PROGRAMME_TEMPLATES[key];
-              showToast(`Loaded the ${t.label} programme (${t.build().length} events) — Day 0 is ${fmtDate(fl.transplantDate)}.`, 'green');
-            }
-            if (prior) onUpdateField(fl.id, fl);
+            if (fl.id && fields.some((x) => x.id === fl.id)) onUpdateField(fl.id, fl);
             else onAddField(fl);
             setModal(null);
           }}
@@ -8131,7 +12375,6 @@ function CustomFieldForm({ field, onClose, onSave }) {
   const isEdit = Boolean(field);
   const [f, setF] = useState({
     name: field?.name || '', sizeAcres: field?.sizeAcres ?? '',
-    programmeKey: field?.programmeKey || '',
     transplantDate: field?.transplantDate || '', notes: field?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -8139,7 +12382,6 @@ function CustomFieldForm({ field, onClose, onSave }) {
     if (!f.name) return;
     onSave({
       id: field?.id || newId(), name: f.name,
-      programmeKey: f.programmeKey || '',
       sizeAcres: f.sizeAcres === '' ? null : Number(f.sizeAcres),
       transplantDate: f.transplantDate || '', notes: f.notes || '',
       sprayProgramme: field?.sprayProgramme || { events: [] },
@@ -8149,11 +12391,8 @@ function CustomFieldForm({ field, onClose, onSave }) {
     <Modal title={isEdit ? `Edit ${field.name}` : 'Add a field'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Plot 1" /></Field>
-        <Field label="Crop programme" span2>
-          <ProgrammeSelect value={f.programmeKey} onChange={(key) => setF({ ...f, programmeKey: key })} />
-        </Field>
         <Field label="Size (acres)"><input type="number" step="0.1" value={f.sizeAcres} onChange={set('sizeAcres')} /></Field>
-        <Field label="Planting / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Planting / start date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -8166,11 +12405,21 @@ function CustomFieldForm({ field, onClose, onSave }) {
 
 /* ---------------- Livestock farm detail (generic — any species) ---------------- */
 
-function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale }) {
+function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
   const [view, setView] = useState('overview');
   const [modal, setModal] = useState(null);
+  const [payModal, setPayModal] = useState(null); // { sale, saleAmount }
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const { askConfirm } = useToastConfirm();
   const totalFeedCost = (farm.feedLog || []).reduce((s, e) => s + (Number(e.cost) || 0), 0);
   const totalSalesRevenue = (farm.salesLog || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalOwed = (farm.salesLog || []).reduce((s, e) => s + calcOwed(e, Number(e.amount) || 0), 0);
+
+  const sortedSales = [...(farm.salesLog || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const visibleSales = filterByPeriod(sortedSales, period, customStart, customEnd);
+  const periodRevenue = visibleSales.reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
   return (
     <>
@@ -8191,10 +12440,16 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
           </p>
           <div className="grid grid-4">
             <StatCard title="Headcount" value={farm.headcount != null ? num(farm.headcount) : '—'} tone="gold" />
-            <StatCard title="Feed Cost" value={`GHS ${num(totalFeedCost, 2)}`} />
-            <StatCard title="Sales Revenue" value={`GHS ${num(totalSalesRevenue, 2)}`} tone="green" />
+            <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} />
+            <StatCard title="Sales Revenue" value={`GH₵ ${num(totalSalesRevenue, 2)}`} tone="green" />
             <StatCard title="Health Entries" value={num((farm.healthLog || []).length)} />
           </div>
+          {totalOwed > 0 && (
+            <div className="alert-banner" style={{ marginTop: 14 }}>
+              ⚠ GH₵ {num(totalOwed, 2)} outstanding in credit sales —{' '}
+              <button className="link-btn" onClick={() => setView('sales')}>view sales</button>
+            </div>
+          )}
         </>
       )}
 
@@ -8212,12 +12467,70 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
           columns={[['date', 'Date'], ['feedType', 'Feed'], ['quantityKg', 'Qty (kg)'], ['cost', 'Cost (GHS)']]}
         />
       )}
+
       {view === 'sales' && (
-        <GenericLogView
-          title="Sales" farm={farm} entries={farm.salesLog || []}
-          onAdd={() => setModal('sale')} onDelete={onDeleteSale}
-          columns={[['date', 'Date'], ['quantity', 'Qty'], ['amount', 'Amount (GHS)'], ['buyer', 'Buyer']]}
-        />
+        <>
+          <div className="panel-head" style={{ marginBottom: 6 }}>
+            <h3 style={{ fontSize: 18 }}>Sales</h3>
+            <button className="btn btn-green" onClick={() => setModal('sale')}>+ Log sale</button>
+          </div>
+          {totalOwed > 0 && (
+            <div className="alert-banner" style={{ marginBottom: 10 }}>
+              ⚠ GH₵ {num(totalOwed, 2)} outstanding across credit sales
+            </div>
+          )}
+          <PeriodFilter
+            period={period} onPeriod={setPeriod}
+            customStart={customStart} customEnd={customEnd}
+            onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+          />
+          {period !== 'all' && (
+            <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
+              {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
+            </p>
+          )}
+          {sortedSales.length === 0 ? (
+            <p className="empty" style={{ padding: '18px 0' }}>No sales logged yet.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Date</th><th>Buyer</th><th>Qty</th><th>Amount (GH₵)</th><th>Status</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleSales.length === 0 ? (
+                    <tr><td colSpan={6} className="empty">No sales in this period.</td></tr>
+                  ) : visibleSales.map((s) => {
+                    const saleAmount = Number(s.amount) || 0;
+                    const owed = calcOwed(s, saleAmount);
+                    return (
+                      <tr key={s.id}>
+                        <td className="mono">{fmtDate(s.date)}</td>
+                        <td>{s.buyer || '—'}</td>
+                        <td>{s.quantity || '—'}</td>
+                        <td>GH₵ {num(saleAmount, 2)}</td>
+                        <td><CreditBadge sale={s} saleAmount={saleAmount} /></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {s.paymentStatus === 'credit' && owed > 0 && onLogPayment && (
+                            <button className="link-btn gold" style={{ marginRight: 8 }}
+                              onClick={() => setPayModal({ sale: s, saleAmount })}>
+                              Log payment
+                            </button>
+                          )}
+                          <button className="link-btn rust" onClick={async () => {
+                            if (await askConfirm('Delete this sale record?')) onDeleteSale(s.id);
+                          }}>Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {modal === 'health' && (
@@ -8237,14 +12550,60 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
         />
       )}
       {modal === 'sale' && (
-        <SimpleLogForm
-          title="Log a sale"
-          fields={[['date', 'Date', 'date'], ['quantity', 'Quantity', 'number'], ['amount', 'Amount (GHS)', 'number'], ['buyer', 'Buyer', 'text'], ['notes', 'Notes', 'textarea']]}
+        <CustomSaleForm
           onClose={() => setModal(null)}
           onSave={(entry) => { onAddSale(entry); setModal(null); }}
         />
       )}
+
+      {payModal && (
+        <LogPaymentModal
+          sale={payModal.sale}
+          saleAmount={payModal.saleAmount}
+          buyerName={payModal.sale.buyer}
+          onClose={() => setPayModal(null)}
+          onLogPayment={(payment, fullyPaid) => {
+            if (onLogPayment) onLogPayment(farm.id, payModal.sale.id, payment);
+            if (fullyPaid && onUpdateSale) onUpdateSale(farm.id, payModal.sale.id, { paymentStatus: 'paid' });
+            setPayModal(null);
+          }}
+          onMarkPaid={() => {
+            if (onUpdateSale) onUpdateSale(farm.id, payModal.sale.id, { paymentStatus: 'paid' });
+            setPayModal(null);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+function CustomSaleForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), buyer: '', quantity: '', amount: '', notes: '', paymentStatus: 'paid' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (f.amount === '') return;
+    onSave({ ...f, quantity: f.quantity === '' ? null : Number(f.quantity), amount: Number(f.amount), paymentStatus: f.paymentStatus, payments: [] });
+  }
+  return (
+    <Modal title="Log a sale" onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} /></Field>
+        <Field label="Quantity"><input type="number" step="1" value={f.quantity} onChange={set('quantity')} /></Field>
+        <Field label="Amount (GH₵)"><input type="number" step="0.01" value={f.amount} onChange={set('amount')} /></Field>
+        <Field label="Payment">
+          <select value={f.paymentStatus} onChange={set('paymentStatus')}>
+            <option value="paid">Paid (cash / transfer)</option>
+            <option value="credit">Credit (pay later)</option>
+          </select>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit}>Save sale</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -8319,9 +12678,9 @@ function SimpleLogForm({ title, fields, onClose, onSave }) {
   );
 }
 
-function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice, onAddBsfBatch, onUpdateBsfBatch, onDeleteBsfBatch, onAddOwnerLoan, onUpdateOwnerLoan, onDeleteOwnerLoan, onAddLoanRepayment, onDeleteLoanRepayment }) {
+function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, onSaveStaff, onDeleteStaff, onNewInvoice, onDeleteInvoice, onAddBsfBatch, onUpdateBsfBatch, onDeleteBsfBatch, onAddOwnerLoan, onUpdateOwnerLoan, onDeleteOwnerLoan, onAddLoanRepayment, onDeleteLoanRepayment, onSaveExpenseTemplate, onDeleteExpenseTemplate, onApplyExpenseTemplate }) {
   const [modal, setModal] = useState(null);
-  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel' | 'bsf' | 'loans'
+  const [view, setView] = useState('pl');   // 'pl' | 'assets' | 'staff' | 'fuel' | 'bsf' | 'loans' | 'templates'
   const [editingPayment, setEditingPayment] = useState(null);
   const [editingStaff, setEditingStaff] = useState(null);
   const [editingFuel, setEditingFuel] = useState(null);
@@ -8367,7 +12726,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
 
   // ---- Pepper ----
   const p = data.pepper || {};
-  const pepperRevenue = (p.harvests || []).reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const pepperRevenue = (p.harvests || []).reduce((s, h) => s + harvestRev(h), 0);
   const sprayCost = (p.sprays || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
   const fieldSetup = fields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0);
   const pepperCost = sprayCost + fieldSetup + runningCost('pepper') + capexCharge('pepper');
@@ -8431,6 +12790,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
         <button className={view === 'fuel' ? 'active' : ''} onClick={() => setView('fuel')}>Fuel</button>
         <button className={view === 'bsf' ? 'active' : ''} onClick={() => setView('bsf')}>BSF Larvae</button>
         <button className={view === 'loans' ? 'active' : ''} onClick={() => setView('loans')}>Owner Loans</button>
+        <button className={view === 'templates' ? 'active' : ''} onClick={() => setView('templates')}>Quick expenses</button>
         <button className={view === 'export' ? 'active' : ''} onClick={() => setView('export')}>Export</button>
       </div>
 
@@ -8607,6 +12967,15 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           onDelete={onDeleteOwnerLoan}
           onRepay={(loanId) => { setRepayingLoanId(loanId); setModal('repayment'); }}
           onDeleteRepayment={onDeleteLoanRepayment}
+        />
+      )}
+
+      {view === 'templates' && (
+        <ExpenseTemplatesView
+          templates={data.expenseTemplates || []}
+          onSave={onSaveExpenseTemplate}
+          onDelete={onDeleteExpenseTemplate}
+          onApply={onApplyExpenseTemplate}
         />
       )}
 
@@ -9954,7 +14323,7 @@ function BatchPerformanceView({ fields, batches, soilReadings, harvests, scoutin
         const batchScouting = scouting.filter(inWindow);
         const batchSprays = sprays.filter(inWindow);
         const kg = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
-        const revenue = batchHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+        const revenue = batchHarvests.reduce((s, h) => s + harvestRev(h), 0);
         const sprayCost = batchSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
         const cost = (Number(b.setupCost) || 0) + sprayCost;
         const margin = revenue - cost;
@@ -10083,7 +14452,6 @@ function SoilReadingForm({ fields, defaultField, onClose, onSave }) {
 function NewBatchForm({ field, onClose, onSave }) {
   const [f, setF] = useState({
     batchLabel: '', variety: '', transplantDate: todayISO(), plantCount: '', spacing: field?.spacing || '',
-    programmeKey: field?.programmeKey || '',
     expectedHarvestDAT: field?.expectedHarvestDAT ?? 70, setupCost: '', manureAppliedDate: '', notes: '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -10092,7 +14460,6 @@ function NewBatchForm({ field, onClose, onSave }) {
     if (!f.transplantDate) return;
     onSave({
       currentBatchLabel: f.batchLabel || 'New batch',
-      programmeKey: f.programmeKey || '',
       variety: f.variety || '', transplantDate: f.transplantDate,
       plantCount: f.plantCount === '' ? null : Number(f.plantCount),
       spacing: f.spacing || '',
@@ -10112,19 +14479,8 @@ function NewBatchForm({ field, onClose, onSave }) {
     >
       <div className="form-grid">
         <Field label="Batch label" span2><input value={f.batchLabel} onChange={set('batchLabel')} placeholder="e.g. Batch 2 — dry season" /></Field>
-        <Field label="Crop programme" span2>
-          <ProgrammeSelect
-            value={f.programmeKey}
-            onChange={(key) => {
-              const prevDefault = (PROGRAMME_TEMPLATES[f.programmeKey] || {}).defaultHarvestDAT;
-              const untouched = f.expectedHarvestDAT === '' || Number(f.expectedHarvestDAT) === (prevDefault ?? 70);
-              const nextDefault = (PROGRAMME_TEMPLATES[key] || {}).defaultHarvestDAT;
-              setF({ ...f, programmeKey: key, expectedHarvestDAT: untouched && nextDefault ? nextDefault : f.expectedHarvestDAT });
-            }}
-          />
-        </Field>
         <Field label="Variety"><input value={f.variety} onChange={set('variety')} /></Field>
-        <Field label="Transplant / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
         <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
         <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} /></Field>
         <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
@@ -10163,7 +14519,7 @@ function NurseryTab({ batches, fields, onAdd, onEdit, onDelete, onTransplant }) 
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
         Track seedlings from sowing through germination to transplant-ready, before they ever reach
-        Field A or B. Typical bell pepper nursery duration is around 30 days, but every batch can set
+        one of your fields. Typical bell pepper nursery duration is around 30 days, but every batch can set
         its own.
       </p>
 
@@ -10350,6 +14706,343 @@ function TransplantNurseryForm({ batch, fields, onClose, onSave }) {
 /* ============================================================= */
 /* ============= AGROCHEMICAL / INPUT STOCK (PEPPER) =========== */
 /* ============================================================= */
+
+// ── Crops Financials ──────────────────────────────────────────────────────────
+
+class CropsFinancialsErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, background: 'var(--card-bg)', borderRadius: 10, border: '1px solid var(--border)' }}>
+          <p style={{ color: '#c0392b', fontWeight: 700, marginBottom: 8 }}>⚠️ Financials failed to load</p>
+          <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 12 }}>Error: {this.state.error.message}</p>
+          <button className="btn btn-ghost" onClick={() => this.setState({ error: null })}>Retry</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const CROP_EXP_CATS = ['Labour', 'Irrigation', 'Fertiliser', 'Fungicide', 'Insecticide', 'Seeds / Seedlings', 'Transport', 'Other'];
+const PERIOD_OPTS_CROP = [
+  { value: 'all',   label: 'All time' },
+  { value: 'today', label: 'Today' },
+  { value: 'week',  label: 'This week' },
+  { value: 'month', label: 'This month' },
+  { value: 'year',  label: 'This year' },
+  { value: 'custom',label: 'Custom' },
+];
+
+function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpense, onDeleteExpense }) {
+  const ghc = (v) => `GH₵ ${num(v, 2)}`;
+  const [fieldTab, setFieldTab] = useState('all');   // 'all' | field.id
+  const [period, setPeriod]     = useState('all');
+  const [customStart, setCS]    = useState('');
+  const [customEnd,   setCE]    = useState('');
+  const [subTab, setSubTab]     = useState('summary'); // 'summary' | 'income' | 'expenses'
+
+  // ── defensive: guard against missing dates or fieldIds in old records ──
+  const safeHarvests     = (harvests     || []).filter((h) => h && h.date);
+  const safeSprays       = (sprays       || []).filter((s) => s && s.date);
+  const safeCropExpenses = (cropExpenses || []).filter((e) => e && e.date);
+
+  // ── period filter (delegates to the shared filterByPeriod utility) ──
+  function filterByP(arr, dateField = 'date') {
+    return filterByPeriod(arr, period, customStart, customEnd, dateField);
+  }
+
+  // ── field filter ──
+  const inField = (r) => fieldTab === 'all' || r.fieldId === fieldTab;
+  const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
+  const activeFields = fieldTab === 'all' ? fields : fields.filter((f) => f.id === fieldTab);
+
+  // ── per-field summary for "all" view ──
+  function fieldSummary(fid) {
+    const fHarvests = filterByP(safeHarvests.filter((h) => h.fieldId === fid));
+    const fSprays   = filterByP(safeSprays.filter((s) => s.fieldId === fid));
+    const fExp      = filterByP(safeCropExpenses.filter((e) => e.fieldId === fid));
+    const setupCost = (fields.find((f) => f.id === fid) || {}).setupCost || 0;
+    const rev  = fHarvests.reduce((s, h) => s + harvestRev(h), 0);
+    const cost = fSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0)
+               + fExp.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+               + (period === 'all' ? Number(setupCost) : 0);
+    return { rev, cost, profit: rev - cost, harvests: fHarvests, sprays: fSprays, expenses: fExp };
+  }
+
+  // ── combined totals for currently selected field/period ──
+  const visHarvests = filterByP(safeHarvests.filter(inField));
+  const visSprays   = filterByP(safeSprays.filter(inField));
+  const visExp      = filterByP(safeCropExpenses.filter(inField));
+  const visSetup    = period === 'all'
+    ? activeFields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0)
+    : 0;
+
+  const totalRev    = visHarvests.reduce((s, h) => s + harvestRev(h), 0);
+  const sprayCost   = visSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const expCost     = visExp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalCost   = sprayCost + expCost + visSetup;
+  const profit      = totalRev - totalCost;
+
+  const periodLabel = period === 'custom'
+    ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom')
+    : (PERIOD_OPTS_CROP.find((o) => o.value === period)?.label || 'All time');
+
+  if (!fields || fields.length === 0) {
+    return <p className="empty" style={{ padding: 24 }}>No fields found. Add a field under the Dashboard tab first.</p>;
+  }
+
+  return (
+    <div>
+      {/* Period filter */}
+      <div className="panel-head" style={{ marginBottom: 12 }}>
+        <h3 style={{ fontSize: 18 }}>💰 Crops Financials</h3>
+        <button className="btn btn-green" onClick={onAddExpense}>+ Log Expense</button>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', marginRight: 4 }}>Period:</span>
+        {PERIOD_OPTS_CROP.map((o) => (
+          <button
+            key={o.value}
+            className={`tag${period === o.value ? ' green' : ''}`}
+            style={{ cursor: 'pointer', border: '1px solid var(--border)', background: period === o.value ? undefined : 'transparent' }}
+            onClick={() => setPeriod(o.value)}
+          >{o.label}</button>
+        ))}
+      </div>
+      {period === 'custom' && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+          <input type="date" value={customStart} onChange={(e) => setCS(e.target.value)}
+            style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '4px 8px', fontSize: 13 }} />
+          <span style={{ color: 'var(--text3)' }}>→</span>
+          <input type="date" value={customEnd} onChange={(e) => setCE(e.target.value)}
+            style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '4px 8px', fontSize: 13 }} />
+        </div>
+      )}
+
+      {/* Field sub-tabs */}
+      <nav className="tab-row" style={{ marginBottom: 14 }}>
+        <button className={`tab${fieldTab === 'all' ? ' active' : ''}`} onClick={() => setFieldTab('all')}>🌾 All Fields</button>
+        {fields.map((f) => (
+          <button key={f.id} className={`tab${fieldTab === f.id ? ' active' : ''}`} onClick={() => setFieldTab(f.id)}>
+            🌶 {f.name}
+          </button>
+        ))}
+      </nav>
+
+      {/* Hero KPI tiles */}
+      <div className="stat-grid" style={{ marginBottom: 14 }}>
+        <div className="stat-card">
+          <span className="stat-label">Revenue</span>
+          <span className="stat-value gold">{ghc(totalRev)}</span>
+          <span className="stat-foot">{periodLabel} · {fieldTab === 'all' ? 'all fields' : fieldName(fieldTab)}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Total Cost</span>
+          <span className="stat-value rust">{ghc(totalCost)}</span>
+          <span className="stat-foot">sprays + expenses{period === 'all' ? ' + setup' : ''}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Net Profit</span>
+          <span className={`stat-value ${profit >= 0 ? 'green' : 'rust'}`}>{profit >= 0 ? '+' : ''}{ghc(profit)}</span>
+          <span className="stat-foot">{totalRev > 0 ? `${num((profit / totalRev) * 100, 1)}% margin` : 'no sales yet'}</span>
+        </div>
+      </div>
+
+      {/* Cost breakdown row */}
+      <div className="stat-grid" style={{ marginBottom: 16 }}>
+        <div className="stat-card">
+          <span className="stat-label">Spray / Input Costs</span>
+          <span className="stat-value rust">{ghc(sprayCost)}</span>
+          <span className="stat-foot">from spray log</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Labour &amp; Other</span>
+          <span className="stat-value rust">{ghc(expCost)}</span>
+          <span className="stat-foot">from expense log</span>
+        </div>
+        {period === 'all' && visSetup > 0 && (
+          <div className="stat-card">
+            <span className="stat-label">Setup Cost</span>
+            <span className="stat-value rust">{ghc(visSetup)}</span>
+            <span className="stat-foot">field preparation</span>
+          </div>
+        )}
+      </div>
+
+      {/* Per-field breakdown only when viewing all fields */}
+      {fieldTab === 'all' && fields.length > 1 && (
+        <div style={{ marginBottom: 18 }}>
+          <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', margin: '0 0 8px' }}>Field-by-Field</p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Field</th><th>Revenue</th><th>Total Cost</th><th>Net Profit</th><th>Margin</th></tr></thead>
+              <tbody>
+                {fields.map((f) => {
+                  const s = fieldSummary(f.id);
+                  return (
+                    <tr key={f.id} style={{ cursor: 'pointer' }} onClick={() => setFieldTab(f.id)}>
+                      <td><strong>{f.name}</strong>{f.variety ? <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 6 }}>{f.variety}</span> : null}</td>
+                      <td className="mono" style={{ color: 'var(--gold)' }}>{ghc(s.rev)}</td>
+                      <td className="mono rust">{ghc(s.cost)}</td>
+                      <td className={`mono ${s.profit >= 0 ? 'green' : 'rust'}`}>{s.profit >= 0 ? '+' : ''}{ghc(s.profit)}</td>
+                      <td className="mono">{s.rev > 0 ? `${num((s.profit / s.rev) * 100, 1)}%` : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text3)', margin: '6px 0 0' }}>Click a row to drill into that field's detail.</p>
+        </div>
+      )}
+
+      {/* Sub-tabs: Summary / Harvests / Expenses */}
+      <nav className="tab-row" style={{ marginBottom: 12 }}>
+        <button className={`tab${subTab === 'summary' ? ' active' : ''}`}  onClick={() => setSubTab('summary')}>📊 Summary</button>
+        <button className={`tab${subTab === 'income' ? ' active' : ''}`}   onClick={() => setSubTab('income')}>📥 Harvests</button>
+        <button className={`tab${subTab === 'expenses' ? ' active' : ''}`} onClick={() => setSubTab('expenses')}>📤 Expenses</button>
+      </nav>
+
+      {subTab === 'summary' && (
+        <div>
+          {visHarvests.length === 0 && visExp.length === 0 ? (
+            <p className="empty">No records for this period{fieldTab !== 'all' ? ` on ${fieldName(fieldTab)}` : ''}. Log a harvest or an expense to start tracking.</p>
+          ) : (
+            <>
+              <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10 }}>
+                <strong style={{ color: 'var(--text)' }}>{visHarvests.length}</strong> harvest(s) ·{' '}
+                <strong style={{ color: 'var(--text)' }}>{visSprays.length + visExp.length}</strong> expense record(s) ·{' '}
+                period: <strong style={{ color: 'var(--gold)' }}>{periodLabel}</strong>
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {subTab === 'income' && (
+        <div className="table-wrap">
+          <table className="data">
+            <thead><tr><th>Date</th><th>Field</th><th>Buyer</th><th>Grade</th><th>Qty</th><th>Unit</th><th>Price</th><th>Amount</th></tr></thead>
+            <tbody>
+              {[...visHarvests].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((h) => {
+                const amt = harvestRev(h);
+                const unit = h.unit || 'kg';
+                return (
+                  <tr key={h.id}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(h.date)}</td>
+                    <td>{fieldName(h.fieldId)}</td>
+                    <td>{h.buyer || '—'}</td>
+                    <td>{h.grade ? <span className="tag green">{h.grade}</span> : '—'}</td>
+                    <td className="mono">{harvestQtyLabel(h)}</td>
+                    <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
+                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit}` : '—')}</td>
+                    <td className="mono gold">{ghc(amt)}</td>
+                  </tr>
+                );
+              })}
+              {visHarvests.length === 0 && <tr><td colSpan={7} className="empty">No harvests in this period.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {subTab === 'expenses' && (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <button className="btn btn-green" onClick={onAddExpense}>+ Log Expense</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Field</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
+              <tbody>
+                {/* Spray records (from spray log) */}
+                {[...visSprays].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((r) => (
+                  <tr key={`spray-${r.id}`}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(r.date)}</td>
+                    <td>{fieldName(r.fieldId)}</td>
+                    <td>{r.product || r.type || 'Spray'}</td>
+                    <td><span className="tag gold">Spray</span></td>
+                    <td className="mono rust">{r.cost ? ghc(r.cost) : '—'}</td>
+                    <td style={{ color: 'var(--text3)', fontSize: 11 }}>spray log</td>
+                  </tr>
+                ))}
+                {/* Manual crop expenses */}
+                {[...visExp].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((e) => (
+                  <tr key={e.id}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(e.date)}</td>
+                    <td>{fieldName(e.fieldId)}</td>
+                    <td>{e.description}</td>
+                    <td><span className="tag">{e.category}</span></td>
+                    <td className="mono rust">{ghc(e.amount)}</td>
+                    <td><button className="link-btn rust" onClick={() => onDeleteExpense(e.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                {visSprays.length === 0 && visExp.length === 0 && (
+                  <tr><td colSpan={6} className="empty">No expenses in this period.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddCropExpenseForm({ fields, defaultField, onClose, onSave }) {
+  const [f, setF] = useState({
+    date: todayISO(),
+    fieldId: defaultField || (fields[0] && fields[0].id) || '',
+    description: '',
+    category: 'Labour',
+    amount: '',
+    notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit(ev) {
+    ev.preventDefault();
+    if (!f.description || !f.amount || !f.fieldId) return;
+    onSave({ id: newId(), ...f, amount: Number(f.amount) });
+  }
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Log Crop Expense</h2>
+          <button className="close-btn" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" required value={f.date} onChange={set('date')} /></Field>
+            <Field label="Field">
+              <select value={f.fieldId} onChange={set('fieldId')}>
+                {fields.map((fi) => <option key={fi.id} value={fi.id}>{fi.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Description"><input required value={f.description} onChange={set('description')} placeholder="e.g. Casual labour — weeding" /></Field>
+            <Field label="Category">
+              <select value={f.category} onChange={set('category')}>
+                {CROP_EXP_CATS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Amount (GH₵)"><input required type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} placeholder="0.00" /></Field>
+            <Field label="Notes (optional)"><input value={f.notes} onChange={set('notes')} placeholder="optional" /></Field>
+          </div>
+          <div className="modal-foot">
+            <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-green">Save Expense</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Input stock ───────────────────────────────────────────────────────────────
 
 const INPUT_UNITS = ['ml', 'L', 'g', 'kg', 'sachets', 'bags'];
 const INPUT_TYPES = ['Insecticide', 'Fungicide', 'Fertiliser', 'Foliar feed', 'Herbicide', 'Other'];
@@ -10602,6 +15295,1875 @@ function CloudSetupScreen({ onDone, onCancel }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* =================== BUYER PHONEBOOK PANEL =================== */
+/* ============================================================= */
+/* ═══════════════════════════════════════════════════════════════
+   DAILY FARM TASKS PANEL
+   ─ Tabbed by farm: 🐔 Poultry | 🌶️ Pepper | 🐐 Goats
+   ─ Each farm has its own independent task list per day
+   ─ Date navigator + progress bar per farm tab
+   ═══════════════════════════════════════════════════════════════ */
+const FARM_TABS = [
+  { key: 'poultry', label: '🐔 Poultry', color: '#D4A537' },
+  { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66' },
+  { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8' },
+];
+
+function DailyTasksPanel({ tasks, pepperFields, onSave, onToggle, onDelete, onUpdate, onPush, onSendToSpray, onClose }) {
+  const [viewDate, setViewDate] = useState(todayISO());
+  const [activeFarm, setActiveFarm] = useState('poultry');
+  const [newText, setNewText] = useState('');
+  const [newPriority, setNewPriority] = useState('normal');
+  const [newEndDate, setNewEndDate] = useState(''); // for multi-day tasks
+  const [isMultiDay, setIsMultiDay] = useState(false);
+  // Pepper-specific extra fields on the add form
+  const [newFieldId, setNewFieldId] = useState('');
+  const [newChemical, setNewChemical] = useState('');
+  // Push-to-day state: { taskId, currentDate }
+  const [pushState, setPushState] = useState(null); // null or { task, toDate }
+  const inputRef = useRef(null);
+
+  const PRIORITY_COLORS = { high: '#e05c5c', normal: '#D4A537', low: '#6abf6a' };
+  const PRIORITY_LABELS = { high: '🔴 High', normal: '🟡 Normal', low: '🟢 Low' };
+
+  const activeFarmObj = FARM_TABS.find((f) => f.key === activeFarm) || FARM_TABS[0];
+  const isPepper = activeFarm === 'pepper';
+
+  // Tasks for the current farm+date, sorted by priority then creation
+  const dayTasks = tasks
+    .filter((t) => t.date === viewDate && (t.farm || 'poultry') === activeFarm)
+    .sort((a, b) => {
+      const po = { high: 0, normal: 1, low: 2 };
+      const pd = (po[a.priority] ?? 1) - (po[b.priority] ?? 1);
+      return pd !== 0 ? pd : (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+
+  const total = dayTasks.length;
+  const done = dayTasks.filter((t) => t.done).length;
+  const allDone = total > 0 && done === total;
+
+  // Per-farm pending badge counts for tab indicators
+  const todayStr = todayISO();
+  const farmBadge = (farmKey) => {
+    const ft = tasks.filter((t) => t.date === todayStr && (t.farm || 'poultry') === farmKey);
+    const pending = ft.filter((t) => !t.done).length;
+    return pending;
+  };
+
+  function fieldName(fieldId) {
+    const f = (pepperFields || []).find((f) => f.id === fieldId);
+    return f ? (f.name || 'Field') : fieldId;
+  }
+
+  function addTask(e) {
+    e.preventDefault();
+    const text = newText.trim();
+    if (!text) return;
+    const task = {
+      id: newId(),
+      date: viewDate,
+      farm: activeFarm,
+      text,
+      priority: newPriority,
+      done: false,
+      createdAt: new Date().toISOString(),
+    };
+    if (isMultiDay && newEndDate && newEndDate > viewDate) {
+      task.endDate = newEndDate;
+      task.multiDay = true;
+    }
+    if (isPepper) {
+      if (newFieldId) task.fieldId = newFieldId;
+      if (newChemical.trim()) task.chemical = newChemical.trim();
+    }
+    onSave(task);
+    setNewText('');
+    setIsMultiDay(false);
+    setNewEndDate('');
+    if (isPepper) { setNewFieldId(''); setNewChemical(''); }
+    setTimeout(() => inputRef.current?.focus(), 30);
+  }
+
+  function shiftDay(delta) {
+    const d = new Date(viewDate);
+    d.setDate(d.getDate() + delta);
+    setViewDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`);
+  }
+
+  function fmtDayLabel(iso) {
+    const today = todayISO();
+    const tomorrow = (() => { const d = new Date(today); d.setDate(d.getDate()+1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    const yesterday = (() => { const d = new Date(today); d.setDate(d.getDate()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    if (iso === today) return 'Today';
+    if (iso === tomorrow) return 'Tomorrow';
+    if (iso === yesterday) return 'Yesterday';
+    return fmtDate(iso);
+  }
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 560, maxHeight: '90vh', display: 'flex',
+    flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+
+        {/* ── Header ── */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>✅</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Daily Farm Tasks</span>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* ── Farm tabs ── */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          {FARM_TABS.map((f) => {
+            const badge = farmBadge(f.key);
+            const isActive = activeFarm === f.key;
+            return (
+              <button key={f.key} onClick={() => { setActiveFarm(f.key); setNewText(''); setNewFieldId(''); setNewChemical(''); setIsMultiDay(false); setNewEndDate(''); }}
+                style={{
+                  flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
+                  background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+                  borderBottom: isActive ? `2px solid ${f.color}` : '2px solid transparent',
+                  color: isActive ? f.color : '#666',
+                  fontWeight: isActive ? 700 : 400, fontSize: 13,
+                  position: 'relative', transition: 'all 0.15s',
+                }}>
+                {f.label}
+                {badge > 0 && (
+                  <span style={{
+                    position: 'absolute', top: 5, right: '50%', transform: 'translateX(24px)',
+                    background: f.color, color: '#000', borderRadius: '50%',
+                    fontSize: 9, fontWeight: 700, width: 14, height: 14,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}>{badge}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── Date navigator ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(0,0,0,0.15)', flexShrink: 0 }}>
+          <button onClick={() => shiftDay(-1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>‹</button>
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: viewDate === todayISO() ? activeFarmObj.color : '#fff' }}>
+              {fmtDayLabel(viewDate)}
+            </div>
+            {viewDate !== todayISO() && (
+              <div style={{ fontSize: 11, color: '#888' }}>{fmtDate(viewDate)}</div>
+            )}
+          </div>
+          <button onClick={() => shiftDay(1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>›</button>
+          {viewDate !== todayISO() && (
+            <button onClick={() => setViewDate(todayISO())}
+              style={{ background: `${activeFarmObj.color}22`, border: `1px solid ${activeFarmObj.color}55`, color: activeFarmObj.color, borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+              Today
+            </button>
+          )}
+        </div>
+
+        {/* ── Progress bar ── */}
+        {total > 0 && (
+          <div style={{ padding: '8px 16px 0', flexShrink: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: '#aaa' }}>
+                {allDone ? '🎉 All done!' : `${done} of ${total} completed`}
+              </span>
+              <span style={{ fontSize: 12, color: allDone ? '#6abf6a' : activeFarmObj.color, fontWeight: 700 }}>
+                {Math.round((done/total)*100)}%
+              </span>
+            </div>
+            <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
+              <div style={{
+                height: '100%', borderRadius: 4,
+                width: `${(done/total)*100}%`,
+                background: allDone ? '#6abf6a' : `linear-gradient(90deg,${activeFarmObj.color},${activeFarmObj.color}cc)`,
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* ── Task list ── */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '10px 14px 12px' }}>
+          {dayTasks.length === 0 && (
+            <div style={{ textAlign: 'center', color: '#555', padding: '28px 0', fontSize: 14 }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>{activeFarmObj.label.split(' ')[0]}</div>
+              <div style={{ color: '#666' }}>No {activeFarmObj.label.split(' ').slice(1).join(' ')} tasks for {fmtDayLabel(viewDate).toLowerCase()}.</div>
+              <div style={{ fontSize: 12, color: '#444', marginTop: 4 }}>Add tasks below to plan your day.</div>
+            </div>
+          )}
+
+          {dayTasks.map((t) => {
+            const isPushing = pushState?.task?.id === t.id;
+            // multi-day progress
+            const mdStart = t.date;
+            const mdEnd = t.endDate;
+            const mdTotal = mdEnd ? Math.max(1, Math.round((new Date(mdEnd) - new Date(mdStart)) / 86400000) + 1) : null;
+            const mdElapsed = mdEnd ? Math.max(0, Math.round((new Date(viewDate) - new Date(mdStart)) / 86400000) + 1) : null;
+            const mdPct = mdTotal ? Math.min(100, Math.round((mdElapsed / mdTotal) * 100)) : null;
+
+            return (
+            <div key={t.id} style={{
+              marginBottom: 6, borderRadius: 10,
+              background: t.done ? 'rgba(106,191,106,0.06)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${t.done ? 'rgba(106,191,106,0.2)' : `rgba(${t.priority==='high'?'224,92,92':t.priority==='low'?'106,191,106':'212,165,55'},0.18)`}`,
+              transition: 'all 0.2s', overflow: 'hidden',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px' }}>
+                {/* Checkbox */}
+                <button
+                  onClick={() => onToggle(t.id)}
+                  style={{
+                    width: 24, height: 24, flexShrink: 0, borderRadius: 6, cursor: 'pointer',
+                    border: `2px solid ${t.done ? '#6abf6a' : PRIORITY_COLORS[t.priority] || activeFarmObj.color}`,
+                    background: t.done ? '#6abf6a' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, color: '#000', marginTop: 1,
+                  }}
+                >{t.done ? '✓' : ''}</button>
+
+                {/* Text + badges */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 14, color: t.done ? '#666' : '#e8e8e8',
+                    textDecoration: t.done ? 'line-through' : 'none',
+                    lineHeight: 1.4, wordBreak: 'break-word',
+                  }}>{t.text}</div>
+
+                  {/* Multi-day span label */}
+                  {t.multiDay && t.endDate && (
+                    <div style={{ fontSize: 11, color: '#8fa8c8', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>📅 {fmtDate(t.date)} → {fmtDate(t.endDate)}</span>
+                      <span style={{ color: '#555' }}>·</span>
+                      <span>{mdTotal} day{mdTotal !== 1 ? 's' : ''}</span>
+                      {mdPct !== null && !t.done && (
+                        <span style={{ color: mdPct >= 100 ? '#6abf6a' : '#D4A537' }}>Day {Math.min(mdElapsed, mdTotal)}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Pushed-from note */}
+                  {t.pushedFrom && (
+                    <div style={{ fontSize: 10, color: '#8fa8c8', marginTop: 2 }}>
+                      ↩ Pushed from {fmtDate(t.pushedFrom)}
+                    </div>
+                  )}
+
+                  {/* Pepper meta */}
+                  {t.farm === 'pepper' && (t.fieldId || t.chemical) && (
+                    <div style={{ fontSize: 11, color: '#7A9A66', marginTop: 3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {t.fieldId && <span>📍 {fieldName(t.fieldId)}</span>}
+                      {t.chemical && <span>🧪 {t.chemical}</span>}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+                    {t.priority && t.priority !== 'normal' && (
+                      <span style={{ fontSize: 10, color: PRIORITY_COLORS[t.priority], fontWeight: 700 }}>
+                        {PRIORITY_LABELS[t.priority]}
+                      </span>
+                    )}
+                    {t.sentToSpray && (
+                      <span style={{ fontSize: 10, color: '#6abf6a', fontWeight: 700 }}>✓ Spray Log</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, alignItems: 'flex-end' }}>
+                  {/* → Spray Log */}
+                  {t.farm === 'pepper' && !t.sentToSpray && onSendToSpray && (
+                    <button onClick={() => onSendToSpray(t)}
+                      style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66',
+                        borderRadius: 7, padding: '3px 7px', cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                        lineHeight: 1.4, whiteSpace: 'nowrap' }}>→ Spray</button>
+                  )}
+                  {/* Push to day */}
+                  {!t.done && onPush && (
+                    <button
+                      onClick={() => setPushState(isPushing ? null : { task: t, toDate: addDaysISO(t.date, 1) })}
+                      title="Push to another day"
+                      style={{ background: isPushing ? 'rgba(143,168,200,0.2)' : 'rgba(255,255,255,0.06)',
+                        border: `1px solid ${isPushing ? 'rgba(143,168,200,0.5)' : 'rgba(255,255,255,0.12)'}`,
+                        color: isPushing ? '#8fa8c8' : '#888',
+                        borderRadius: 7, padding: '3px 7px', cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                        lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+                      {isPushing ? '✕ Cancel' : '📅 Push'}
+                    </button>
+                  )}
+                  {/* Delete */}
+                  <button onClick={() => onDelete(t.id)}
+                    style={{ background: 'none', border: 'none', color: '#444', cursor: 'pointer', fontSize: 15, padding: '0 2px', lineHeight: 1 }}
+                    title="Remove task">🗑</button>
+                </div>
+              </div>
+
+              {/* Multi-day progress bar */}
+              {t.multiDay && t.endDate && mdTotal && !t.done && (
+                <div style={{ padding: '0 12px 8px' }}>
+                  <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${Math.min(100, mdPct)}%`, background: '#8fa8c8', borderRadius: 3, transition: 'width 0.3s' }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Push-to-day picker (inline, expands below card) */}
+              {isPushing && (
+                <div style={{ padding: '0 12px 12px', borderTop: '1px solid rgba(143,168,200,0.15)' }}>
+                  <div style={{ fontSize: 11, color: '#8fa8c8', marginBottom: 6, marginTop: 8, fontWeight: 600 }}>
+                    📅 Move this task to:
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {/* Quick day shortcuts */}
+                    {[
+                      { label: 'Tomorrow', date: addDaysISO(todayISO(), 1) },
+                      { label: 'In 2 days', date: addDaysISO(todayISO(), 2) },
+                      { label: 'Next week', date: addDaysISO(todayISO(), 7) },
+                    ].map(({ label, date }) => (
+                      <button key={label}
+                        onClick={() => setPushState((ps) => ({ ...ps, toDate: date }))}
+                        style={{
+                          background: pushState.toDate === date ? 'rgba(143,168,200,0.25)' : 'rgba(255,255,255,0.06)',
+                          border: `1px solid ${pushState.toDate === date ? 'rgba(143,168,200,0.6)' : 'rgba(255,255,255,0.12)'}`,
+                          color: pushState.toDate === date ? '#8fa8c8' : '#888',
+                          borderRadius: 7, padding: '4px 9px', cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                        }}>{label}</button>
+                    ))}
+                    <input type="date" value={pushState.toDate}
+                      min={addDaysISO(todayISO(), 1)}
+                      onChange={(e) => setPushState((ps) => ({ ...ps, toDate: e.target.value }))}
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
+                        color: '#fff', borderRadius: 7, padding: '4px 8px', fontSize: 12, outline: 'none' }} />
+                    <button
+                      onClick={() => {
+                        if (pushState.toDate) {
+                          onPush(pushState.task, pushState.toDate);
+                          setPushState(null);
+                          // navigate to the target date so user sees it land
+                          setViewDate(pushState.toDate);
+                        }
+                      }}
+                      disabled={!pushState.toDate}
+                      style={{ background: 'rgba(143,168,200,0.2)', border: '1px solid rgba(143,168,200,0.5)',
+                        color: '#8fa8c8', borderRadius: 7, padding: '4px 12px', cursor: 'pointer',
+                        fontSize: 12, fontWeight: 700 }}>
+                      ✓ Move
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            );
+          })}
+        </div>
+
+        {/* ── Add task form ── */}
+        <form onSubmit={addTask} style={{ padding: '10px 14px 16px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)', flexShrink: 0 }}>
+          <div style={{ fontSize: 11, color: activeFarmObj.color, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {activeFarmObj.label} — {fmtDayLabel(viewDate)}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            {['high','normal','low'].map((p) => (
+              <button key={p} type="button" onClick={() => setNewPriority(p)}
+                style={{
+                  flex: 1, padding: '5px 4px', borderRadius: 7, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                  border: `1px solid ${newPriority === p ? PRIORITY_COLORS[p] : 'rgba(255,255,255,0.1)'}`,
+                  background: newPriority === p ? `${PRIORITY_COLORS[p]}22` : 'transparent',
+                  color: newPriority === p ? PRIORITY_COLORS[p] : '#666',
+                }}
+              >{PRIORITY_LABELS[p]}</button>
+            ))}
+          </div>
+          {/* Multi-day toggle */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <button type="button"
+              onClick={() => { setIsMultiDay(!isMultiDay); setNewEndDate(''); }}
+              style={{
+                padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                border: `1px solid ${isMultiDay ? 'rgba(143,168,200,0.6)' : 'rgba(255,255,255,0.1)'}`,
+                background: isMultiDay ? 'rgba(143,168,200,0.18)' : 'transparent',
+                color: isMultiDay ? '#8fa8c8' : '#555', whiteSpace: 'nowrap',
+              }}>
+              📅 {isMultiDay ? 'Multi-day ✓' : 'Multi-day'}
+            </button>
+            {isMultiDay && (
+              <>
+                <span style={{ fontSize: 11, color: '#666' }}>ends</span>
+                <input type="date" value={newEndDate}
+                  min={addDaysISO(viewDate, 1)}
+                  onChange={(e) => setNewEndDate(e.target.value)}
+                  style={{
+                    flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(143,168,200,0.4)',
+                    color: newEndDate ? '#8fa8c8' : '#666', borderRadius: 7, padding: '5px 8px',
+                    fontSize: 12, outline: 'none',
+                  }} />
+                {newEndDate && (
+                  <span style={{ fontSize: 10, color: '#8fa8c8', whiteSpace: 'nowrap' }}>
+                    {Math.round((new Date(newEndDate) - new Date(viewDate)) / 86400000) + 1}d
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Pepper-only: field selector + chemical input */}
+          {isPepper && (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <select
+                value={newFieldId}
+                onChange={(e) => setNewFieldId(e.target.value)}
+                style={{
+                  flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid #7A9A6644',
+                  color: newFieldId ? '#fff' : '#666', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none',
+                }}>
+                <option value="">📍 Field (optional)</option>
+                {(pepperFields || []).map((f, i) => (
+                  <option key={f.id} value={f.id}>{f.name || `Field ${i + 1}`}</option>
+                ))}
+              </select>
+              <input
+                value={newChemical}
+                onChange={(e) => setNewChemical(e.target.value)}
+                placeholder="🧪 Chemical (optional)"
+                style={{
+                  flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid #7A9A6644',
+                  color: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none',
+                }}
+              />
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              ref={inputRef}
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              placeholder={`Add a task for ${activeFarmObj.label.split(' ').slice(1).join(' ')}…`}
+              style={{
+                flex: 1, background: 'rgba(255,255,255,0.06)', border: `1px solid ${activeFarmObj.color}44`,
+                color: '#fff', borderRadius: 8, padding: '8px 12px', fontSize: 14, outline: 'none',
+              }}
+            />
+            <button type="submit" disabled={!newText.trim()}
+              style={{
+                background: newText.trim() ? activeFarmObj.color : 'rgba(255,255,255,0.07)',
+                border: 'none', color: newText.trim() ? '#000' : '#555',
+                borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: newText.trim() ? 'pointer' : 'default',
+                fontSize: 14, flexShrink: 0,
+              }}
+            >+ Add</button>
+          </div>
+        </form>
+
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WeeklySummaryPanel — one-tap farm week-in-review report
+   Covers poultry eggs + feed, pepper sprays, tasks, petty costs.
+   Shareable text ready for YouTube / WhatsApp.
+   ═══════════════════════════════════════════════════════════════ */
+function WeeklySummaryPanel({ data, onClose }) {
+  const today = todayISO();
+
+  // Week selector — default to current week (Mon–Sun)
+  const getWeekStart = (iso) => {
+    const d = new Date(iso);
+    const day = d.getDay(); // 0=Sun
+    const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+    d.setDate(d.getDate() + diff);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+  const addDays = (iso, n) => {
+    const d = new Date(iso); d.setDate(d.getDate() + n);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const [weekStart, setWeekStart] = useState(() => getWeekStart(today));
+  const weekEnd = addDays(weekStart, 6);
+  const inW = (d) => d >= weekStart && d <= weekEnd;
+
+  function shiftWeek(n) {
+    setWeekStart((ws) => addDays(ws, n * 7));
+  }
+
+  function fmtWeekLabel() {
+    const s = new Date(weekStart + 'T00:00:00');
+    const e = new Date(weekEnd + 'T00:00:00');
+    const mo = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    if (s.getMonth() === e.getMonth()) return `${s.getDate()}–${e.getDate()} ${s.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`;
+    return `${mo(s)} – ${mo(e)} ${e.getFullYear()}`;
+  }
+
+  const isCurrentWeek = weekStart === getWeekStart(today);
+
+  // ── Poultry ──
+  const dailyLog = [];
+  (data.flocks || []).forEach((fl) => {
+    (fl.dailyLog || []).forEach((r) => { if (inW(r.date || '')) dailyLog.push(r); });
+  });
+  const eggsCollected = dailyLog.reduce((s, r) => s + (Number(r.eggs) || 0), 0);
+  const eggDays = dailyLog.filter((r) => (Number(r.eggs) || 0) > 0).length;
+  const feedPurchases = (data.feed || []).filter((r) => inW(r.date || ''));
+  const feedKg = feedPurchases.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+  const feedCost = feedPurchases.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const medCost = (data.meds || []).filter((r) => inW(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const poultryRevenue = (data.sales || []).filter((r) => inW(r.date || '')).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const poultryPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Pepper ──
+  const pepperSprays = (data.pepper?.sprays || []).filter((r) => inW(r.date || ''));
+  const pepperHarvests = (data.pepper?.harvests || []).filter((h) => inW(h.date || ''));
+  const pepperHarvestKg = pepperHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
+  const pepperRevenue = pepperHarvests.reduce((s, h) => s + harvestRev(h), 0);
+  const pepperSprayCost = pepperSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const pepperExpenses = (data.expenses || []).filter((e) => e.scope === 'pepper' && inW(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const pepperPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && (c.farm === 'pepper' || (c.farm || '').startsWith('pepper__'))).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Goats ──
+  const goatSales = ((data.goats?.sales) || []).filter((r) => inW(r.date || ''));
+  const goatRevenue = goatSales.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const goatHealth = ((data.goats?.health) || []).filter((r) => inW(r.date || ''));
+  const goatPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '') && c.farm === 'goat').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Tasks ──
+  const weekTasks = (data.dailyTasks || []).filter((t) => inW(t.date || ''));
+  const tasksDone = weekTasks.filter((t) => t.done).length;
+  const tasksTotal = weekTasks.length;
+  const tasksByFarm = {
+    poultry: weekTasks.filter((t) => (t.farm || 'poultry') === 'poultry'),
+    pepper: weekTasks.filter((t) => t.farm === 'pepper'),
+    goat: weekTasks.filter((t) => t.farm === 'goat'),
+  };
+
+  // ── Total petty costs ──
+  const totalPettyCost = (data.pettyCosts || []).filter((c) => inW(c.date || '')).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // ── Totals ──
+  const totalRevenue = poultryRevenue + pepperRevenue + goatRevenue;
+  const totalCosts = feedCost + medCost + pepperSprayCost + pepperExpenses + goatPettyCost + totalPettyCost;
+
+  const gh = (n) => `GH₵ ${Number(n).toFixed(2)}`;
+  const num = (n, d = 0) => Number(n).toLocaleString('en-GH', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  // ── Shareable text generator ──
+  function buildShareText() {
+    const lines = [
+      `📊 AI Farms — Week in Review`,
+      `📅 ${fmtWeekLabel()}`,
+      ``,
+      `🐔 POULTRY`,
+      `  🥚 Eggs collected: ${num(eggsCollected)} eggs (${eggDays} day${eggDays !== 1 ? 's' : ''} recorded)`,
+      feedKg > 0 ? `  🌾 Feed purchased: ${num(feedKg, 1)} kg — ${gh(feedCost)}` : null,
+      medCost > 0 ? `  💊 Meds: ${gh(medCost)}` : null,
+      poultryRevenue > 0 ? `  💰 Sales: ${gh(poultryRevenue)}` : null,
+      ``,
+      `🌶️ PEPPER`,
+      pepperSprays.length > 0 ? `  🧪 Sprays done: ${pepperSprays.length}` : `  🧪 No sprays this week`,
+      pepperHarvestKg > 0 ? `  🧺 Harvest: ${num(pepperHarvestKg, 1)} kg — ${gh(pepperRevenue)}` : null,
+      ``,
+      `✅ TASKS`,
+      `  ${tasksDone} of ${tasksTotal} tasks completed`,
+      tasksTotal > 0 ? `  🐔 Poultry: ${tasksByFarm.poultry.filter(t=>t.done).length}/${tasksByFarm.poultry.length}  🌶️ Pepper: ${tasksByFarm.pepper.filter(t=>t.done).length}/${tasksByFarm.pepper.length}  🐐 Goats: ${tasksByFarm.goat.filter(t=>t.done).length}/${tasksByFarm.goat.length}` : null,
+      ``,
+      totalPettyCost > 0 ? `🧾 Running costs: ${gh(totalPettyCost)}` : null,
+      totalRevenue > 0 ? `💵 Total revenue: ${gh(totalRevenue)}` : null,
+      ``,
+      `#AIFarms #GhanaFarming #FarmLife`,
+    ].filter((l) => l !== null);
+    return lines.join('\n');
+  }
+
+  const [copied, setCopied] = useState(false);
+  function copyText() {
+    const txt = buildShareText();
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(txt).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    }
+  }
+
+  const SectionHead = ({ emoji, label, color }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18, marginBottom: 8 }}>
+      <span style={{ fontSize: 18 }}>{emoji}</span>
+      <span style={{ fontWeight: 700, fontSize: 14, color: color || '#fff', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: `${color || '#444'}44`, marginLeft: 6 }} />
+    </div>
+  );
+
+  const Row = ({ icon, label, value, sub, tone }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      {icon && <span style={{ fontSize: 15, width: 22, textAlign: 'center', flexShrink: 0 }}>{icon}</span>}
+      <span style={{ flex: 1, fontSize: 13, color: '#ccc' }}>{label}</span>
+      <div style={{ textAlign: 'right' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: tone === 'gold' ? '#D4A537' : tone === 'green' ? '#6abf6a' : tone === 'rust' ? '#e05c5c' : '#fff' }}>{value}</span>
+        {sub && <div style={{ fontSize: 11, color: '#666' }}>{sub}</div>}
+      </div>
+    </div>
+  );
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: '#1a1a1a', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 580, maxHeight: '92vh',
+    display: 'flex', flexDirection: 'column',
+    boxShadow: '0 -4px 40px rgba(0,0,0,0.7)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>📊</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Week in Review</span>
+          <button onClick={copyText} style={{
+            background: copied ? 'rgba(106,191,106,0.2)' : 'rgba(212,165,55,0.15)',
+            border: `1px solid ${copied ? '#6abf6a55' : '#D4A53755'}`,
+            color: copied ? '#6abf6a' : '#D4A537',
+            borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 700, marginRight: 10,
+          }}>{copied ? '✓ Copied!' : '📋 Copy'}</button>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Week navigator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+          <button onClick={() => shiftWeek(-1)}
+            style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 15 }}>‹</button>
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: isCurrentWeek ? '#D4A537' : '#fff' }}>{fmtWeekLabel()}</div>
+            {!isCurrentWeek && (
+              <div style={{ fontSize: 11, color: '#555' }}>Mon – Sun</div>
+            )}
+          </div>
+          <button onClick={() => shiftWeek(1)} disabled={isCurrentWeek}
+            style={{ background: isCurrentWeek ? 'transparent' : 'rgba(255,255,255,0.07)', border: `1px solid ${isCurrentWeek ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.12)'}`, color: isCurrentWeek ? '#333' : '#ccc', borderRadius: 8, padding: '5px 10px', cursor: isCurrentWeek ? 'default' : 'pointer', fontSize: 15 }}>›</button>
+          {!isCurrentWeek && (
+            <button onClick={() => setWeekStart(getWeekStart(today))}
+              style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid #D4A53755', color: '#D4A537', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>This week</button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '4px 18px 20px' }}>
+
+          {/* ── Poultry ── */}
+          <SectionHead emoji="🐔" label="Poultry" color="#D4A537" />
+          <Row icon="🥚" label="Eggs collected" value={`${num(eggsCollected)} eggs`} sub={eggDays > 0 ? `${eggDays} day${eggDays !== 1 ? 's' : ''} of data` : 'no data'} tone="gold" />
+          <Row icon="🌾" label="Feed purchased" value={feedKg > 0 ? `${num(feedKg, 1)} kg` : '—'} sub={feedKg > 0 ? gh(feedCost) : null} />
+          {medCost > 0 && <Row icon="💊" label="Medications" value={gh(medCost)} tone="rust" />}
+          {poultryRevenue > 0 && <Row icon="💰" label="Sales revenue" value={gh(poultryRevenue)} tone="green" />}
+          {poultryPettyCost > 0 && <Row icon="🧾" label="Running costs" value={gh(poultryPettyCost)} />}
+
+          {/* ── Pepper ── */}
+          <SectionHead emoji="🌶️" label="Pepper" color="#7A9A66" />
+          <Row icon="🧪" label="Sprays done" value={pepperSprays.length > 0 ? `${pepperSprays.length} spray${pepperSprays.length !== 1 ? 's' : ''}` : 'None'} sub={pepperSprayCost > 0 ? gh(pepperSprayCost) : null} tone={pepperSprays.length > 0 ? 'green' : null} />
+          {pepperHarvestKg > 0
+            ? <Row icon="🧺" label="Harvest" value={`${num(pepperHarvestKg, 1)} kg`} sub={gh(pepperRevenue)} tone="green" />
+            : <Row icon="🧺" label="Harvest" value="None this week" />}
+          {(pepperExpenses + pepperPettyCost) > 0 && <Row icon="🧾" label="Running costs" value={gh(pepperExpenses + pepperPettyCost)} />}
+
+          {/* ── Goats ── */}
+          <SectionHead emoji="🐐" label="Goats" color="#8fa8c8" />
+          {goatHealth.length > 0
+            ? <Row icon="🩺" label="Health events" value={`${goatHealth.length} logged`} />
+            : <Row icon="🩺" label="Health events" value="None" />}
+          {goatSales.length > 0
+            ? <Row icon="💰" label="Sales" value={gh(goatRevenue)} sub={`${goatSales.length} animal${goatSales.length !== 1 ? 's' : ''}`} tone="green" />
+            : <Row icon="💰" label="Sales" value="None this week" />}
+          {goatPettyCost > 0 && <Row icon="🧾" label="Running costs" value={gh(goatPettyCost)} />}
+
+          {/* ── Tasks ── */}
+          <SectionHead emoji="✅" label="Tasks" color="#ccc" />
+          {tasksTotal === 0
+            ? <Row icon="📋" label="No tasks logged this week" value="" />
+            : <>
+                <Row icon="📋" label="Tasks completed" value={`${tasksDone} / ${tasksTotal}`}
+                  sub={tasksTotal > 0 ? `${Math.round((tasksDone/tasksTotal)*100)}% done` : null}
+                  tone={tasksDone === tasksTotal && tasksTotal > 0 ? 'green' : 'gold'} />
+                <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                  {[
+                    { key: 'poultry', emoji: '🐔', color: '#D4A537' },
+                    { key: 'pepper',  emoji: '🌶️', color: '#7A9A66' },
+                    { key: 'goat',    emoji: '🐐', color: '#8fa8c8' },
+                  ].map(({ key, emoji, color }) => {
+                    const ft = tasksByFarm[key];
+                    const fd = ft.filter((t) => t.done).length;
+                    return (
+                      <div key={key} style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', border: `1px solid ${color}22` }}>
+                        <div style={{ fontSize: 16 }}>{emoji}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color }}>{fd}/{ft.length}</div>
+                        <div style={{ fontSize: 10, color: '#666' }}>done</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+          }
+
+          {/* ── Summary totals ── */}
+          <SectionHead emoji="💵" label="Week Totals" color="#D4A537" />
+          {totalRevenue > 0 && <Row icon="💵" label="Total revenue" value={gh(totalRevenue)} tone="green" />}
+          {totalCosts > 0 && <Row icon="📤" label="Total costs tracked" value={gh(totalCosts)} tone="rust" />}
+          {(totalRevenue > 0 || totalCosts > 0) && (
+            <div style={{ marginTop: 10, padding: '10px 14px', background: (totalRevenue - totalCosts) >= 0 ? 'rgba(106,191,106,0.08)' : 'rgba(224,92,92,0.08)', borderRadius: 10, border: `1px solid ${(totalRevenue - totalCosts) >= 0 ? 'rgba(106,191,106,0.25)' : 'rgba(224,92,92,0.25)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13, color: '#aaa' }}>Net this week</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: (totalRevenue - totalCosts) >= 0 ? '#6abf6a' : '#e05c5c' }}>
+                {(totalRevenue - totalCosts) >= 0 ? '+' : ''}{gh(totalRevenue - totalCosts)}
+              </span>
+            </div>
+          )}
+
+          {/* Share hint */}
+          <div style={{ marginTop: 18, padding: '10px 14px', background: 'rgba(212,165,55,0.07)', borderRadius: 10, border: '1px solid rgba(212,165,55,0.15)' }}>
+            <div style={{ fontSize: 12, color: '#888' }}>Tap <strong style={{ color: '#D4A537' }}>📋 Copy</strong> to get a ready-made summary for your YouTube / WhatsApp.</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PettyCostPanel — quick running / petty costs per farm section
+   ─ Poultry and Goats are single buckets
+   ─ Pepper is broken into individual fields — new fields auto-appear
+   ─ pepperFields prop: array of { id, name } from data.pepper.fields
+   ═══════════════════════════════════════════════════════════════ */
+function PettyCostPanel({ costs, fuelExpenses, pepperFields, onAdd, onDelete, onClose }) {
+  // Build the dynamic FARMS list:
+  // 🐔 Poultry | one entry per pepper field | 🐐 Goats
+  const pepperEntries = (pepperFields || []).map((f, i) => ({
+    key: `pepper__${f.id}`,
+    label: `🌶️ ${f.name || `Field ${i + 1}`}`,
+    color: '#7A9A66',
+    isField: true,
+    fieldId: f.id,
+  }));
+  const noPepperFields = pepperEntries.length === 0;
+  const FARMS = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537' },
+    ...(noPepperFields
+      ? [{ key: 'pepper', label: '🌶️ Pepper', color: '#7A9A66' }]  // fallback if no fields yet
+      : pepperEntries),
+    { key: 'goat', label: '🐐 Goats', color: '#8fa8c8' },
+  ];
+
+  const [farm, setFarm] = useState('poultry');
+  const [desc, setDesc] = useState('');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [filterFarm, setFilterFarm] = useState('all');
+  const inputRef = useRef(null);
+
+  // If selected farm no longer exists (e.g. field deleted), reset to poultry
+  const farmObj = FARMS.find((f) => f.key === farm) || FARMS[0];
+  const safeFarm = farmObj.key;
+
+  function handleAdd() {
+    const amt = parseFloat(amount);
+    if (!desc.trim() || isNaN(amt) || amt <= 0) return;
+    onAdd({ farm: safeFarm, desc: desc.trim(), amount: amt, date });
+    setDesc('');
+    setAmount('');
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  // For filter: "all pepper fields" grouping
+  const isPepperKey = (key) => key === 'pepper' || key.startsWith('pepper__');
+
+  // Map fuel scope → panel farm key
+  function fuelScopeToFarm(scope) {
+    if (scope === 'poultry') return 'poultry';
+    if (scope === 'pepper')  return noPepperFields ? 'pepper' : 'pepper'; // stays 'pepper' (matches isPepperKey)
+    if (scope === 'goats')   return 'goat';
+    return 'general'; // 'general' = whole-farm fuel
+  }
+
+  // Build normalised fuel rows for display (read-only)
+  const fuelRows = (fuelExpenses || []).map((e) => ({
+    id: e.id,
+    farm: fuelScopeToFarm(e.scope),
+    desc: `${e.fuelType || 'Fuel'} — ${e.equipment || ''}`.trim().replace(/—\s*$/, '').trim(),
+    amount: Number(e.amount) || 0,
+    date: e.date,
+    _isFuel: true,   // flag: read-only, no delete, fuel badge
+    liters: e.liters,
+  }));
+
+  // Merged list for totals (manual costs + fuel rows)
+  const allCosts = [...(costs || []), ...fuelRows];
+
+  const visible = allCosts
+    .filter((c) => {
+      if (filterFarm === 'all') return true;
+      if (filterFarm === 'pepper_group') return isPepperKey(c.farm);
+      if (filterFarm === 'general') return c.farm === 'general';
+      return c.farm === filterFarm;
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const totalAll    = allCosts.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const pepperTotal = allCosts.filter((c) => isPepperKey(c.farm)).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
+  // Summary tiles: Poultry, Pepper (combined), Goats, Total
+  const summaryTiles = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537',
+      total: allCosts.filter((c) => c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0) },
+    { key: 'pepper_group', label: '🌶️ Pepper', color: '#7A9A66', total: pepperTotal },
+    { key: 'goat', label: '🐐 Goats', color: '#8fa8c8',
+      total: allCosts.filter((c) => c.farm === 'goat').reduce((s, c) => s + (Number(c.amount) || 0), 0) },
+    { key: 'all', label: '📊 Total', color: '#ccc', total: totalAll },
+  ];
+
+  // Resolve display label for a cost row (handles both old 'pepper' key and new 'pepper__fieldId')
+  function costFarmLabel(c) {
+    if (c.farm === 'general') return { label: '🏚️ General', color: '#aaa' };
+    const f = FARMS.find((x) => x.key === c.farm);
+    if (f) return { label: f.label, color: f.color };
+    if (isPepperKey(c.farm)) return { label: '🌶️ Pepper', color: '#7A9A66' };
+    return { label: c.farm, color: '#888' };
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1200,
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: '#1e1e1e', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 680,
+        maxHeight: '92vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 -8px 32px rgba(0,0,0,0.6)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '16px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#D4A537' }}>🧾 Running Costs</h2>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 6px' }}>×</button>
+          </div>
+          <div style={{ fontSize: 12, color: '#777' }}>Petty / day-to-day expenses · Pepper costs are per field</div>
+        </div>
+
+        {/* Summary tiles */}
+        <div style={{ display: 'flex', gap: 8, padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, overflowX: 'auto' }}>
+          {summaryTiles.map((t) => (
+            <div key={t.key} style={{
+              flex: '1 1 110px', minWidth: 100, background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${t.color}33`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer',
+              outline: filterFarm === t.key ? `1px solid ${t.color}88` : 'none',
+            }} onClick={() => setFilterFarm(filterFarm === t.key ? 'all' : t.key)}>
+              <div style={{ fontSize: 11, color: '#777', marginBottom: 2 }}>{t.label}</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: t.color }}>GH₵ {num(t.total, 2)}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+
+          {/* Quick-add form */}
+          <div style={{ background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#D4A537', marginBottom: 10 }}>+ Add expense</div>
+
+            {/* Section picker — wrapping pill buttons */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+              {FARMS.map((f) => (
+                <button key={f.key} onClick={() => setFarm(f.key)} style={{
+                  padding: '5px 12px', borderRadius: 20,
+                  border: `1px solid ${farm === f.key ? f.color : 'rgba(255,255,255,0.12)'}`,
+                  background: farm === f.key ? `${f.color}22` : 'rgba(255,255,255,0.04)',
+                  color: farm === f.key ? f.color : '#888', fontSize: 12, cursor: 'pointer',
+                  fontWeight: farm === f.key ? 600 : 400,
+                }}>{f.label}</button>
+              ))}
+            </div>
+
+            {/* Date */}
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>Date</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }} />
+            </div>
+
+            {/* Description + Amount */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>What was bought / reason</label>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  placeholder="e.g. bought rope, fuel for pump…"
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+                  style={{ width: '100%', background: '#2a2a2a', border: `1px solid ${farmObj.color}44`, borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ width: 120 }}>
+                <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>GH₵ Amount</label>
+                <input
+                  type="number" min="0" step="0.01" placeholder="0.00"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+                  style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '7px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+              <button
+                onClick={handleAdd}
+                disabled={!desc.trim() || !(parseFloat(amount) > 0)}
+                style={{
+                  padding: '8px 18px', borderRadius: 7, border: 'none',
+                  background: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#333' : farmObj.color,
+                  color: (!desc.trim() || !(parseFloat(amount) > 0)) ? '#555' : '#000',
+                  fontWeight: 700, fontSize: 13, cursor: (!desc.trim() || !(parseFloat(amount) > 0)) ? 'default' : 'pointer',
+                  whiteSpace: 'nowrap', height: 36,
+                }}
+              >Add</button>
+            </div>
+          </div>
+
+          {/* Per-pepper-field breakdown (shown when any pepper costs exist) */}
+          {pepperEntries.length > 1 && pepperTotal > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: '#7A9A66', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>🌶️ Pepper — by field</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {pepperEntries.map((f) => {
+                  const fieldTotal = allCosts.filter((c) => c.farm === f.key).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+                  return (
+                    <div key={f.key} style={{
+                      background: 'rgba(122,154,102,0.08)', border: '1px solid rgba(122,154,102,0.2)',
+                      borderRadius: 7, padding: '6px 12px', minWidth: 120,
+                    }}>
+                      <div style={{ fontSize: 11, color: '#7A9A66', marginBottom: 2 }}>{f.label}</div>
+                      <div style={{ fontWeight: 700, color: '#a8c87a', fontSize: 14 }}>GH₵ {num(fieldTotal, 2)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Fuel note — shown when fuel rows are present */}
+          {fuelRows.length > 0 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.18)',
+              borderRadius: 8, padding: '8px 12px', marginBottom: 14, fontSize: 12, color: '#aaa',
+            }}>
+              <span style={{ fontSize: 16 }}>⛽</span>
+              <span>
+                <strong style={{ color: '#D4A537' }}>{fuelRows.length} fuel {fuelRows.length === 1 ? 'entry' : 'entries'}</strong>
+                {' '}pulled automatically from Fuel Tracker · GH₵ {num(fuelRows.reduce((s, r) => s + r.amount, 0), 2)} total
+              </span>
+            </div>
+          )}
+
+          {/* Cost list */}
+          {visible.length === 0 ? (
+            <div style={{ textAlign: 'center', color: '#555', padding: '28px 0', fontSize: 14 }}>
+              No expenses logged yet. Use the form above to add your first entry.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {visible.map((c) => {
+                const { label, color } = costFarmLabel(c);
+                return (
+                  <div key={c.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    background: c._isFuel ? 'rgba(212,165,55,0.04)' : 'rgba(255,255,255,0.03)',
+                    border: c._isFuel ? '1px solid rgba(212,165,55,0.18)' : '1px solid rgba(255,255,255,0.07)',
+                    borderRadius: 8, padding: '9px 12px',
+                  }}>
+                    {/* Farm badge */}
+                    <div style={{
+                      fontSize: 10, fontWeight: 600, color,
+                      background: `${color}18`, border: `1px solid ${color}33`,
+                      borderRadius: 4, padding: '2px 6px', whiteSpace: 'nowrap', flexShrink: 0,
+                    }}>{label}</div>
+                    {/* Fuel badge */}
+                    {c._isFuel && (
+                      <div style={{
+                        fontSize: 10, fontWeight: 600, color: '#D4A537',
+                        background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.3)',
+                        borderRadius: 4, padding: '2px 6px', whiteSpace: 'nowrap', flexShrink: 0,
+                      }}>⛽ Fuel</div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: c._isFuel ? '#c9a84c' : '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.desc}
+                        {c._isFuel && c.liters ? <span style={{ color: '#888', marginLeft: 6 }}>({c.liters}L)</span> : null}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+                        {fmtDate(c.date)}
+                        {c._isFuel && <span style={{ marginLeft: 6, color: '#555' }}>· from Fuel Tracker</span>}
+                      </div>
+                    </div>
+                    <div style={{ fontWeight: 700, color: '#e07070', fontSize: 14, flexShrink: 0 }}>
+                      − GH₵ {num(Number(c.amount), 2)}
+                    </div>
+                    {c._isFuel ? (
+                      <div style={{ width: 28, flexShrink: 0 }} title="Edit in Fuel Tracker tab" />
+                    ) : (
+                      <button onClick={() => onDelete(c.id)} style={{
+                        background: 'none', border: 'none', color: '#555', fontSize: 16, cursor: 'pointer', padding: '2px 4px', flexShrink: 0,
+                      }} title="Delete">🗑</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BuyerPhonebook({ buyers, onSave, onDelete, onClose }) {
+  const [editing, setEditing] = useState(null); // null | {} | existing buyer
+  const CATS = ['Poultry', 'Pepper', 'Eggs', 'Goats', 'Other'];
+
+  function blank() {
+    return { id: newId(), name: '', phone: '', category: 'Poultry', notes: '' };
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!editing.name.trim()) return;
+    onSave({ ...editing, name: editing.name.trim(), phone: editing.phone.trim() });
+    setEditing(null);
+  }
+
+  const modal = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+    display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    zIndex: 1200, padding: '0 0 env(safe-area-inset-bottom,0)',
+  };
+  const sheet = {
+    background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0',
+    width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex',
+    flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)',
+    border: '1px solid rgba(212,165,55,0.2)',
+  };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        {/* header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>📒</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Buyer Phonebook</span>
+          {!editing && (
+            <button onClick={() => setEditing(blank())}
+              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>
+              + Add
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10, lineHeight: 1 }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
+          {/* Add / Edit form */}
+          {editing && (
+            <form onSubmit={submit} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
+                {editing.id && buyers.find((b) => b.id === editing.id) ? 'Edit Buyer' : 'New Buyer'}
+              </p>
+              <div className="field">
+                <label>Name *</label>
+                <input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Buyer's name" />
+              </div>
+              <div className="field">
+                <label>Phone</label>
+                <input value={editing.phone} onChange={(e) => setEditing({ ...editing, phone: e.target.value })} placeholder="0244 000 000" type="tel" />
+              </div>
+              <div className="field">
+                <label>Buys</label>
+                <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                  {CATS.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>Notes</label>
+                <input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="e.g. Prefers live birds, pays cash" />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
+                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Buyer list */}
+          {buyers.length === 0 && !editing ? (
+            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>
+              No buyers saved yet. Tap + Add to record your first buyer.
+            </p>
+          ) : (
+            buyers.map((b) => (
+              <div key={b.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'rgba(212,165,55,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>👤</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>{b.name}</p>
+                  {b.phone && (
+                    <a href={`tel:${b.phone}`} style={{ color: '#D4A537', fontSize: 12, textDecoration: 'none' }}>{b.phone}</a>
+                  )}
+                  <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>
+                    {b.category}{b.notes ? ` · ${b.notes}` : ''}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  {b.phone && (
+                    <a href={`https://wa.me/${b.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer"
+                      style={{ background: '#25D366', color: '#fff', border: 'none', borderRadius: 7, padding: '5px 9px', fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>💬</a>
+                  )}
+                  <button onClick={() => setEditing({ ...b })}
+                    style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                  <button onClick={() => onDelete(b.id)}
+                    style={{ background: 'rgba(220,38,38,0.15)', border: '1px solid rgba(220,38,38,0.3)', color: '#f87171', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* =================== DRUG / VACCINE STOCK ==================== */
+/* ============================================================= */
+function DrugStockPanel({ items, onSave, onAdjust, onDelete, onClose }) {
+  const [editing, setEditing] = useState(null);
+  const [adjusting, setAdjusting] = useState(null); // { item, delta:'', note:'' }
+
+  function blankItem() {
+    return { id: newId(), name: '', category: 'Vaccine', quantityOnHand: '', unit: 'doses', reorderLevel: 5, expiryDate: '', notes: '', adjustments: [] };
+  }
+
+  function submitItem(e) {
+    e.preventDefault();
+    if (!editing.name.trim()) return;
+    onSave({ ...editing, quantityOnHand: Number(editing.quantityOnHand) || 0, reorderLevel: Number(editing.reorderLevel) || 5 });
+    setEditing(null);
+  }
+
+  function submitAdjust(e) {
+    e.preventDefault();
+    const delta = Number(adjusting.delta);
+    if (!delta) return;
+    onAdjust(adjusting.item.id, delta, adjusting.note);
+    setAdjusting(null);
+  }
+
+  function expiryColor(date) {
+    if (!date) return '#666';
+    const days = Math.ceil((new Date(date) - new Date()) / 86400000);
+    if (days < 0) return '#f87171';
+    if (days <= 30) return '#fbbf24';
+    return '#4ade80';
+  }
+
+  const CATS = ['Vaccine', 'Antibiotic', 'Vitamin', 'Dewormer', 'Disinfectant', 'Other'];
+  const UNITS = ['doses', 'ml', 'tablets', 'g', 'kg', 'sachets', 'bottles'];
+
+  const modal = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 1200 };
+  const sheet = { background: 'var(--bg2,#1e1e1e)', borderRadius: '18px 18px 0 0', width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 40px rgba(0,0,0,0.6)', border: '1px solid rgba(212,165,55,0.2)' };
+
+  return (
+    <div style={modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={sheet}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 18px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <span style={{ fontSize: 20, marginRight: 8 }}>💊</span>
+          <span style={{ fontWeight: 700, fontSize: 17, flex: 1, color: '#fff' }}>Medicine & Vaccine Stock</span>
+          {!editing && !adjusting && (
+            <button onClick={() => setEditing(blankItem())}
+              style={{ background: 'var(--gold,#D4A537)', border: 'none', color: '#000', borderRadius: 8, padding: '6px 14px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>+ Add</button>
+          )}
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', marginLeft: 10 }}>✕</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '12px 16px 20px' }}>
+          {/* Adjust form */}
+          {adjusting && (
+            <form onSubmit={submitAdjust} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>Adjust: {adjusting.item.name}</p>
+              <p style={{ margin: '0 0 10px', color: '#aaa', fontSize: 12 }}>Current: {adjusting.item.quantityOnHand} {adjusting.item.unit}</p>
+              <div className="field">
+                <label>Amount (+ to add, - to use)</label>
+                <input required type="number" value={adjusting.delta}
+                  onChange={(e) => setAdjusting({ ...adjusting, delta: e.target.value })}
+                  placeholder="e.g. -10 or +50" />
+              </div>
+              <div className="field">
+                <label>Note</label>
+                <input value={adjusting.note} onChange={(e) => setAdjusting({ ...adjusting, note: e.target.value })}
+                  placeholder="e.g. Vaccinated batch A" />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Apply</button>
+                <button type="button" className="btn" onClick={() => setAdjusting(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Add/Edit form */}
+          {editing && (
+            <form onSubmit={submitItem} style={{ background: 'rgba(212,165,55,0.06)', border: '1px solid rgba(212,165,55,0.25)', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <p style={{ margin: '0 0 10px', fontWeight: 700, color: '#D4A537', fontSize: 13 }}>
+                {items.find((x) => x.id === editing.id) ? 'Edit Item' : 'New Item'}
+              </p>
+              <div className="field"><label>Name *</label><input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Newcastle Vaccine" /></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div className="field">
+                  <label>Category</label>
+                  <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                    {CATS.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Unit</label>
+                  <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })}>
+                    {UNITS.map((u) => <option key={u}>{u}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div className="field"><label>Qty on hand</label><input type="number" min="0" value={editing.quantityOnHand} onChange={(e) => setEditing({ ...editing, quantityOnHand: e.target.value })} /></div>
+                <div className="field"><label>Reorder at</label><input type="number" min="0" value={editing.reorderLevel} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} /></div>
+              </div>
+              <div className="field"><label>Expiry date</label><input type="date" value={editing.expiryDate} onChange={(e) => setEditing({ ...editing, expiryDate: e.target.value })} /></div>
+              <div className="field"><label>Notes</label><input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Storage instructions, supplier…" /></div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save</button>
+                <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* Stock list */}
+          {items.length === 0 && !editing ? (
+            <p style={{ color: '#666', textAlign: 'center', padding: '32px 0', fontSize: 14 }}>No medicines or vaccines tracked yet.</p>
+          ) : (
+            items.map((item) => {
+              const low = Number(item.quantityOnHand) <= Number(item.reorderLevel);
+              const expired = item.expiryDate && new Date(item.expiryDate) < new Date();
+              return (
+                <div key={item.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, color: '#fff', fontSize: 14 }}>{item.name}</span>
+                        <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.08)', color: '#aaa', borderRadius: 4, padding: '1px 6px' }}>{item.category}</span>
+                        {low && <span style={{ fontSize: 11, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', borderRadius: 4, padding: '1px 6px' }}>⚠ Low stock</span>}
+                        {expired && <span style={{ fontSize: 11, background: 'rgba(248,113,113,0.15)', color: '#f87171', borderRadius: 4, padding: '1px 6px' }}>Expired</span>}
+                      </div>
+                      <p style={{ margin: '3px 0 0', color: '#D4A537', fontWeight: 700, fontSize: 16 }}>
+                        {num(item.quantityOnHand)} <span style={{ fontSize: 12, color: '#888', fontWeight: 400 }}>{item.unit}</span>
+                      </p>
+                      {item.expiryDate && (
+                        <p style={{ margin: '2px 0 0', fontSize: 12, color: expiryColor(item.expiryDate) }}>
+                          Expires: {fmtDate(item.expiryDate)}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      <button onClick={() => setAdjusting({ item, delta: '', note: '' })}
+                        style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.25)', color: '#4ade80', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>±</button>
+                      <button onClick={() => setEditing({ ...item })}
+                        style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                      <button onClick={() => onDelete(item.id)}
+                        style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '5px 9px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================= */
+/* ═══════════════════════════════════════════════════════════════
+   ProfitGoalTracker  —  per-farm × per-period profit targets
+   ─ Period toggle: Month | Quarter | Year
+   ─ Per-farm cards: Poultry / Pepper / Goats
+   ─ Combined card at top aggregates all farms
+   ─ Costs include feed, meds, spray, purchases + petty costs
+   ─ Goals stored as { id, farm, period, target, notes }
+   ═══════════════════════════════════════════════════════════════ */
+function RevenueGoalTracker({ goals, data, onSave, onDelete, onClose }) {
+  const now = new Date();
+
+  // ── Period helpers ────────────────────────────────────────────
+  const PERIODS = [
+    { key: 'month',   label: 'Month' },
+    { key: 'quarter', label: 'Quarter' },
+    { key: 'year',    label: 'Year' },
+  ];
+  const [period, setPeriod] = useState('month');
+  const [editingFarm, setEditingFarm] = useState(null); // 'poultry'|'pepper'|'goat'|'combined'
+  const [editingPeriod, setEditingPeriod] = useState('month');
+  const [editTarget, setEditTarget] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+
+  function periodRange(p) {
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-based
+    const q = Math.floor(m / 3); // 0-based quarter
+    if (p === 'month') {
+      const start = new Date(y, m, 1).toISOString().slice(0, 10);
+      const end   = new Date(y, m + 1, 0).toISOString().slice(0, 10);
+      return { start, end };
+    }
+    if (p === 'quarter') {
+      const start = new Date(y, q * 3, 1).toISOString().slice(0, 10);
+      const end   = new Date(y, q * 3 + 3, 0).toISOString().slice(0, 10);
+      return { start, end };
+    }
+    // year
+    return { start: `${y}-01-01`, end: `${y}-12-31` };
+  }
+
+  function periodLabel(p) {
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const q = Math.floor(m / 3) + 1;
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (p === 'month') return `${monthNames[m]} ${y}`;
+    if (p === 'quarter') return `Q${q} ${y}`;
+    return `${y}`;
+  }
+
+  const inRange = (date, p) => {
+    const { start, end } = periodRange(p);
+    return date >= start && date <= end;
+  };
+
+  // ── Petty cost helper ─────────────────────────────────────────
+  // pettyCosts use keys: 'poultry', 'goat', 'pepper__<fieldId>'
+  const pettyCostForFarm = (farmKey, p) => {
+    const { start, end } = periodRange(p);
+    return (data.pettyCosts || [])
+      .filter((c) => {
+        const d = c.date || '';
+        if (d < start || d > end) return false;
+        if (farmKey === 'poultry') return c.farm === 'poultry';
+        if (farmKey === 'goat')    return c.farm === 'goat';
+        if (farmKey === 'pepper')  return c.farm === 'pepper' || (c.farm || '').startsWith('pepper__');
+        return false;
+      })
+      .reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  };
+
+  // ── Actual figures per farm ───────────────────────────────────
+  function poultryFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const revenue = (data.sales || []).filter((s) => inP(s.date || '')).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const feedCost = (data.feed || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const medCost  = (data.meds || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const litterCost = (data.litter || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const expCost  = (data.expenses || []).filter((e) => e.scope === 'poultry' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('poultry', p);
+    const cost = feedCost + medCost + litterCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, feedCost, medCost, pettyCost };
+  }
+
+  function pepperFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const pp = data.pepper || {};
+    const revenue = (pp.harvests || []).filter((h) => inP(h.date || '')).reduce((s, h) => s + harvestRev(h), 0);
+    const sprayCost = (pp.sprays || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const expCost   = (data.expenses || []).filter((e) => e.scope === 'pepper' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('pepper', p);
+    const cost = sprayCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, sprayCost, pettyCost };
+  }
+
+  function goatFigures(p) {
+    const { start, end } = periodRange(p);
+    const inP = (d) => d >= start && d <= end;
+    const g = data.goats || {};
+    const revenue = (g.sales || []).filter((s) => inP(s.date || '')).reduce((s, r) => s + (Number(r.price) || 0), 0);
+    const healthCost = (g.health || []).filter((r) => inP(r.date || '')).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+    const purchaseCost = (g.animals || []).filter((a) => a.source === 'Purchased' && inP(a.dateIn || '')).reduce((s, a) => s + (Number(a.cost) || 0), 0);
+    const expCost   = (data.expenses || []).filter((e) => e.scope === 'goats' && inP(e.date || '')).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const pettyCost = pettyCostForFarm('goat', p);
+    const cost = healthCost + purchaseCost + expCost + pettyCost;
+    return { revenue, cost, profit: revenue - cost, healthCost, purchaseCost, pettyCost };
+  }
+
+  // ── Goals lookup helpers ──────────────────────────────────────
+  function getGoal(farm, p) {
+    return (goals || []).find((g) => g.farm === farm && g.period === p) || null;
+  }
+  function goalTarget(farm, p) {
+    return getGoal(farm, p)?.target || 0;
+  }
+
+  // ── Progress helpers ──────────────────────────────────────────
+  function pct(profit, target) {
+    if (!target) return null;
+    return Math.min(150, Math.round((profit / target) * 100));
+  }
+  function barColor(p) {
+    if (p === null) return '#444';
+    if (p >= 100) return '#4ade80';
+    if (p >= 60)  return '#D4A537';
+    return '#f87171';
+  }
+
+  // ── Save / delete ─────────────────────────────────────────────
+  function saveGoal(farm, p) {
+    const amt = parseFloat(editTarget);
+    if (isNaN(amt) || amt < 0) return;
+    const existing = getGoal(farm, p);
+    onSave({
+      id: existing?.id || newId(),
+      farm, period: p,
+      target: amt,
+      notes: editNotes.trim(),
+    });
+    setEditingFarm(null);
+  }
+
+  function openEdit(farm, p) {
+    const g = getGoal(farm, p);
+    setEditingFarm(farm);
+    setEditingPeriod(p);
+    setEditTarget(g?.target != null ? String(g.target) : '');
+    setEditNotes(g?.notes || '');
+  }
+
+  // ── Farm config ───────────────────────────────────────────────
+  const FARMS = [
+    { key: 'poultry', label: '🐔 Poultry', color: '#D4A537', getFigs: poultryFigures },
+    { key: 'pepper',  label: '🌶️ Pepper',  color: '#7A9A66', getFigs: pepperFigures },
+    { key: 'goat',    label: '🐐 Goats',   color: '#8fa8c8', getFigs: goatFigures },
+  ];
+
+  // Current period figures for all farms
+  const figures = {};
+  FARMS.forEach((f) => { figures[f.key] = f.getFigs(period); });
+  const combinedRevenue = FARMS.reduce((s, f) => s + figures[f.key].revenue, 0);
+  const combinedCost    = FARMS.reduce((s, f) => s + figures[f.key].cost, 0);
+  const combinedProfit  = combinedRevenue - combinedCost;
+  const combinedTarget  = goalTarget('combined', period);
+  const combinedPct     = pct(combinedProfit, combinedTarget);
+
+  // ── Sub-component: progress bar ───────────────────────────────
+  function ProgressBar({ profit, target, color }) {
+    const p = pct(profit, target);
+    const c = barColor(p);
+    return (
+      <div>
+        <div style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 6, height: 7, overflow: 'hidden', marginBottom: 4 }}>
+          <div style={{ width: `${Math.max(0, Math.min(100, p ?? 0))}%`, height: '100%', background: c, borderRadius: 6, transition: 'width 0.4s' }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+          <span style={{ color: c }}>{p !== null ? `${p}% of target` : 'No target set'}</span>
+          {target > 0 && <span style={{ color: '#777' }}>GH₵ {num(profit, 2)} / {num(target, 2)}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Edit modal ────────────────────────────────────────────────
+  function EditModal() {
+    if (!editingFarm) return null;
+    const farmObj = editingFarm === 'combined' ? { label: '🎯 Combined', color: '#D4A537' } : FARMS.find((f) => f.key === editingFarm);
+    const existing = getGoal(editingFarm, editingPeriod);
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+        onClick={(e) => { if (e.target === e.currentTarget) setEditingFarm(null); }}>
+        <div style={{ background: '#222', borderRadius: 14, padding: 20, width: '100%', maxWidth: 360, border: `1px solid ${farmObj?.color || '#D4A537'}44` }}>
+          <div style={{ fontWeight: 700, color: farmObj?.color || '#D4A537', fontSize: 15, marginBottom: 4 }}>
+            {farmObj?.label} — {PERIODS.find((p) => p.key === editingPeriod)?.label} Target
+          </div>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 14 }}>{periodLabel(editingPeriod)}</div>
+
+          <div className="field" style={{ marginBottom: 10 }}>
+            <label>Profit target (GH₵)</label>
+            <input type="number" min="0" step="0.01" placeholder="e.g. 5000"
+              value={editTarget} onChange={(e) => setEditTarget(e.target.value)}
+              autoFocus
+              style={{ width: '100%', background: '#2a2a2a', border: `1px solid ${farmObj?.color || '#D4A537'}44`, borderRadius: 7, padding: '8px 10px', color: '#fff', fontSize: 14, boxSizing: 'border-box' }}
+            />
+          </div>
+          <div className="field" style={{ marginBottom: 16 }}>
+            <label>Notes (optional)</label>
+            <input type="text" placeholder="e.g. After feed deductions"
+              value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
+              style={{ width: '100%', background: '#2a2a2a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, padding: '8px 10px', color: '#fff', fontSize: 13, boxSizing: 'border-box' }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => saveGoal(editingFarm, editingPeriod)}
+              disabled={!(parseFloat(editTarget) >= 0)}
+              style={{ flex: 1, padding: '9px 0', borderRadius: 8, border: 'none', background: farmObj?.color || '#D4A537', color: '#000', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+              Save target
+            </button>
+            {existing && (
+              <button onClick={() => { onDelete(existing.id); setEditingFarm(null); }}
+                style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.1)', color: '#f87171', fontSize: 13, cursor: 'pointer' }}>
+                Remove
+              </button>
+            )}
+            <button onClick={() => setEditingFarm(null)}
+              style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#aaa', fontSize: 13, cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <EditModal />
+      <div style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1200,
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div style={{
+          background: '#1e1e1e', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 680,
+          maxHeight: '93vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          boxShadow: '0 -8px 32px rgba(0,0,0,0.6)',
+        }}>
+          {/* ── Header ── */}
+          <div style={{ padding: '16px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#D4A537' }}>🎯 Profit Goals</h2>
+              <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', padding: '2px 6px' }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#777', marginTop: 2 }}>
+              Revenue − costs (feed · meds · spray · running expenses)
+            </div>
+          </div>
+
+          {/* ── Period toggle ── */}
+          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+            {PERIODS.map((p) => (
+              <button key={p.key} onClick={() => setPeriod(p.key)} style={{
+                flex: 1, padding: '10px 4px', border: 'none', cursor: 'pointer',
+                background: period === p.key ? 'rgba(212,165,55,0.1)' : 'transparent',
+                borderBottom: period === p.key ? '2px solid #D4A537' : '2px solid transparent',
+                color: period === p.key ? '#D4A537' : '#666',
+                fontWeight: period === p.key ? 700 : 400, fontSize: 13,
+              }}>
+                {p.label}
+                <span style={{ display: 'block', fontSize: 10, color: period === p.key ? '#D4A537aa' : '#444', fontWeight: 400, marginTop: 1 }}>
+                  {periodLabel(p.key)}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* ── Scrollable body ── */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 24px' }}>
+
+            {/* ── Combined card ── */}
+            <div style={{
+              background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.25)',
+              borderRadius: 12, padding: '14px 16px', marginBottom: 14,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#D4A537', fontSize: 15 }}>🎯 All Farms Combined</div>
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{periodLabel(period)}</div>
+                </div>
+                <button onClick={() => openEdit('combined', period)} style={{
+                  background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.3)',
+                  color: '#D4A537', borderRadius: 7, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                }}>
+                  {combinedTarget > 0 ? '✏️ Edit target' : '+ Set target'}
+                </button>
+              </div>
+
+              {/* 3-column stat row */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+                {[
+                  { label: 'Revenue', value: combinedRevenue, color: '#4ade80' },
+                  { label: 'Total Costs', value: combinedCost, color: '#f87171' },
+                  { label: 'Profit', value: combinedProfit, color: combinedProfit >= 0 ? '#4ade80' : '#f87171' },
+                ].map((s) => (
+                  <div key={s.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, color: '#777', marginBottom: 3 }}>{s.label}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: s.color }}>GH₵ {num(s.value, 2)}</div>
+                  </div>
+                ))}
+              </div>
+
+              <ProgressBar profit={combinedProfit} target={combinedTarget} />
+              {combinedTarget > 0 && (
+                <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
+                  Target: GH₵ {num(combinedTarget, 2)} · Remaining: GH₵ {num(Math.max(0, combinedTarget - combinedProfit), 2)}
+                </div>
+              )}
+            </div>
+
+            {/* ── Per-farm cards ── */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {FARMS.map((farm) => {
+                const figs = figures[farm.key];
+                const target = goalTarget(farm.key, period);
+                const p = pct(figs.profit, target);
+                return (
+                  <div key={farm.key} style={{
+                    background: 'rgba(255,255,255,0.03)', border: `1px solid ${farm.color}22`,
+                    borderRadius: 12, padding: '14px 16px',
+                    borderLeft: `3px solid ${farm.color}`,
+                  }}>
+                    {/* Farm header */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: farm.color, fontSize: 14 }}>{farm.label}</div>
+                        <div style={{ fontSize: 11, color: '#555', marginTop: 1 }}>{periodLabel(period)}</div>
+                      </div>
+                      <button onClick={() => openEdit(farm.key, period)} style={{
+                        background: `${farm.color}18`, border: `1px solid ${farm.color}33`,
+                        color: farm.color, borderRadius: 7, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                      }}>
+                        {target > 0 ? '✏️ Edit' : '+ Target'}
+                      </button>
+                    </div>
+
+                    {/* Stat row */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 10 }}>
+                      {[
+                        { label: 'Revenue', value: figs.revenue, color: '#4ade80' },
+                        { label: 'Costs', value: figs.cost, color: '#f87171' },
+                        { label: 'Profit', value: figs.profit, color: figs.profit >= 0 ? '#4ade80' : '#f87171' },
+                      ].map((s) => (
+                        <div key={s.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 7, padding: '7px 8px', textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: '#666', marginBottom: 2 }}>{s.label}</div>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: s.color }}>GH₵ {num(s.value, 2)}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Cost breakdown (collapsible via hover — just show inline small) */}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                      {farm.key === 'poultry' && [
+                        { label: 'Feed', val: figs.feedCost },
+                        { label: 'Meds', val: figs.medCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                      {farm.key === 'pepper' && [
+                        { label: 'Spray', val: figs.sprayCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                      {farm.key === 'goat' && [
+                        { label: 'Purchases', val: figs.purchaseCost },
+                        { label: 'Health', val: figs.healthCost },
+                        { label: 'Running', val: figs.pettyCost },
+                      ].filter((x) => x.val > 0).map((x) => (
+                        <span key={x.label} style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '2px 7px' }}>
+                          {x.label}: GH₵ {num(x.val, 2)}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Progress bar */}
+                    <ProgressBar profit={figs.profit} target={target} />
+
+                    {/* Notes */}
+                    {getGoal(farm.key, period)?.notes && (
+                      <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>📝 {getGoal(farm.key, period).notes}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── All-period targets summary ── */}
+            <div style={{ marginTop: 20, padding: '14px 16px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12 }}>
+              <div style={{ fontSize: 12, color: '#777', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>All targets at a glance</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
+                <div style={{ fontSize: 10, color: '#555', padding: '4px 6px', fontWeight: 700 }}></div>
+                {PERIODS.map((p) => <div key={p.key} style={{ fontSize: 10, color: '#D4A537', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>{p.label}</div>)}
+              </div>
+              {[{ key: 'combined', label: '🎯 Combined' }, ...FARMS.map((f) => ({ key: f.key, label: f.label }))].map((row, i) => (
+                <div key={row.key} style={{
+                  display: 'grid', gridTemplateColumns: '1fr repeat(3, 1fr)',
+                  background: i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent',
+                  borderRadius: 6,
+                }}>
+                  <div style={{ fontSize: 12, color: '#aaa', padding: '6px 6px', fontWeight: 600 }}>{row.label}</div>
+                  {PERIODS.map((p) => {
+                    const t = goalTarget(row.key, p.key);
+                    return (
+                      <div key={p.key} onClick={() => openEdit(row.key, p.key)}
+                        style={{ fontSize: 11, color: t > 0 ? '#D4A537' : '#444', padding: '6px 4px', textAlign: 'center', cursor: 'pointer', borderRadius: 4 }}
+                        title={`Edit ${row.label} ${p.label} target`}>
+                        {t > 0 ? `GH₵ ${num(t, 0)}` : '—'}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              <div style={{ fontSize: 10, color: '#555', marginTop: 8 }}>Tap any cell to set or edit that target.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ============================================================= */
+/* ================ EXPENSE TEMPLATES VIEW ==================== */
+/* ============================================================= */
+function ExpenseTemplatesView({ templates, onSave, onDelete, onApply }) {
+  const [editing, setEditing] = useState(null);
+  const CATS = ['Feed', 'Medicine', 'Fuel', 'Labour', 'Utilities', 'Maintenance', 'Supplies', 'Other'];
+  const SCOPES = ['whole farm', 'poultry', 'pepper', 'goats'];
+
+  function blank() {
+    return { id: newId(), name: '', category: 'Feed', description: '', amount: '', scope: 'whole farm', notes: '' };
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!editing.name.trim() || !editing.amount) return;
+    onSave({ ...editing, amount: Number(editing.amount) });
+    setEditing(null);
+  }
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <p className="section-title" style={{ margin: 0 }}>Quick Expense Templates</p>
+          <p className="stat-foot" style={{ margin: '4px 0 0' }}>Save recurring expenses so you can log them in one tap — no need to re-enter the details each time.</p>
+        </div>
+        {!editing && (
+          <button className="btn btn-gold" onClick={() => setEditing(blank())} style={{ flexShrink: 0 }}>+ Template</button>
+        )}
+      </div>
+
+      {editing && (
+        <form onSubmit={submit} className="panel" style={{ padding: 16, marginBottom: 18 }}>
+          <p style={{ margin: '0 0 12px', fontWeight: 700, color: '#D4A537', fontSize: 14 }}>
+            {templates.find((t) => t.id === editing.id) ? 'Edit Template' : 'New Template'}
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="field" style={{ gridColumn: '1/-1' }}>
+              <label>Template name *</label>
+              <input required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Weekly feed top-up" />
+            </div>
+            <div className="field">
+              <label>Category</label>
+              <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                {CATS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Charge to</label>
+              <select value={editing.scope} onChange={(e) => setEditing({ ...editing, scope: e.target.value })}>
+                {SCOPES.map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ gridColumn: '1/-1' }}>
+              <label>Description</label>
+              <input value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="What it covers" />
+            </div>
+            <div className="field">
+              <label>Amount (GH₵) *</label>
+              <input required type="number" min="0" step="0.01" value={editing.amount} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
+            </div>
+            <div className="field">
+              <label>Notes</label>
+              <input value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} placeholder="Optional" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button type="submit" className="btn btn-gold" style={{ flex: 1 }}>Save template</button>
+            <button type="button" className="btn" onClick={() => setEditing(null)} style={{ flex: 1 }}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {templates.length === 0 && !editing ? (
+        <div className="panel" style={{ padding: '32px 20px', textAlign: 'center' }}>
+          <p style={{ color: '#666', margin: 0, fontSize: 14 }}>No templates yet. Create one for any expense you log regularly.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {templates.map((tpl) => (
+            <div key={tpl.id} className="panel" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ margin: 0, fontWeight: 700, color: '#fff', fontSize: 14 }}>{tpl.name}</p>
+                <p style={{ margin: '2px 0 0', color: '#888', fontSize: 12 }}>
+                  {tpl.category} · {tpl.scope} · GH₵ {num(tpl.amount, 2)}
+                  {tpl.description ? ` — ${tpl.description}` : ''}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button
+                  onClick={() => onApply(tpl.id)}
+                  style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+                  + Log
+                </button>
+                <button onClick={() => setEditing({ ...tpl })}
+                  style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 7, padding: '6px 10px', cursor: 'pointer', fontSize: 13 }}>✏️</button>
+                <button onClick={() => onDelete(tpl.id)}
+                  style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.25)', color: '#f87171', borderRadius: 7, padding: '6px 10px', cursor: 'pointer', fontSize: 13 }}>🗑</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
