@@ -14,6 +14,665 @@ import {
 import './App.css';
 import FinancialsModule from './FinancialsModule';
 
+// ============================================================
+// FARM ADVISOR — KNOWLEDGE BASE + ENGINE
+// Pre-programmed agronomic and poultry best practices.
+// No API calls. Runs fully offline.
+// ============================================================
+
+const ADVISOR_AI_LIBRARY = [
+  { id: 'spirotetramat', name: 'Spirotetramat', group: '23', type: 'insecticide', controls: ['mealybugs','aphids','whitefly','thrips','scale insects'], phi: 14, rateRange: '7–10 ml per 16L', notes: 'Double systemic — moves up and down plant. Slow acting (5–7 days). Rotate with group 4A or 1A.' },
+  { id: 'acetamiprid', name: 'Acetamiprid', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs','leafhoppers'], phi: 7, rateRange: '10–15 ml per 16L', notes: 'Systemic, translaminar. Fast knockdown for sucking pests. Bee risk — do not spray open flowers.' },
+  { id: 'lambda-cyhalothrin', name: 'Lambda-cyhalothrin', group: '3A (pyrethroid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','caterpillars','beetles'], phi: 7, rateRange: '5–8 ml per 16L', notes: 'Contact + stomach action. Avoid when mite pressure is high — may cause mite flares.' },
+  { id: 'spinosad', name: 'Spinosad', group: '5 (spinosyn)', type: 'insecticide', controls: ['thrips','caterpillars','leafminers','spider mites'], phi: 3, rateRange: '12–15 ml per 16L', notes: 'Biological origin. Excellent for thrips. Apply early morning or evening — UV degrades it fast.' },
+  { id: 'emamectin', name: 'Emamectin benzoate', group: '6 (avermectin)', type: 'insecticide', controls: ['caterpillars','thrips','leafminers','spider mites'], phi: 3, rateRange: '5–8 ml per 16L', notes: 'Translaminar systemic. Short PHI — good before harvest.' },
+  { id: 'abamectin', name: 'Abamectin', group: '6 (avermectin)', type: 'acaricide', controls: ['spider mites','thrips','leafminers'], phi: 3, rateRange: '5 ml per 15L', notes: 'Primary acaricide. Rotate with group 23 or 25.' },
+  { id: 'imidacloprid', name: 'Imidacloprid', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs','leafhoppers'], phi: 7, rateRange: '5–10 ml per 16L', notes: 'Systemic. High bee toxicity — avoid flowering. Resistance common in whitefly — rotate.' },
+  { id: 'chlorpyrifos', name: 'Chlorpyrifos', group: '1B (organophosphate)', type: 'insecticide', controls: ['caterpillars','beetles','aphids','thrips','soil pests'], phi: 14, rateRange: '20–25 ml per 16L', notes: 'Broad spectrum contact. Long PHI.' },
+  { id: 'cypermethrin', name: 'Cypermethrin', group: '3A (pyrethroid)', type: 'insecticide', controls: ['caterpillars','aphids','beetles','whitefly'], phi: 7, rateRange: '10–15 ml per 16L', notes: 'Contact knockdown.' },
+  { id: 'thiamethoxam', name: 'Thiamethoxam', group: '4A (neonicotinoid)', type: 'insecticide', controls: ['aphids','whitefly','thrips','mealybugs'], phi: 7, rateRange: '5–10 ml per 16L', notes: 'Systemic neonicotinoid.' },
+  { id: 'bifenazate', name: 'Bifenazate', group: '25 (acaricide)', type: 'acaricide', controls: ['spider mites'], phi: 3, rateRange: '20–25 ml per 16L', notes: 'Selective miticide — does not harm predatory mites.' },
+  { id: 'mancozeb', name: 'Mancozeb', group: 'M3 (multi-site)', type: 'fungicide', controls: ['cercospora','early blight','late blight','downy mildew','anthracnose','botrytis'], phi: 7, rateRange: '25–30 g per 16L', notes: 'Broad spectrum protectant. Weekly preventive spray. No resistance risk (multi-site).' },
+  { id: 'copper-hydroxide', name: 'Copper hydroxide', group: 'M1 (inorganic)', type: 'fungicide', controls: ['bacterial leaf spot','cercospora','anthracnose','downy mildew','angular leaf spot'], phi: 0, rateRange: '25–35 g per 16L', notes: 'Broad protectant + bactericide. Standard for Xanthomonas.' },
+  { id: 'copper-oxychloride', name: 'Copper oxychloride', group: 'M1 (inorganic)', type: 'fungicide', controls: ['bacterial leaf spot','cercospora','anthracnose','downy mildew'], phi: 0, rateRange: '30–40 g per 16L', notes: 'Good tank-mix partner with mancozeb.' },
+  { id: 'metalaxyl', name: 'Metalaxyl / Metalaxyl-M', group: '4 (phenylamide)', type: 'fungicide', controls: ['damping off','pythium','phytophthora','downy mildew'], phi: 7, rateRange: '15–25 g per 16L', notes: 'Systemic oomycide. Rotate with multi-site fungicides. High resistance risk.' },
+  { id: 'azoxystrobin', name: 'Azoxystrobin', group: '11 (QoI/strobilurin)', type: 'fungicide', controls: ['powdery mildew','cercospora','early blight','botrytis','anthracnose'], phi: 3, rateRange: '10–15 ml per 16L', notes: 'Systemic. Good curative + preventive.' },
+  { id: 'difenoconazole', name: 'Difenoconazole', group: '3 (DMI/triazole)', type: 'fungicide', controls: ['powdery mildew','cercospora','anthracnose','early blight','rust'], phi: 7, rateRange: '10 ml per 16L', notes: 'Systemic DMI fungicide. Good curative activity.' },
+  { id: 'chlorothalonil', name: 'Chlorothalonil', group: 'M5 (multi-site)', type: 'fungicide', controls: ['cercospora','early blight','botrytis','anthracnose','downy mildew'], phi: 7, rateRange: '20–25 ml per 16L', notes: 'Broad protectant. No resistance risk.' },
+  { id: 'yaravita', name: 'YaraVita Croplift Bio', group: 'foliar fertiliser', type: 'fertiliser', controls: [], phi: 0, rateRange: '200–400 ml per 16L', notes: 'Foliar NPK + micronutrient boost. Can tank-mix with most fungicides.' },
+  { id: 'calcium-boron', name: 'Calcium + Boron foliar', group: 'fertiliser', type: 'fertiliser', controls: [], phi: 0, rateRange: '10–15 ml per 16L', notes: 'Critical at flower set and fruit fill. Prevents blossom end rot.' },
+];
+
+const ADVISOR_PEST_LIBRARY = [
+  { id: 'thrips', name: 'Thrips', crops: ['bell pepper','habanero','cucumber','tomato'],
+    symptoms: 'Silver scarring on leaves and fruit, curled/distorted new growth, black faecal specks on undersides. Flowers fail to set.',
+    threshold: 'Act at first adults visible on leaves.',
+    controls: ['spinosad','emamectin','abamectin','acetamiprid'],
+    notes: 'Prune heavily before spraying. Best sprayed early morning. Rotate groups 5 → 6 → 4A.' },
+  { id: 'aphids', name: 'Aphids', crops: ['bell pepper','habanero','cucumber','tomato','cabbage','garden eggs'],
+    symptoms: 'Clustered on growing tips and undersides. Sticky honeydew + sooty mould. Yellowing, curled leaves. Major CMV vector.',
+    threshold: 'Act at first colony (even 5–10 insects) — primary CMV risk.',
+    controls: ['acetamiprid','imidacloprid','lambda-cyhalothrin','thiamethoxam','spinosad'],
+    notes: 'CMV from aphids is irreversible — act immediately. Yellow sticky traps for monitoring.' },
+  { id: 'whitefly', name: 'Whitefly', crops: ['bell pepper','habanero','cucumber','tomato','garden eggs','beans'],
+    symptoms: 'White cloud of small flies when disturbed. Honeydew, sooty mould. Yellowing.',
+    threshold: 'Act at >5 adults per leaf on 20% of sampled plants.',
+    controls: ['imidacloprid','thiamethoxam','acetamiprid','spirotetramat'],
+    notes: 'Very prone to insecticide resistance. Rotate mode of action every application.' },
+  { id: 'mealybugs', name: 'Mealybugs', crops: ['bell pepper','habanero','cucumber','tomato','garden eggs'],
+    symptoms: 'White waxy cottony masses in leaf axils, stem joints. Yellowing, stunting, honeydew + sooty mould.',
+    threshold: 'Act at first infestation — spreads rapidly in protected crops.',
+    controls: ['spirotetramat','acetamiprid','imidacloprid','chlorpyrifos'],
+    notes: 'Spirotetramat is best — systemic reaches hidden colonies. 2 applications 7–10 days apart.' },
+  { id: 'spider mites', name: 'Spider mites', crops: ['bell pepper','habanero','cucumber','tomato','beans'],
+    symptoms: 'Fine webbing on undersides, tiny yellow-white stippling on upper surface. Leaves go bronze then drop.',
+    threshold: 'Act at >5 mites per leaf or first visible webbing.',
+    controls: ['abamectin','bifenazate','spirotetramat'],
+    notes: 'Hot dry conditions promote explosions. Pyrethroid sprays often make mite problems worse.' },
+  { id: 'caterpillars', name: 'Caterpillars / Armyworm', crops: ['bell pepper','habanero','cucumber','tomato','cabbage','cowpea'],
+    symptoms: 'Irregular holes in leaves and fruit. Frass visible. Fruit bored from inside.',
+    threshold: 'Act at >1 larva per 10 plants for fruiting crops.',
+    controls: ['emamectin','spinosad','chlorpyrifos','cypermethrin'],
+    notes: 'Scout undersides of leaves for egg masses.' },
+  { id: 'leafminers', name: 'Leafminers', crops: ['bell pepper','tomato','cucumber','beans'],
+    symptoms: 'Winding white/silver tunnels in leaf tissue.',
+    threshold: 'Act at >5 mines per plant.',
+    controls: ['spinosad','emamectin','abamectin'],
+    notes: 'Spray when larvae inside mines are small (narrow mines).' },
+];
+
+const ADVISOR_DISEASE_LIBRARY = [
+  { id: 'cercospora', name: 'Cercospora Leaf Spot', crops: ['bell pepper','habanero'], type: 'fungal',
+    symptoms: 'Circular spots with tan/grey centre and dark brown border, yellow halo. Defoliation in severe cases.',
+    conditions: 'High humidity, prolonged leaf wetness.',
+    treatment: ['mancozeb','chlorothalonil','azoxystrobin','difenoconazole'] },
+  { id: 'bacterial-leaf-spot', name: 'Bacterial Leaf Spot (Xanthomonas)', crops: ['bell pepper','habanero','tomato'], type: 'bacterial',
+    symptoms: 'Water-soaked spots turning brown/black with yellow halo. Irregular margins. Fruit lesions are raised and scabby.',
+    conditions: 'Warm, wet weather. Spreads via water splash.',
+    treatment: ['copper-hydroxide','copper-oxychloride'] },
+  { id: 'powdery-mildew', name: 'Powdery Mildew', crops: ['cucumber','tomato','garden eggs','bell pepper'], type: 'fungal',
+    symptoms: 'White powdery coating on upper leaf surface. Starts on older leaves, spreads upward.',
+    conditions: 'Dry weather with high relative humidity at night.',
+    treatment: ['azoxystrobin','difenoconazole'] },
+  { id: 'downy-mildew', name: 'Downy Mildew', crops: ['cucumber','tomato','cabbage'], type: 'oomycete',
+    symptoms: 'Yellow patches on upper leaf, grey-purple downy growth on underside.',
+    conditions: 'Cool nights, >90% humidity, leaf wetness.',
+    treatment: ['metalaxyl','mancozeb','copper-hydroxide'] },
+  { id: 'pythium', name: 'Pythium / Damping Off', crops: ['bell pepper','cucumber','tomato','cabbage'], type: 'oomycete',
+    symptoms: 'Seedlings collapse at soil level. Stem base turns brown, water-soaked. Root rot.',
+    conditions: 'Overwatering, poor drainage.',
+    treatment: ['metalaxyl'] },
+  { id: 'anthracnose', name: 'Anthracnose', crops: ['bell pepper','habanero','tomato','cucumber','beans'], type: 'fungal',
+    symptoms: 'Dark sunken lesions on fruit. Pink spore masses in wet conditions.',
+    conditions: 'High humidity, warm temperatures.',
+    treatment: ['mancozeb','copper-hydroxide','azoxystrobin','difenoconazole'] },
+  { id: 'newcastle', name: 'Newcastle Disease (ND)', crops: ['poultry'], type: 'viral',
+    symptoms: 'Sudden drop in egg production. Respiratory distress (gasping, rattling). Nervous signs (twisted neck). High mortality.',
+    conditions: 'Highly contagious. Spreads via air, droppings, contaminated equipment.',
+    treatment: [] },
+  { id: 'gumboro', name: 'Gumboro (IBD)', crops: ['poultry'], type: 'viral',
+    symptoms: 'Sudden onset depression, whitish diarrhoea, ruffled feathers. Affects 2–6 week old birds.',
+    conditions: 'Very stable virus — survives in houses for months.',
+    treatment: [] },
+  { id: 'coccidiosis', name: 'Coccidiosis', crops: ['poultry'], type: 'parasitic',
+    symptoms: 'Bloody diarrhoea, lethargy, pale birds. High mortality if untreated. Most common in 3–8 week chicks.',
+    conditions: 'Wet litter, high humidity, overcrowding.',
+    treatment: ['Amprolium (Amprol)','Toltrazuril (vet prescribed)'] },
+  { id: 'fowl-typhoid', name: 'Fowl Typhoid / Salmonella', crops: ['poultry'], type: 'bacterial',
+    symptoms: 'Greenish-yellow diarrhoea, lethargy, sudden deaths. Affects all ages.',
+    conditions: 'Contaminated feed, water or equipment.',
+    treatment: ['Enrofloxacin (vet prescribed)'] },
+];
+
+const ADVISOR_CROP_GUIDES = {
+  'bell pepper': {
+    crop: 'Bell Pepper', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Mancozeb + Copper hydroxide','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20], focus: 'Root development. Keep consistent moisture. No waterlogging.' },
+      { name: 'Vegetative', days: [21, 50], focus: 'Vigorous canopy growth. Apply YaraVita foliar every 2 weeks. Scout weekly.' },
+      { name: 'First flower', days: [51, 70], focus: 'Reduce nitrogen, increase potassium + calcium. Manage thrips and aphids at flower — critical for fruit set.' },
+      { name: 'Fruiting', days: [71, 110], focus: 'Fruit fill. Apply Calcium + Boron foliar weekly. Maintain strict PHI discipline.' },
+      { name: 'Harvest', days: [111, 180], focus: 'Harvest at mature green stage. Grade and cool quickly.' },
+    ],
+    scoutingFrequency: 'Twice per week. Focus: new growth (thrips), undersides (mites, whitefly), lower canopy (Cercospora).',
+    harvestWindow: 'Green stage 70–90 days after transplant. Harvest every 5–7 days.',
+    foliarIntervalDays: 14,
+  },
+  'habanero': {
+    crop: 'Habanero Pepper', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Mancozeb + Copper hydroxide','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 25], focus: 'Slow early growth. Consistent moisture.' },
+      { name: 'Vegetative', days: [26, 60], focus: 'Weekly scouting. Same spray programme as bell pepper.' },
+      { name: 'Flowering', days: [61, 85], focus: 'Manage thrips and aphids at flower — critical for fruit set.' },
+      { name: 'Fruiting', days: [86, 150], focus: 'Long fruiting window. Continue PHI records.' },
+    ],
+    scoutingFrequency: 'Twice per week.',
+    harvestWindow: 'Green stage 90–100 days. Orange/red 110–130 days.',
+    foliarIntervalDays: 14,
+  },
+  'cucumber': {
+    crop: 'Cucumber', sprayIntervalDays: 5,
+    preventiveSprayRotation: ['Mancozeb','Azoxystrobin (powdery mildew primary)','Chlorothalonil','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 10], focus: 'Rapid early growth. Avoid waterlogging.' },
+      { name: 'Vegetative', days: [11, 25], focus: 'Train vines. Weekly scouting. Powdery mildew first target.' },
+      { name: 'Flowering', days: [26, 40], focus: 'Bee access important unless parthenocarpic variety.' },
+      { name: 'Harvest', days: [41, 90], focus: 'Harvest every 2–3 days at correct size. Over-ripe fruit reduces yield.' },
+    ],
+    scoutingFrequency: 'Every 2–3 days. Powdery mildew and spider mites are primary threats.',
+    harvestWindow: 'First harvest 40–50 days after transplant. Harvest every 2–3 days.',
+    foliarIntervalDays: 14,
+  },
+  'tomato': {
+    crop: 'Tomato', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb + Copper hydroxide','Azoxystrobin','Chlorothalonil','Difenoconazole'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20], focus: 'Root establishment.' },
+      { name: 'Vegetative', days: [21, 45], focus: 'Canopy growth. Begin weekly scouting.' },
+      { name: 'Flowering', days: [46, 65], focus: 'Manage whitefly — TYLCV vector.' },
+      { name: 'Fruiting', days: [66, 100], focus: 'Fruit fill. Calcium + Boron foliar.' },
+      { name: 'Harvest', days: [101, 150], focus: 'First harvest 70–90 days after transplant.' },
+    ],
+    scoutingFrequency: 'Twice per week.',
+    harvestWindow: 'First harvest 70–90 days after transplant.',
+    foliarIntervalDays: 14,
+  },
+  'garden eggs': {
+    crop: 'Garden Eggs (Eggplant)', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb','Azoxystrobin','Chlorothalonil'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 21] },
+      { name: 'Vegetative', days: [22, 55], focus: 'Weekly scouting. Very prone to spider mites.' },
+      { name: 'Flowering', days: [56, 75] },
+      { name: 'Harvest', days: [76, 150], focus: 'First harvest 60–80 days after transplant.' },
+    ],
+    scoutingFrequency: 'Twice per week. Spider mites and mealybugs primary threats.',
+    harvestWindow: 'First harvest 60–80 days after transplant.',
+    foliarIntervalDays: 14,
+  },
+  'okra': {
+    crop: 'Okra', sprayIntervalDays: 10,
+    preventiveSprayRotation: ['Mancozeb','Copper hydroxide'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20] },
+      { name: 'Vegetative', days: [21, 40] },
+      { name: 'Harvest', days: [41, 100], focus: 'Harvest every 2–3 days.' },
+    ],
+    scoutingFrequency: 'Weekly.',
+    harvestWindow: 'First harvest 50–60 days after sowing. Harvest every 2–3 days.',
+    foliarIntervalDays: 21,
+  },
+  'cabbage': {
+    crop: 'Cabbage', sprayIntervalDays: 7,
+    preventiveSprayRotation: ['Mancozeb','Chlorothalonil'],
+    stagesFromTransplant: [
+      { name: 'Establishment', days: [0, 20] },
+      { name: 'Head formation', days: [21, 60], focus: 'Caterpillars (diamondback moth, armyworm) primary threat. Spinosad or emamectin.' },
+      { name: 'Harvest', days: [61, 90] },
+    ],
+    scoutingFrequency: 'Weekly. Diamondback moth is primary threat.',
+    harvestWindow: 'Head harvest 60–90 days after transplant.',
+    foliarIntervalDays: 21,
+  },
+  'cowpea': {
+    crop: 'Cowpea / Beans', sprayIntervalDays: 10,
+    preventiveSprayRotation: ['Mancozeb','Copper hydroxide'],
+    stagesFromTransplant: [
+      { name: 'Vegetative', days: [0, 30] },
+      { name: 'Flowering', days: [31, 50] },
+      { name: 'Pod fill', days: [51, 70] },
+    ],
+    scoutingFrequency: 'Weekly.',
+    harvestWindow: 'Green pod 50–60 days. Dry 70–80 days.',
+    foliarIntervalDays: 21,
+  },
+};
+
+const ADVISOR_POULTRY_BENCHMARKS = {
+  henDay: { peak: 90, acceptable: 75, critical: 60, dropAlertPct: 5, dropAlertDays: 3 },
+  mortality: { dailyWarnPct: 0.5, dailyCriticalPct: 1, weeklyWarnPct: 2 },
+  feedPerBird: { layerGramsPerDay: 115, tolerancePct: 20 },
+  scoutingOverdueDays: 3,
+  vaccinationLeadDays: 3,
+  feedStockWarnDays: 7,
+};
+
+// ── Advisor engine helpers ──
+function _advDaysBetween(isoA, isoB) {
+  return Math.round((new Date(isoB) - new Date(isoA)) / 86400000);
+}
+function _advAddDays(iso, n) {
+  const d = new Date(iso); d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function _advTail(arr, n) { return arr.slice(-n); }
+
+let _advUID = 0;
+function _advMakeAlert({ severity, category, source, title, body, action, canEscalate, escalatePrompt }) {
+  return { id: `adv-${++_advUID}`, severity, category, source, title, body, action: action || null, canEscalate: !!canEscalate, escalatePrompt: escalatePrompt || null, ts: Date.now() };
+}
+
+function _advPoultryAlerts(data) {
+  const alerts = [];
+  const bm = ADVISOR_POULTRY_BENCHMARKS;
+  const today = new Date().toISOString().slice(0, 10);
+
+  (data.flocks || []).forEach((flock) => {
+    if (flock.status === 'closed') return;
+    const log = (data.dailyLog || []).filter((r) => r.flockId === flock.id).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const recent7 = _advTail(log, 7);
+    const flockName = flock.flockName || flock.name || 'Flock';
+
+    // 1. Missing daily log
+    const lastEntry = log[log.length - 1];
+    const daysAgo = lastEntry ? _advDaysBetween(lastEntry.date, today) : null;
+    if (!lastEntry || daysAgo > bm.scoutingOverdueDays) {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+        title: `${flockName}: daily log overdue`,
+        body: daysAgo ? `Last entry was ${daysAgo} day(s) ago. Log today's data to keep hen-day % and mortality tracking accurate.` : `No daily log entries yet for this flock. Start logging to enable monitoring.`,
+        action: { workspace: 'poultry', tab: 'log' } }));
+    }
+
+    // 2. Mortality spike
+    const todayEntry = log.find((r) => r.date === today);
+    if (todayEntry) {
+      const deaths = Number(todayEntry.mortality) || 0;
+      const closing = Number(todayEntry.closing) || Number(flock.initialBirds) || 1;
+      const pct = (deaths / closing) * 100;
+      if (pct >= bm.mortality.dailyCriticalPct) {
+        const ageWeeks = flock.hatchDate ? Math.floor(_advDaysBetween(flock.hatchDate, today) / 7) : '?';
+        const vaxDone = (data.vax || []).filter((v) => v.flockId === flock.id).map((v) => v.disease || v.vaccine).join(', ') || 'none recorded';
+        alerts.push(_advMakeAlert({ severity: 'critical', category: 'poultry', source: flockName,
+          title: `${flockName}: critical mortality — ${deaths} birds today (${pct.toFixed(1)}%)`,
+          body: `${deaths} deaths today exceeds critical threshold (${bm.mortality.dailyCriticalPct}% per day). Inspect birds immediately — look for Newcastle, Gumboro, or Coccidiosis signs. Isolate sick birds. Contact your vet.`,
+          action: { workspace: 'poultry', tab: 'health' },
+          canEscalate: true,
+          escalatePrompt: `My poultry flock (${closing} birds, ${ageWeeks} weeks old) had ${deaths} deaths in one day (${pct.toFixed(1)}% mortality). Vaccination history: ${vaxDone}. What could be causing this sudden mortality spike and what should I do immediately?` }));
+      } else if (pct >= bm.mortality.dailyWarnPct) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: elevated mortality — ${deaths} birds today`,
+          body: `${pct.toFixed(1)}% daily mortality. Normal is below ${bm.mortality.dailyWarnPct}%. Monitor closely over the next 24 hours. Check feed, water, ventilation and signs of respiratory or intestinal disease.`,
+          action: { workspace: 'poultry', tab: 'log' } }));
+      }
+    }
+
+    // 3. 7-day mortality
+    const week7Deaths = recent7.reduce((s, r) => s + (Number(r.mortality) || 0), 0);
+    const avgClosing = recent7.length ? recent7.reduce((s, r) => s + (Number(r.closing) || 0), 0) / recent7.length : (Number(flock.initialBirds) || 1);
+    const weekMortPct = (week7Deaths / avgClosing) * 100;
+    if (weekMortPct >= bm.mortality.weeklyWarnPct && recent7.length >= 5) {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+        title: `${flockName}: 7-day mortality ${weekMortPct.toFixed(1)}%`,
+        body: `${week7Deaths} birds died in the last 7 days (${weekMortPct.toFixed(1)}% of flock). Above the ${bm.mortality.weeklyWarnPct}% weekly threshold. Review disease history, ventilation and biosecurity.`,
+        action: { workspace: 'poultry', tab: 'health' } }));
+    }
+
+    // 4. Hen-day % trend
+    const withEggs = recent7.filter((r) => r.closing && r.eggs != null);
+    if (withEggs.length >= 3) {
+      const hd = (r) => (Number(r.eggs) / Number(r.closing)) * 100;
+      const vals = withEggs.map(hd);
+      const latestHD = vals[vals.length - 1];
+      const earliestHD = vals[0];
+      const drop = earliestHD - latestHD;
+      if (latestHD < bm.henDay.critical) {
+        const ageWeeks = flock.hatchDate ? Math.floor(_advDaysBetween(flock.hatchDate, today) / 7) : '?';
+        const lastMeds = (data.meds || []).filter((m) => m.flockId === flock.id).slice(-3).map((m) => m.medicine).join(', ') || 'none';
+        alerts.push(_advMakeAlert({ severity: 'critical', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % critically low — ${latestHD.toFixed(1)}%`,
+          body: `Hen-day % is ${latestHD.toFixed(1)}% — well below the ${bm.henDay.critical}% critical threshold. Check: adequate feed supply and quality, water availability, disease pressure, lighting programme, and stress factors.`,
+          action: { workspace: 'poultry', tab: 'dashboard' },
+          canEscalate: true,
+          escalatePrompt: `My layer flock hen-day percentage dropped from ${earliestHD.toFixed(1)}% to ${latestHD.toFixed(1)}% over ${withEggs.length} days. Flock size: ${Math.round(avgClosing)} birds, age: ${ageWeeks} weeks. Recent medications: ${lastMeds}. What could be causing this drop?` }));
+      } else if (latestHD < bm.henDay.acceptable) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % below target — ${latestHD.toFixed(1)}%`,
+          body: `Hen-day % is ${latestHD.toFixed(1)}%, below the ${bm.henDay.acceptable}% target. Review feed quantity (${bm.feedPerBird.layerGramsPerDay}g/bird/day target), water supply, lighting and bird health.`,
+          action: { workspace: 'poultry', tab: 'dashboard' } }));
+      } else if (drop >= bm.henDay.dropAlertPct) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: hen-day % dropped ${drop.toFixed(1)}% in ${withEggs.length} days`,
+          body: `Hen-day fell from ${earliestHD.toFixed(1)}% to ${latestHD.toFixed(1)}%. Investigate feed, water, temperature stress or early disease signs before it falls further.`,
+          action: { workspace: 'poultry', tab: 'dashboard' } }));
+      }
+    }
+
+    // 5. Feed per bird
+    if (recent7.length >= 3) {
+      const totalBirdDays = recent7.reduce((s, r) => s + (Number(r.closing) || 0), 0);
+      const totalFeedKg = recent7.reduce((s, r) => s + (Number(r.feedGiven) || 0), 0);
+      if (totalBirdDays > 0 && totalFeedKg > 0) {
+        const gPerBird = (totalFeedKg * 1000) / totalBirdDays;
+        const target = bm.feedPerBird.layerGramsPerDay;
+        const tol = bm.feedPerBird.tolerancePct / 100;
+        if (gPerBird < target * (1 - tol)) {
+          alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+            title: `${flockName}: feed per bird low — ${gPerBird.toFixed(0)}g/bird/day`,
+            body: `Average feed over last 7 logged days is ${gPerBird.toFixed(0)}g per bird per day. Target is ${target}g. Under-feeding directly reduces egg production. Check feed stock and ensure feeders are always accessible.`,
+            action: { workspace: 'poultry', tab: 'feed' } }));
+        } else if (gPerBird > target * (1 + tol)) {
+          alerts.push(_advMakeAlert({ severity: 'info', category: 'poultry', source: flockName,
+            title: `${flockName}: feed per bird high — ${gPerBird.toFixed(0)}g/bird/day`,
+            body: `Average feed is ${gPerBird.toFixed(0)}g per bird per day — above the ${target}g target. Check for feed wastage, spillage, or rodent access.`,
+            action: { workspace: 'poultry', tab: 'feed' } }));
+        }
+      }
+    }
+
+    // 6. Vaccination schedule
+    (data.vax || []).filter((v) => v.flockId === flock.id && v.date && !v.done).forEach((v) => {
+      const daysToVax = _advDaysBetween(today, v.date);
+      if (daysToVax >= 0 && daysToVax <= bm.vaccinationLeadDays) {
+        alerts.push(_advMakeAlert({ severity: daysToVax === 0 ? 'critical' : 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: vaccination ${daysToVax === 0 ? 'DUE TODAY' : `in ${daysToVax} day(s)`} — ${v.disease || v.vaccine}`,
+          body: `${v.disease || v.vaccine} vaccination is scheduled for ${v.date}. ${daysToVax === 0 ? 'Administer today.' : 'Prepare your vaccine and equipment.'}`,
+          action: { workspace: 'poultry', tab: 'health' } }));
+      } else if (daysToVax < 0 && _advDaysBetween(v.date, today) <= 7) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'poultry', source: flockName,
+          title: `${flockName}: overdue vaccination — ${v.disease || v.vaccine}`,
+          body: `${v.disease || v.vaccine} was scheduled ${Math.abs(daysToVax)} day(s) ago and has not been marked done. Administer as soon as possible and update the health log.`,
+          action: { workspace: 'poultry', tab: 'health' } }));
+      }
+    });
+  });
+  return alerts;
+}
+
+function _advCropAlerts(data) {
+  const alerts = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const pepper = data.pepper || {};
+  const fields = (pepper.fields || []).filter((f) => f.transplantDate);
+  const sprays = pepper.inputs || [];
+  const scouting = pepper.scouting || [];
+  const harvests = pepper.harvests || [];
+  const soilReadings = pepper.soilReadings || [];
+
+  fields.forEach((field) => {
+    const fieldName = field.name || 'Field';
+    const daysFromTransplant = _advDaysBetween(field.transplantDate, today);
+    const cropKey = (field.cropType || 'bell pepper').toLowerCase();
+    const guide = ADVISOR_CROP_GUIDES[cropKey] || ADVISOR_CROP_GUIDES['bell pepper'];
+
+    // 1. PHI status
+    const fieldSprays = sprays.filter((s) => s.fieldId === field.id && s.phiDays);
+    let maxSafe = null, maxProduct = null, maxDaysLeft = 0;
+    fieldSprays.forEach((s) => {
+      const safe = _advAddDays(s.date, s.phiDays);
+      const dl = _advDaysBetween(today, safe);
+      if (dl > 0 && (!maxSafe || safe > maxSafe)) { maxSafe = safe; maxDaysLeft = dl; maxProduct = s.product; }
+    });
+    if (maxSafe) {
+      alerts.push(_advMakeAlert({ severity: maxDaysLeft <= 3 ? 'warning' : 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: harvest hold — ${maxDaysLeft} day(s) remaining (${maxProduct || 'spray'})`,
+        body: `The longest active PHI expires on ${maxSafe} (${maxDaysLeft} more day(s)). Do not harvest until this date. This accounts for all sprays with active PHI countdowns.`,
+        action: { workspace: 'pepper', tab: 'sprays' } }));
+    }
+
+    // 2. Spray interval
+    if (guide.sprayIntervalDays) {
+      const lastSpray = fieldSprays.length ? fieldSprays[fieldSprays.length - 1] : null;
+      if (lastSpray) {
+        const daysSince = _advDaysBetween(lastSpray.date, today);
+        if (daysSince > guide.sprayIntervalDays + 2) {
+          alerts.push(_advMakeAlert({ severity: daysSince > guide.sprayIntervalDays + 7 ? 'warning' : 'info', category: 'crop', source: fieldName,
+            title: `${fieldName}: spray overdue — ${daysSince} days since last spray`,
+            body: `Recommended interval for ${guide.crop} is every ${guide.sprayIntervalDays} days. Last spray: ${lastSpray.product || lastSpray.type || 'unknown'} on ${lastSpray.date}.\nNext rotation: ${guide.preventiveSprayRotation.join(' → ')}.`,
+            action: { workspace: 'pepper', tab: 'sprays' } }));
+        }
+      } else if (daysFromTransplant > 14) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+          title: `${fieldName}: no sprays recorded — plant is ${daysFromTransplant} days old`,
+          body: `${guide.crop} should follow a preventive spray programme from early vegetative stage. Recommended rotation: ${guide.preventiveSprayRotation.join(' → ')}.`,
+          action: { workspace: 'pepper', tab: 'sprays' } }));
+      }
+    }
+
+    // 3. Scouting frequency
+    const fieldScout = scouting.filter((s) => s.fieldId === field.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+    const lastScout = fieldScout[0];
+    const scoutDays = lastScout ? _advDaysBetween(lastScout.date, today) : null;
+    if (!lastScout || scoutDays > 4) {
+      alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: scouting overdue${scoutDays ? ` (${scoutDays} days ago)` : ''}`,
+        body: `${guide.crop} should be scouted at least twice per week. ${scoutDays ? `Last scout was ${scoutDays} days ago.` : 'No scouts recorded yet.'} ${guide.scoutingFrequency || ''}`,
+        action: { workspace: 'pepper', tab: 'scouting' } }));
+    } else if (lastScout && lastScout.severity === 'High') {
+      const pestEntry = ADVISOR_PEST_LIBRARY.find((p) => p.name.toLowerCase() === (lastScout.pest || '').toLowerCase());
+      const ais = pestEntry ? pestEntry.controls.slice(0, 3).join(', ') : 'consult advisor';
+      alerts.push(_advMakeAlert({ severity: 'critical', category: 'crop', source: fieldName,
+        title: `${fieldName}: HIGH pest pressure — ${lastScout.pest} (${lastScout.date})`,
+        body: `High ${lastScout.pest} pressure recorded. Act before it spreads.\nRecommended active ingredients: ${ais}.\n${pestEntry?.notes || ''}`,
+        action: { workspace: 'pepper', tab: 'sprays' },
+        canEscalate: !pestEntry,
+        escalatePrompt: !pestEntry ? `I am growing ${guide.crop} in a net house. I am seeing high ${lastScout.pest} pressure. Recent sprays: ${fieldSprays.slice(-3).map((s) => `${s.product} (${s.date})`).join(', ')}. What is this and how do I treat it?` : null }));
+    } else if (lastScout && lastScout.severity === 'Medium') {
+      alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+        title: `${fieldName}: medium pest pressure — ${lastScout.pest}`,
+        body: `Medium ${lastScout.pest} pressure on ${lastScout.date}. Monitor closely over the next 2 days. If pressure rises or doesn't respond, escalate to treatment.`,
+        action: { workspace: 'pepper', tab: 'scouting' } }));
+    }
+
+    // 4. Crop stage advisory
+    const currentStage = (guide.stagesFromTransplant || []).find(
+      (s) => daysFromTransplant >= s.days[0] && daysFromTransplant <= s.days[1]
+    );
+    if (currentStage) {
+      alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+        title: `${fieldName}: "${currentStage.name}" stage (day ${daysFromTransplant} from transplant)`,
+        body: currentStage.focus || `Follow the standard crop programme for ${guide.crop}.`,
+        action: { workspace: 'pepper', tab: 'schedule' } }));
+    }
+
+    // 5. Harvest trend drop
+    const fieldHarvests = harvests.filter((h) => h.fieldId === field.id).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (fieldHarvests.length >= 4) {
+      const r = fieldHarvests.slice(-4);
+      const prev2 = (Number(r[0].weightKg || 0) + Number(r[1].weightKg || 0)) / 2;
+      const last2 = (Number(r[2].weightKg || 0) + Number(r[3].weightKg || 0)) / 2;
+      const dropPct = prev2 > 0 ? ((prev2 - last2) / prev2) * 100 : 0;
+      if (dropPct >= 20) {
+        alerts.push(_advMakeAlert({ severity: 'warning', category: 'crop', source: fieldName,
+          title: `${fieldName}: harvest yield dropped ${dropPct.toFixed(0)}%`,
+          body: `Average recent harvest (${last2.toFixed(1)}kg) is ${dropPct.toFixed(0)}% lower than the two before that (${prev2.toFixed(1)}kg). Possible causes: PHI restriction, pest/disease damage, water stress, or over-maturity.`,
+          action: { workspace: 'pepper', tab: 'harvests' },
+          canEscalate: true,
+          escalatePrompt: `My ${guide.crop} harvest in field "${fieldName}" dropped from ${prev2.toFixed(1)}kg to ${last2.toFixed(1)}kg over the last 2 picks (${daysFromTransplant} days from transplant). Recent sprays: ${fieldSprays.slice(-3).map((s) => `${s.product} (${s.date})`).join(', ')}. What could be causing this yield drop?` }));
+      }
+    }
+
+    // 6. Soil retest
+    if (field.manureAppliedDate) {
+      const latestSoil = soilReadings.filter((r) => r.fieldId === field.id).sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+      const lastTestDate = latestSoil?.date || field.manureAppliedDate;
+      const daysSinceSoil = _advDaysBetween(lastTestDate, today);
+      if (daysSinceSoil > 14) {
+        alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+          title: `${fieldName}: soil retest due (${daysSinceSoil} days since last reading)`,
+          body: `Soil was last tested ${daysSinceSoil} days ago. Retest to confirm nutrient status and adjust your fertilisation programme.`,
+          action: { workspace: 'pepper', tab: 'soil' } }));
+      }
+    }
+
+    // 7. Foliar fertiliser
+    const foliarSprays = sprays.filter((s) => s.fieldId === field.id && s.type === 'Fertiliser');
+    const lastFoliar = foliarSprays[foliarSprays.length - 1];
+    if (daysFromTransplant > 21) {
+      if (!lastFoliar) {
+        alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+          title: `${fieldName}: no foliar fertiliser recorded`,
+          body: `${guide.crop} from day 21 onwards benefits from regular foliar nutrition. Consider YaraVita Croplift Bio (200–400ml per 16L) every 2 weeks, or Calcium+Boron at flowering.`,
+          action: { workspace: 'pepper', tab: 'sprays' } }));
+      } else {
+        const daysSinceFoliar = _advDaysBetween(lastFoliar.date, today);
+        if (daysSinceFoliar > (guide.foliarIntervalDays || 21)) {
+          alerts.push(_advMakeAlert({ severity: 'info', category: 'crop', source: fieldName,
+            title: `${fieldName}: foliar fertiliser overdue — ${daysSinceFoliar} days since last`,
+            body: `Last foliar feed was ${daysSinceFoliar} days ago (${lastFoliar.product || 'unknown product'}). Apply YaraVita or Calcium+Boron to maintain plant nutrition${currentStage ? ` during ${currentStage.name} stage` : ''}.`,
+            action: { workspace: 'pepper', tab: 'sprays' } }));
+        }
+      }
+    }
+  });
+  return alerts;
+}
+
+function runAdvisor(data) {
+  _advUID = 0;
+  const rank = { critical: 0, warning: 1, info: 2 };
+  return [
+    ..._advPoultryAlerts(data),
+    ..._advCropAlerts(data),
+  ].sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+// ── AdvisorPanel component ────────────────────────────────────
+function AdvisorPanel({ data, onClose, onNavigate }) {
+  const [copied, setCopied] = React.useState(null);
+  const [expanded, setExpanded] = React.useState({});
+  const [pasteTarget, setPasteTarget] = React.useState(null);
+  const [pasteValue, setPasteValue] = React.useState('');
+  const [savedResponses, setSavedResponses] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('advisor_saved_responses') || '{}'); } catch { return {}; }
+  });
+
+  const alerts = React.useMemo(() => runAdvisor(data), [data]);
+
+  const severityStyle = {
+    critical: { border: '1px solid #c62828', background: 'rgba(198,40,40,0.08)', icon: '🚨', color: '#ff5252' },
+    warning:  { border: '1px solid #D4A537', background: 'rgba(212,165,55,0.08)', icon: '⚠️', color: '#D4A537' },
+    info:     { border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.03)', icon: '💡', color: '#7eb8d4' },
+  };
+
+  const critCount = alerts.filter((a) => a.severity === 'critical').length;
+  const warnCount = alerts.filter((a) => a.severity === 'warning').length;
+
+  function copyPrompt(alert) {
+    navigator.clipboard.writeText(alert.escalatePrompt || '').then(
+      () => { setCopied(alert.id); setTimeout(() => setCopied(null), 3000); },
+      () => { setCopied(alert.id); setTimeout(() => setCopied(null), 3000); }
+    );
+    setPasteTarget(alert.id);
+    setPasteValue(savedResponses[alert.id] || '');
+  }
+
+  function saveResponse(alertId) {
+    const updated = { ...savedResponses, [alertId]: pasteValue };
+    setSavedResponses(updated);
+    try { localStorage.setItem('advisor_saved_responses', JSON.stringify(updated)); } catch {}
+    setPasteTarget(null);
+    setPasteValue('');
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      display: 'flex', flexDirection: 'column',
+      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+    }} onClick={onClose}>
+      <div style={{
+        marginTop: 'auto', maxHeight: '90vh',
+        background: '#1a1a1a', borderTop: '2px solid #D4A537',
+        borderRadius: '16px 16px 0 0', display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>🌱</span>
+              <span style={{ fontWeight: 700, fontSize: 17, color: '#D4A537' }}>Farm Advisor</span>
+            </div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+            {critCount > 0 && <span style={{ background: 'rgba(198,40,40,0.15)', color: '#ff5252', border: '1px solid #c62828', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>🚨 {critCount} Critical</span>}
+            {warnCount > 0 && <span style={{ background: 'rgba(212,165,55,0.12)', color: '#D4A537', border: '1px solid rgba(212,165,55,0.4)', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>⚠️ {warnCount} Warning</span>}
+            {critCount === 0 && warnCount === 0 && <span style={{ color: '#4caf50', fontSize: 13 }}>✓ All systems looking good</span>}
+            <span style={{ marginLeft: 'auto', color: '#555', fontSize: 12 }}>{alerts.length} alert{alerts.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+
+        {/* Alert list */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '10px 12px 24px' }}>
+          {alerts.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#555' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <p style={{ margin: 0, fontSize: 15 }}>No issues detected right now. Keep logging daily data to get the most out of the advisor.</p>
+            </div>
+          )}
+          {alerts.map((alert) => {
+            const st = severityStyle[alert.severity];
+            const isExpanded = expanded[alert.id];
+            const savedResp = savedResponses[alert.id];
+            return (
+              <div key={alert.id} style={{ borderRadius: 10, border: st.border, background: st.background, marginBottom: 10, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 8 }}
+                  onClick={() => setExpanded((e) => ({ ...e, [alert.id]: !e[alert.id] }))}>
+                  <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{st.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: st.color, lineHeight: 1.3 }}>{alert.title}</p>
+                    <p style={{ margin: '2px 0 0', fontSize: 11, color: '#666' }}>{alert.source} · {alert.category}</p>
+                  </div>
+                  <span style={{ color: '#555', fontSize: 14, flexShrink: 0, marginTop: 2 }}>{isExpanded ? '▲' : '▼'}</span>
+                </div>
+                {isExpanded && (
+                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '10px 12px 12px' }}>
+                    <p style={{ margin: '0 0 10px', fontSize: 13, color: '#ccc', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{alert.body}</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {alert.action && (
+                        <button onClick={() => { onNavigate(alert.action); onClose(); }}
+                          style={{ background: 'rgba(212,165,55,0.15)', border: '1px solid rgba(212,165,55,0.4)', color: '#D4A537', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                          Go to {alert.action.tab}
+                        </button>
+                      )}
+                      {alert.canEscalate && (
+                        <button onClick={() => copyPrompt(alert)}
+                          style={{ background: 'rgba(126,184,212,0.1)', border: '1px solid rgba(126,184,212,0.3)', color: '#7eb8d4', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                          {copied === alert.id ? '✓ Copied!' : '📋 Copy AI prompt'}
+                        </button>
+                      )}
+                    </div>
+                    {savedResp && (
+                      <div style={{ marginTop: 10, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: 11, color: '#888', fontWeight: 700 }}>SAVED AI RESPONSE:</p>
+                        <p style={{ margin: 0, fontSize: 12, color: '#bbb', whiteSpace: 'pre-line' }}>{savedResp}</p>
+                        <button onClick={() => { setPasteTarget(alert.id); setPasteValue(savedResp); }}
+                          style={{ marginTop: 6, background: 'none', border: 'none', color: '#D4A537', fontSize: 11, cursor: 'pointer', padding: 0 }}>✏️ Edit response</button>
+                      </div>
+                    )}
+                    {pasteTarget === alert.id && (
+                      <div style={{ marginTop: 10 }}>
+                        <p style={{ margin: '0 0 6px', fontSize: 12, color: '#888' }}>Paste the AI response here and save it against this alert:</p>
+                        <textarea value={pasteValue} onChange={(e) => setPasteValue(e.target.value)}
+                          rows={5} placeholder="Paste AI response here..."
+                          style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, color: '#fff', fontSize: 12, padding: '8px 10px', resize: 'vertical' }} />
+                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                          <button onClick={() => saveResponse(alert.id)}
+                            style={{ background: '#D4A537', color: '#000', border: 'none', borderRadius: 8, padding: '5px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Save</button>
+                          <button onClick={() => { setPasteTarget(null); setPasteValue(''); }}
+                            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#ccc', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Knowledge base quick reference */}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '10px 16px', flexShrink: 0 }}>
+          <p style={{ margin: 0, fontSize: 11, color: '#444', textAlign: 'center' }}>AI Farms Advisor · Rule-based · Offline · Tap any alert to expand</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
 
 /* ─── Multi-user profile system ───────────────────────────────────────────
@@ -1486,6 +2145,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   const [showDailyTasks, setShowDailyTasks] = useState(false);
   const [showPettyCosts, setShowPettyCosts] = useState(false);
   const [showWeeklySummary, setShowWeeklySummary] = useState(false);
+  const [showAdvisor, setShowAdvisor] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -2670,6 +3330,12 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
       return touch({ ...d, pepper: { ...d.pepper, sprays: [...d.pepper.sprays, entry], inputs } });
     });
   }
+  function addCustomSprayProduct(product) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, customSprayProducts: [...(d.pepper.customSprayProducts || []), product] } }));
+  }
+  function deleteCustomSprayProduct(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, customSprayProducts: (d.pepper.customSprayProducts || []).filter((p) => p.id !== id) } }));
+  }
   function addHarvest(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: [...d.pepper.harvests, { ...entry, paymentStatus: entry.paymentStatus || 'paid', payments: entry.payments || [] }] } }));
   }
@@ -2879,6 +3545,52 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           }}
         >📊</button>
       </div>
+
+      {/* ── Farm Advisor floating button ── */}
+      {(() => {
+        const advAlerts = runAdvisor(data);
+        const critCount = advAlerts.filter((a) => a.severity === 'critical').length;
+        const warnCount = advAlerts.filter((a) => a.severity === 'warning').length;
+        const badgeCount = critCount + warnCount;
+        const badgeColor = critCount > 0 ? '#ff5252' : '#D4A537';
+        return (
+          <button
+            title="Farm Advisor — monitoring alerts and recommendations"
+            onClick={() => setShowAdvisor(true)}
+            style={{
+              position: 'fixed', bottom: 24, right: 18, zIndex: 9000,
+              width: 54, height: 54, borderRadius: '50%',
+              background: critCount > 0 ? 'rgba(198,40,40,0.9)' : warnCount > 0 ? 'rgba(212,165,55,0.9)' : 'rgba(30,30,30,0.95)',
+              border: `2px solid ${critCount > 0 ? '#ff5252' : warnCount > 0 ? '#D4A537' : 'rgba(212,165,55,0.4)'}`,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+              cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'transform 0.15s',
+            }}
+          >
+            🌱
+            {badgeCount > 0 && (
+              <span style={{
+                position: 'absolute', top: -4, right: -4,
+                background: badgeColor, color: '#000',
+                borderRadius: '50%', width: 20, height: 20,
+                fontSize: 11, fontWeight: 800,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>{badgeCount > 9 ? '9+' : badgeCount}</span>
+            )}
+          </button>
+        );
+      })()}
+
+      {showAdvisor && (
+        <AdvisorPanel
+          data={data}
+          onClose={() => setShowAdvisor(false)}
+          onNavigate={(action) => {
+            if (action?.workspace) { setWorkspace(action.workspace); setModal(null); }
+            if (action?.tab) setTab(action.tab);
+          }}
+        />
+      )}
 
       {showBuyerBook && (
         <BuyerPhonebook
@@ -3410,6 +4122,8 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           onAddCropExpense={addCropExpense}
           onUpdateCropExpense={updateCropExpense}
           onDeleteCropExpense={deleteCropExpense}
+          onAddCustomProduct={addCustomSprayProduct}
+          onDeleteCustomProduct={deleteCustomSprayProduct}
         />
       )}
 
@@ -5094,6 +5808,7 @@ function PepperWorkspace({
   onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
   onSendEventToTask,
   onAddCropExpense, onUpdateCropExpense, onDeleteCropExpense,
+  onAddCustomProduct, onDeleteCustomProduct,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -5357,6 +6072,7 @@ function PepperWorkspace({
           ['soil', 'Soil & Batches'],
           ['scout', 'Scouting'],
           ['spray', 'Spray & Fertigation'],
+          ['library', '🌿 Spray Library'],
           ['inputs', 'Input Stock'],
           ['harvest', 'Harvest & Sales'],
           ['financials', '💰 Financials'],
@@ -5451,6 +6167,17 @@ function PepperWorkspace({
         <SprayTab
           rows={[...sprayScoped].reverse()} fieldName={fieldName}
           scopePhi={scopePhi} scopeResistance={scopeResistance} onAdd={() => setModal('spray')}
+        />
+      )}
+
+      {ptab === 'library' && (
+        <SprayLibraryTab
+          fields={fields}
+          sprays={pepper.sprays || []}
+          customProducts={pepper.customSprayProducts || []}
+          onAddCustomProduct={onAddCustomProduct}
+          onDeleteCustomProduct={onDeleteCustomProduct}
+          onAddSpray={onAddSpray}
         />
       )}
 
@@ -6636,6 +7363,575 @@ function ScoutForm({ fields, defaultField, onClose, onSave }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SPRAY LIBRARY MODULE
+// Injected before SprayTab function in App.jsx
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Built-in West African / Ghanaian product library (read-only) ────────────
+const BUILTIN_SPRAY_LIBRARY = [
+  // ── Gilbert's 13 products ──────────────────────────────────────────────
+  { id: 'sl_emacare', name: 'Emacare Plus', activeIngredient: 'Emamectin Benzoate 1.9% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['thrips','leafminers','armyworms','caterpillars','bollworms'], phi: 3, reentry: 12, whoClass: 'IV', resistanceRisk: 'Medium', rateML: 10, notes: 'Excellent for thrips under net house. Rotate with IRAC 5 or 4A.' },
+  { id: 'sl_klopar', name: 'Klopar 24 SC', activeIngredient: 'Chlorpyrifos 24% SC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['aphids','whitefly','thrips','caterpillars','stem borers','soil pests'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Broad spectrum. Resistance documented in whitefly — rotate frequently.' },
+  { id: 'sl_abamet', name: 'Abamet', activeIngredient: 'Abamectin 1.8% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['spider mites','broad mites','thrips','leafminers','whitefly'], phi: 3, reentry: 12, whoClass: 'III', resistanceRisk: 'Medium', rateML: 10, notes: 'Rotate with IRAC 13 or 25 for mites.' },
+  { id: 'sl_ataka', name: 'Ataka Super', activeIngredient: 'Cypermethrin + Chlorpyrifos', irac: '3A+1B', iracClass: 'Pyrethroid + Organophosphate', moa: 'Na⁺ channel disruptor + AChE inhibitor', mobility: 'Contact + Knockdown', pests: ['aphids','whitefly','caterpillars','thrips','beetles','armyworms'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Fast knockdown. Use max once per season.' },
+  { id: 'sl_spenoda', name: 'Spenoda', activeIngredient: 'Spinetoram (Spinosyn)', irac: '5', iracClass: 'Spinosyn', moa: 'nAChR allosteric activator', mobility: 'Contact + Ingestion', pests: ['thrips','leafminers','armyworms','caterpillars','fruit borers'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'IPM-friendly. Low impact on beneficials.' },
+  { id: 'sl_viper', name: 'Viper 46 EC', activeIngredient: 'Chlorpyrifos + Cypermethrin 46% EC', irac: '1B+3A', iracClass: 'Organophosphate + Pyrethroid', moa: 'AChE inhibitor + Na⁺ channel disruptor', mobility: 'Contact + Stomach', pests: ['aphids','caterpillars','whitefly','beetles','stem borers'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Reserve for heavy pressure. Max 1x/season.' },
+  { id: 'sl_away', name: 'Away', activeIngredient: 'Acetamiprid (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','mealybugs'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Medium-High', rateML: 10, notes: 'Systemic — good for pests in growing tips.' },
+  { id: 'sl_agrotimal', name: 'Agrotimal', activeIngredient: 'Thiamethoxam (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','soil pests'], phi: 3, reentry: 8, whoClass: 'III', resistanceRisk: 'High', rateML: 10, notes: 'Cross-resistance with imidacloprid. Consider drench application.' },
+  { id: 'sl_cydim', name: 'Cydim Super', activeIngredient: 'Cymoxanil + Dimethomorph', irac: 'FRAC 27+40', iracClass: 'Fungicide (Oomycide)', moa: 'Oomycete cell wall synthesis inhibitor', mobility: 'Systemic (fungicide)', pests: ['downy mildew','late blight','pythium'], phi: 3, reentry: 4, whoClass: 'III', resistanceRisk: 'N/A', rateML: 15, notes: '⚠️ FUNGICIDE — not an insecticide. Use in fungicide rotation only.' },
+  { id: 'sl_sunpyrifos', name: 'Sunpyrifos', activeIngredient: 'Chlorpyrifos (generic)', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['aphids','caterpillars','whitefly','soil pests','beetles'], phi: 14, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Same class as Klopar — do not use in same rotation slot.' },
+  { id: 'sl_imida', name: 'Imida Super', activeIngredient: 'Imidacloprid (Neonicotinoid)', irac: '4A', iracClass: 'Neonicotinoid', moa: 'nAChR agonist', mobility: 'Systemic', pests: ['whitefly','aphids','thrips','leafhoppers','soil insects'], phi: 21, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Longest PHI (21d) among your neonics — plan harvest timing carefully.' },
+  { id: 'sl_emastar', name: 'Ema Star 112 EC', activeIngredient: 'Emamectin Benzoate 1.12% EC', irac: '6', iracClass: 'Avermectin', moa: 'Glutamate-gated Cl⁻ channel activator', mobility: 'Translaminar', pests: ['thrips','leafminers','armyworms','caterpillars','bollworms'], phi: 3, reentry: 12, whoClass: 'IV', resistanceRisk: 'Medium', rateML: 10, notes: 'Same IRAC 6 as Emacare Plus — do not use consecutively.' },
+  { id: 'sl_priazox', name: 'Priazox Plus', activeIngredient: 'Fenpyroximate 6.24% + Hexythiazox 3.12% SC', irac: '21A+10A', iracClass: 'METI acaricide + Mite growth inhibitor', moa: 'Mitochondrial Complex I inhibitor + Chitin synthesis inhibitor', mobility: 'Contact + Translaminar', pests: ['spider mites','broad mites','rust mites'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'Hits all mite life stages (adult + egg + larva). Excellent when mite pressure peaks.' },
+
+  // ── Broader West African / common products ─────────────────────────────
+  { id: 'sl_lambda', name: 'Lambda-cyhalothrin', activeIngredient: 'Lambda-cyhalothrin 25g/L EC', irac: '3A', iracClass: 'Pyrethroid', moa: 'Na⁺ channel modulator', mobility: 'Contact + Knockdown', pests: ['aphids','whitefly','caterpillars','beetles','stink bugs'], phi: 7, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Common pyrethroid. Fast knockdown. High resistance in many pests — rotate.' },
+  { id: 'sl_cypermethrin', name: 'Cypermethrin 10 EC', activeIngredient: 'Cypermethrin 10% EC', irac: '3A', iracClass: 'Pyrethroid', moa: 'Na⁺ channel modulator', mobility: 'Contact', pests: ['aphids','caterpillars','beetles','whitefly'], phi: 7, reentry: 12, whoClass: 'II', resistanceRisk: 'High', rateML: 15, notes: 'Broad pyrethroid. Can worsen spider mite outbreaks — avoid during mite pressure.' },
+  { id: 'sl_dimethoate', name: 'Dimethoate 40 EC', activeIngredient: 'Dimethoate 400g/L EC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Systemic + Contact', pests: ['aphids','whitefly','thrips','mites','leafhoppers'], phi: 7, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 10, notes: 'Systemic OP. Phytotoxic on some crops at high temps — use with caution.' },
+  { id: 'sl_profenofos', name: 'Profenofos 50 EC', activeIngredient: 'Profenofos 500g/L EC', irac: '1B', iracClass: 'Organophosphate', moa: 'AChE inhibitor', mobility: 'Contact + Stomach', pests: ['thrips','armyworms','caterpillars','aphids','mites'], phi: 7, reentry: 24, whoClass: 'II', resistanceRisk: 'High', rateML: 20, notes: 'Commonly used in Ghana for Spodoptera (armyworms). Rotate with non-OP.' },
+  { id: 'sl_indoxacarb', name: 'Indoxacarb 15 SC', activeIngredient: 'Indoxacarb 150g/L SC', irac: '22A', iracClass: 'Oxadiazine', moa: 'Na⁺ channel blocker (voltage-dependent)', mobility: 'Contact + Ingestion', pests: ['caterpillars','armyworms','fruit borers','diamondback moth'], phi: 3, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 10, notes: 'Excellent for Lepidoptera (moths/butterflies). No cross-resistance with pyrethroids or OPs.' },
+  { id: 'sl_chlorfenapyr', name: 'Chlorfenapyr 36 SC', activeIngredient: 'Chlorfenapyr 360g/L SC', irac: '13', iracClass: 'Pyrrole (uncoupler)', moa: 'Mitochondrial oxidative phosphorylation uncoupler', mobility: 'Translaminar', pests: ['spider mites','thrips','whitefly','armyworms','caterpillars','aphids'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low', rateML: 15, notes: 'Broad spectrum — works on both insects AND mites. Unique MoA, no cross-resistance with OPs/pyrethroids/neonics.' },
+  { id: 'sl_spiromesifen', name: 'Spiromesifen (Oberon)', activeIngredient: 'Spiromesifen 240 SC', irac: '23', iracClass: 'Tetronic acid derivative', moa: 'Acetyl-CoA carboxylase inhibitor (lipid biosynthesis)', mobility: 'Translaminar', pests: ['spider mites','whitefly','broad mites'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low', rateML: 10, notes: 'Very safe profile. Excellent for mite and whitefly resistance management.' },
+  { id: 'sl_thiocyclam', name: 'Cartap / Thiocyclam', activeIngredient: 'Thiocyclam hydrogen oxalate', irac: '14', iracClass: 'Nereistoxin analogue', moa: 'nAChR channel blocker', mobility: 'Systemic + Contact', pests: ['caterpillars','stem borers','rice bugs','thrips'], phi: 7, reentry: 12, whoClass: 'III', resistanceRisk: 'Low-Medium', rateML: 20, notes: 'Useful for stem borers. Different MoA from neonicotinoids despite targeting nAChR.' },
+  { id: 'sl_bifenazate', name: 'Bifenazate (Floramite)', activeIngredient: 'Bifenazate 24% SC', irac: '25', iracClass: 'Carbazate', moa: 'Mitochondrial electron transport inhibitor (Complex III)', mobility: 'Contact', pests: ['spider mites','broad mites'], phi: 3, reentry: 4, whoClass: 'IV', resistanceRisk: 'Low', rateML: 10, notes: 'Mite-specific. Excellent rotation partner with IRAC 6 (Abamectin/Avermectins).' },
+  { id: 'sl_mancozeb', name: 'Mancozeb 80 WP', activeIngredient: 'Mancozeb 800g/kg WP', irac: 'FRAC M3', iracClass: 'Fungicide (multi-site)', moa: 'Multi-site contact fungicide', mobility: 'Contact (fungicide)', pests: ['early blight','late blight','cercospora','downy mildew','anthracnose'], phi: 7, reentry: 24, whoClass: 'III', resistanceRisk: 'Very Low', rateML: 25, notes: 'FUNGICIDE. Broad spectrum protectant. Weekly preventive spray. No resistance risk (multi-site).' },
+  { id: 'sl_metalaxyl', name: 'Metalaxyl + Mancozeb', activeIngredient: 'Metalaxyl 8% + Mancozeb 64% WP', irac: 'FRAC 4+M3', iracClass: 'Fungicide (systemic + multi-site)', moa: 'RNA polymerase inhibitor + multi-site contact', mobility: 'Systemic (fungicide)', pests: ['late blight','downy mildew','pythium','phytophthora'], phi: 7, reentry: 4, whoClass: 'III', resistanceRisk: 'Medium', rateML: 25, notes: 'FUNGICIDE. Systemic + protectant. Metalaxyl resistance documented — rotate with FRAC 40 (Cydim).' },
+];
+
+// ── Pest master list (for pest-to-product lookup) ──────────────────────────
+const SPRAY_PEST_LIST = [
+  'aphids','whitefly','thrips','spider mites','broad mites','rust mites',
+  'armyworms','caterpillars','leafminers','fruit borers','stem borers',
+  'beetles','leafhoppers','mealybugs','soil pests','stink bugs',
+  'downy mildew','late blight','early blight','cercospora','anthracnose','pythium',
+];
+
+// ── IRAC rotation score for a field ────────────────────────────────────────
+function calcRotationScore(fieldSprays, allProducts) {
+  const insect = fieldSprays.filter((s) => {
+    const p = allProducts.find((x) => x.name === s.product);
+    return p && p.irac && !p.irac.startsWith('FRAC');
+  }).slice(-6); // last 6 insecticide sprays
+  if (insect.length < 2) return { score: 'green', label: 'Good', detail: 'Not enough data yet' };
+  const groups = insect.map((s) => {
+    const p = allProducts.find((x) => x.name === s.product);
+    return p ? p.irac : null;
+  }).filter(Boolean);
+  // Check consecutive repeats in last 3
+  const last3 = groups.slice(-3);
+  const uniqueLast3 = new Set(last3).size;
+  const consecutivePairs = last3.filter((g, i) => i > 0 && g === last3[i - 1]).length;
+  if (consecutivePairs >= 1) return { score: 'red', label: 'Poor — IRAC repeated consecutively', detail: `Same group used back-to-back in last 3 sprays` };
+  if (uniqueLast3 < 2) return { score: 'amber', label: 'Moderate', detail: 'Limited rotation in last 3 sprays' };
+  return { score: 'green', label: 'Good', detail: `${new Set(groups).size} different IRAC groups in last ${groups.length} sprays` };
+}
+
+// ── SprayLibraryTab component ───────────────────────────────────────────────
+function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, onDeleteCustomProduct, onAddSpray }) {
+  const [view, setView] = React.useState('log'); // 'log' | 'library' | 'lookup' | 'stock'
+  const [showAddProductForm, setShowAddProductForm] = React.useState(false);
+  const [showLogForm, setShowLogForm] = React.useState(false);
+  const [lookupPest, setLookupPest] = React.useState('');
+  const [librarySearch, setLibrarySearch] = React.useState('');
+  const [selectedProduct, setSelectedProduct] = React.useState(null);
+
+  const allProducts = React.useMemo(() => [
+    ...BUILTIN_SPRAY_LIBRARY,
+    ...(customProducts || []).map((p) => ({ ...p, _custom: true })),
+  ], [customProducts]);
+
+  const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
+
+  // ── Rotation scores per field ──────────────────────────────────────────
+  const rotationScores = React.useMemo(() => {
+    return fields.map((f) => {
+      const fs = sprays.filter((s) => s.fieldId === f.id).sort((a, b) => a.date.localeCompare(b.date));
+      return { field: f, ...calcRotationScore(fs, allProducts) };
+    });
+  }, [fields, sprays, allProducts]);
+
+  // ── Rotation warning for a pending spray ──────────────────────────────
+  function getRotationWarning(fieldId, iracGroup) {
+    if (!iracGroup || iracGroup.startsWith('FRAC')) return null;
+    const fs = sprays
+      .filter((s) => s.fieldId === fieldId && s.iracGroup && !s.iracGroup.startsWith('FRAC'))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const last3 = fs.slice(-3).map((s) => s.iracGroup);
+    if (last3.includes(iracGroup)) {
+      const positions = last3.map((g, i) => g === iracGroup ? last3.length - i : null).filter(Boolean);
+      return `⚠️ IRAC ${iracGroup} was used ${positions[0] === 1 ? 'last spray' : positions[0] + ' spray(s) ago'} on this field. Rotating reduces resistance risk.`;
+    }
+    return null;
+  }
+
+  // ── Pest lookup ────────────────────────────────────────────────────────
+  const pestMatches = React.useMemo(() => {
+    if (!lookupPest) return [];
+    const q = lookupPest.toLowerCase();
+    const matches = allProducts.filter((p) =>
+      p.pests && p.pests.some((pest) => pest.toLowerCase().includes(q))
+    );
+    // Rotation-aware ranking: products not used in last 3 sprays of ANY field first
+    const recentIracs = new Set(
+      sprays.slice(-9).map((s) => s.iracGroup).filter(Boolean)
+    );
+    return [...matches].sort((a, b) => {
+      const aRecent = recentIracs.has(a.irac) ? 1 : 0;
+      const bRecent = recentIracs.has(b.irac) ? 1 : 0;
+      return aRecent - bRecent;
+    });
+  }, [lookupPest, allProducts, sprays]);
+
+  const filteredLibrary = React.useMemo(() => {
+    if (!librarySearch) return allProducts;
+    const q = librarySearch.toLowerCase();
+    return allProducts.filter((p) =>
+      p.name.toLowerCase().includes(q) ||
+      p.activeIngredient.toLowerCase().includes(q) ||
+      p.irac.toLowerCase().includes(q) ||
+      (p.pests || []).some((pest) => pest.toLowerCase().includes(q))
+    );
+  }, [librarySearch, allProducts]);
+
+  const scoreColor = { green: '#4caf50', amber: '#D4A537', red: '#ef5350' };
+  const whoColor = { 'I': '#ef5350', 'II': '#ff9800', 'III': '#D4A537', 'IV': '#4caf50' };
+
+  return (
+    <div>
+      {/* Sub-tab bar */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[['log','📋 Spray Log'],['library','📚 Product Library'],['lookup','🔍 Pest Lookup'],['stock','📊 Rotation Scores']].map(([id, label]) => (
+          <button key={id}
+            className={`tab${view === id ? ' active' : ''}`}
+            style={{ fontSize: 13, padding: '5px 12px' }}
+            onClick={() => setView(id)}
+          >{label}</button>
+        ))}
+      </div>
+
+      {/* ── SPRAY LOG view ─────────────────────────────────────────────── */}
+      {view === 'log' && (
+        <div>
+          <div className="panel-head" style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 16 }}>Spray Log</h3>
+            <button className="btn btn-green" style={{ fontSize: 13 }} onClick={() => setShowLogForm(true)}>+ Log spray</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data" style={{ fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>Date</th><th>Field</th><th>Product</th><th>IRAC</th>
+                  <th>Target pest</th><th>Dose (ml/L)</th><th>PHI (d)</th>
+                  <th>Cost (GH₵)</th><th>Rain?</th><th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...sprays].reverse().map((r) => {
+                  const p = allProducts.find((x) => x.name === r.product);
+                  const irac = r.iracGroup || p?.irac || '—';
+                  return (
+                    <tr key={r.id}>
+                      <td className="mono">{fmtDate(r.date)}</td>
+                      <td>{fieldName(r.fieldId)}</td>
+                      <td style={{ fontWeight: 600 }}>{r.product || '—'}</td>
+                      <td><span style={{ background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '1px 6px', fontSize: 11 }}>{irac}</span></td>
+                      <td style={{ fontSize: 11 }}>{r.targetPest || '—'}</td>
+                      <td className="mono">{r.doseMlPerL != null ? `${r.doseMlPerL} ml/L` : (r.rate || '—')}</td>
+                      <td className="mono">{r.phiDays != null ? r.phiDays : '—'}</td>
+                      <td className="mono">{r.cost != null ? `GH₵${num(r.cost,2)}` : '—'}</td>
+                      <td style={{ textAlign: 'center' }}>{r.rainedWithin4h ? '🌧️' : ''}</td>
+                      <td className="notes" style={{ fontSize: 11 }}>{r.notes || ''}</td>
+                    </tr>
+                  );
+                })}
+                {sprays.length === 0 && <tr><td colSpan={10} className="empty">No sprays logged yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="stat-foot" style={{ marginTop: 10, fontSize: 11 }}>
+            Total sprays: <strong>{sprays.length}</strong> ·
+            Total cost: <strong>GH₵ {num(sprays.reduce((s, r) => s + (Number(r.cost) || 0), 0), 2)}</strong>
+          </p>
+        </div>
+      )}
+
+      {/* ── PRODUCT LIBRARY view ───────────────────────────────────────── */}
+      {view === 'library' && (
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              value={librarySearch}
+              onChange={(e) => setLibrarySearch(e.target.value)}
+              placeholder="Search product, AI, IRAC, or pest…"
+              style={{ flex: 1, minWidth: 200, padding: '7px 12px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', fontSize: 13 }}
+            />
+            <button className="btn btn-green" style={{ fontSize: 13 }} onClick={() => setShowAddProductForm(true)}>+ Add custom product</button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filteredLibrary.map((p) => (
+              <div key={p.id}
+                style={{
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 9, padding: '12px 14px', cursor: 'pointer',
+                  borderLeft: `3px solid ${p._custom ? '#D4A537' : 'rgba(255,255,255,0.15)'}`,
+                }}
+                onClick={() => setSelectedProduct(selectedProduct?.id === p.id ? null : p)}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 6 }}>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{p.name}</span>
+                    {p._custom && <span style={{ marginLeft: 8, fontSize: 10, background: 'rgba(212,165,55,0.2)', color: '#D4A537', borderRadius: 4, padding: '1px 6px' }}>Custom</span>}
+                    <span style={{ display: 'block', fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>{p.activeIngredient}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '2px 8px' }}>IRAC {p.irac}</span>
+                    <span style={{ fontSize: 11, background: `rgba(${p.whoClass==='II'?'255,152,0':'76,175,80'},0.15)`, color: whoColor[p.whoClass] || '#aaa', borderRadius: 4, padding: '2px 8px' }}>WHO {p.whoClass}</span>
+                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 8px' }}>PHI {p.phi}d</span>
+                    <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 8px' }}>{p.mobility}</span>
+                  </div>
+                </div>
+                {selectedProduct?.id === p.id && (
+                  <div style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div><strong>Mode of action:</strong> {p.moa}</div>
+                    <div><strong>Class:</strong> {p.iracClass}</div>
+                    <div><strong>Target pests:</strong> {(p.pests || []).join(', ')}</div>
+                    <div><strong>Re-entry interval:</strong> {p.reentry} hrs</div>
+                    <div><strong>Resistance risk:</strong> <span style={{ color: p.resistanceRisk === 'High' ? '#ef5350' : p.resistanceRisk === 'Low' ? '#4caf50' : '#D4A537' }}>{p.resistanceRisk}</span></div>
+                    <div><strong>Default dose:</strong> {p.rateML} ml/L</div>
+                    {p.notes && <div style={{ color: '#aaa', fontStyle: 'italic' }}>{p.notes}</div>}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                      <button className="btn btn-green" style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); setShowLogForm({ prefillProduct: p }); }}>Log spray with this product</button>
+                      {p._custom && <button className="btn" style={{ fontSize: 12, background: 'rgba(239,83,80,0.15)', color: '#ef5350', border: '1px solid rgba(239,83,80,0.3)' }} onClick={(e) => { e.stopPropagation(); onDeleteCustomProduct(p.id); setSelectedProduct(null); }}>Delete custom</button>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {filteredLibrary.length === 0 && <p className="empty">No products match "{librarySearch}".</p>}
+          </div>
+        </div>
+      )}
+
+      {/* ── PEST LOOKUP view ───────────────────────────────────────────── */}
+      {view === 'lookup' && (
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 10 }}>🔍 Pest-to-Product Lookup</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 12 }}>
+            Products are sorted by rotation priority — products from IRAC groups not recently used appear first.
+          </p>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              {SPRAY_PEST_LIST.map((pest) => (
+                <button key={pest}
+                  onClick={() => setLookupPest(pest)}
+                  style={{
+                    fontSize: 11, padding: '4px 10px', borderRadius: 20,
+                    background: lookupPest === pest ? '#D4A537' : 'rgba(255,255,255,0.07)',
+                    color: lookupPest === pest ? '#000' : 'var(--text)',
+                    border: lookupPest === pest ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                    cursor: 'pointer',
+                  }}
+                >{pest}</button>
+              ))}
+            </div>
+            <input
+              value={lookupPest}
+              onChange={(e) => setLookupPest(e.target.value)}
+              placeholder="Or type a pest name…"
+              style={{ width: '100%', padding: '7px 12px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+            />
+          </div>
+          {lookupPest && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {pestMatches.length === 0 && <p className="empty">No products found for "{lookupPest}"</p>}
+              {pestMatches.map((p, i) => {
+                const recentIracs = new Set(sprays.slice(-9).map((s) => s.iracGroup).filter(Boolean));
+                const isRecent = recentIracs.has(p.irac);
+                return (
+                  <div key={p.id} style={{
+                    background: 'rgba(255,255,255,0.04)', border: `1px solid ${isRecent ? 'rgba(239,83,80,0.3)' : 'rgba(76,175,80,0.3)'}`,
+                    borderRadius: 9, padding: '10px 14px',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{p.name}</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {!isRecent && <span style={{ fontSize: 10, background: 'rgba(76,175,80,0.2)', color: '#4caf50', borderRadius: 4, padding: '2px 7px' }}>✓ Rotation-ready</span>}
+                        {isRecent && <span style={{ fontSize: 10, background: 'rgba(239,83,80,0.15)', color: '#ef5350', borderRadius: 4, padding: '2px 7px' }}>⚠ Used recently</span>}
+                        <span style={{ fontSize: 11, background: 'rgba(212,165,55,0.15)', color: '#D4A537', borderRadius: 4, padding: '2px 7px' }}>IRAC {p.irac}</span>
+                        <span style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa', borderRadius: 4, padding: '2px 7px' }}>PHI {p.phi}d</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>{p.activeIngredient} · {p.mobility}</div>
+                    {p.notes && <div style={{ fontSize: 11, color: '#888', marginTop: 4, fontStyle: 'italic' }}>{p.notes}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!lookupPest && <p style={{ fontSize: 13, color: 'var(--text-faint)', textAlign: 'center', marginTop: 24 }}>Select a pest above or type to search.</p>}
+        </div>
+      )}
+
+      {/* ── ROTATION SCORES view ───────────────────────────────────────── */}
+      {view === 'stock' && (
+        <div>
+          <h3 style={{ fontSize: 15, marginBottom: 6 }}>📊 IRAC Rotation Scores</h3>
+          <p style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+            Based on last 6 insecticide sprays per field. Repeating the same IRAC group accelerates resistance.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {rotationScores.map(({ field, score, label, detail }) => (
+              <div key={field.id} style={{
+                background: 'rgba(255,255,255,0.04)', border: `1px solid ${scoreColor[score]}40`,
+                borderLeft: `4px solid ${scoreColor[score]}`, borderRadius: 9, padding: '12px 16px',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{field.name}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor[score], background: `${scoreColor[score]}20`, borderRadius: 5, padding: '3px 10px' }}>{score === 'green' ? '✓ ' : score === 'amber' ? '⚠ ' : '✗ '}{label}</span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 4 }}>{detail}</div>
+                {/* Last 3 sprays on this field */}
+                {(() => {
+                  const fs = sprays.filter((s) => s.fieldId === field.id).sort((a, b) => a.date.localeCompare(b.date)).slice(-3).reverse();
+                  if (!fs.length) return <p style={{ fontSize: 11, color: '#666', marginTop: 6 }}>No sprays yet on this field.</p>;
+                  return (
+                    <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {fs.map((s, i) => {
+                        const p = allProducts.find((x) => x.name === s.product);
+                        const irac = s.iracGroup || p?.irac || '?';
+                        return (
+                          <span key={s.id} style={{ fontSize: 11, background: 'rgba(255,255,255,0.07)', borderRadius: 5, padding: '3px 8px', color: '#ccc' }}>
+                            {i === 0 ? '🔵 ' : i === 1 ? '⚪ ' : '⚪ '}{s.product || 'Unknown'} <span style={{ color: '#D4A537' }}>IRAC {irac}</span> <span style={{ color: '#666' }}>({fmtDate(s.date)})</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            ))}
+          </div>
+
+          {/* Cost summary */}
+          <div style={{ marginTop: 20, background: 'rgba(212,165,55,0.07)', border: '1px solid rgba(212,165,55,0.2)', borderRadius: 9, padding: '14px 16px' }}>
+            <h4 style={{ fontSize: 13, color: '#D4A537', marginBottom: 10 }}>💰 Spray Cost Summary</h4>
+            {fields.map((f) => {
+              const fs = sprays.filter((s) => s.fieldId === f.id);
+              const totalCost = fs.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+              const perSpray = fs.length ? totalCost / fs.length : 0;
+              return (
+                <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 6, marginBottom: 6 }}>
+                  <span style={{ color: 'var(--text)' }}>{f.name}</span>
+                  <span style={{ color: '#aaa' }}>{fs.length} sprays · <strong style={{ color: '#D4A537' }}>GH₵ {num(totalCost, 2)}</strong> total · <span style={{ color: '#888' }}>avg GH₵ {num(perSpray, 2)}/spray</span></span>
+                </div>
+              );
+            })}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, paddingTop: 4 }}>
+              <span style={{ fontWeight: 700, color: 'var(--text)' }}>All fields total</span>
+              <span style={{ fontWeight: 700, color: '#D4A537' }}>GH₵ {num(sprays.reduce((s, r) => s + (Number(r.cost) || 0), 0), 2)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Log spray form ─────────────────────────────────────────────── */}
+      {showLogForm && (
+        <SprayLibraryLogForm
+          fields={fields}
+          allProducts={allProducts}
+          sprays={sprays}
+          prefillProduct={typeof showLogForm === 'object' ? showLogForm.prefillProduct : null}
+          getRotationWarning={getRotationWarning}
+          onClose={() => setShowLogForm(false)}
+          onSave={(entry) => { onAddSpray(entry); setShowLogForm(false); }}
+        />
+      )}
+
+      {/* ── Add custom product form ────────────────────────────────────── */}
+      {showAddProductForm && (
+        <AddCustomProductForm
+          onClose={() => setShowAddProductForm(false)}
+          onSave={(p) => { onAddCustomProduct(p); setShowAddProductForm(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── SprayLibraryLogForm ─────────────────────────────────────────────────────
+function SprayLibraryLogForm({ fields, allProducts, sprays, prefillProduct, getRotationWarning, onClose, onSave }) {
+  const [f, setF] = React.useState({
+    date: todayISO(),
+    fieldId: fields[0]?.id || '',
+    product: prefillProduct?.name || '',
+    iracGroup: prefillProduct?.irac || '',
+    activeIngredient: prefillProduct?.activeIngredient || '',
+    targetPest: '',
+    doseMlPerL: prefillProduct?.rateML || '',
+    quantityUsed: '',
+    cost: '',
+    phiDays: prefillProduct?.phi || '',
+    rainedWithin4h: false,
+    notes: '',
+  });
+  const set = (k) => (e) => setF((prev) => ({ ...prev, [k]: e.target.value }));
+
+  // Auto-fill from product library when product changes
+  function handleProductSelect(name) {
+    const p = allProducts.find((x) => x.name === name);
+    // Pre-fill dose with last used dose for this product
+    const lastUsed = [...sprays].reverse().find((s) => s.product === name && s.doseMlPerL);
+    setF((prev) => ({
+      ...prev,
+      product: name,
+      iracGroup: p?.irac || prev.iracGroup,
+      activeIngredient: p?.activeIngredient || prev.activeIngredient,
+      phiDays: p?.phi || prev.phiDays,
+      doseMlPerL: lastUsed?.doseMlPerL || p?.rateML || prev.doseMlPerL,
+    }));
+  }
+
+  const rotationWarn = f.fieldId && f.iracGroup ? getRotationWarning(f.fieldId, f.iracGroup) : null;
+  const safeDate = f.phiDays && f.date ? addDaysISO(f.date, Number(f.phiDays)) : null;
+
+  function submit() {
+    if (!f.date || !f.fieldId || !f.product) return;
+    onSave({
+      id: newId(),
+      date: f.date,
+      fieldId: f.fieldId,
+      type: 'Insecticide',
+      product: f.product,
+      iracGroup: f.iracGroup || null,
+      activeIngredient: f.activeIngredient || null,
+      targetPest: f.targetPest || null,
+      doseMlPerL: f.doseMlPerL === '' ? null : Number(f.doseMlPerL),
+      rate: f.doseMlPerL ? `${f.doseMlPerL} ml/L` : null,
+      quantityUsed: f.quantityUsed === '' ? null : Number(f.quantityUsed),
+      cost: f.cost === '' ? null : Number(f.cost),
+      phiDays: f.phiDays === '' ? null : Number(f.phiDays),
+      rainedWithin4h: f.rainedWithin4h,
+      notes: f.notes || null,
+    });
+  }
+
+  return (
+    <Modal title="Log spray — Spray Library" sub={safeDate ? `PHI clears ${fmtDate(safeDate)}.` : 'Fill in product details.'} onClose={onClose}>
+      {rotationWarn && (
+        <div style={{ background: 'rgba(255,152,0,0.12)', border: '1px solid rgba(255,152,0,0.3)', borderRadius: 7, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#ffb74d' }}>
+          {rotationWarn}
+        </div>
+      )}
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Field">
+          <select value={f.fieldId} onChange={set('fieldId')}>
+            {fields.map((fl) => <option key={fl.id} value={fl.id}>{fl.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Product" span2>
+          <select value={f.product} onChange={(e) => handleProductSelect(e.target.value)} style={{ marginBottom: 4 }}>
+            <option value="">— select from library —</option>
+            {allProducts.map((p) => <option key={p.id} value={p.name}>{p.name}{p._custom ? ' ★' : ''}</option>)}
+            <option value="__other__">Other (type below)</option>
+          </select>
+          {(f.product === '__other__' || !allProducts.find((p) => p.name === f.product)) && (
+            <input value={f.product === '__other__' ? '' : f.product} onChange={(e) => setF((prev) => ({ ...prev, product: e.target.value }))} placeholder="Product name" />
+          )}
+        </Field>
+        <Field label="IRAC Group"><input value={f.iracGroup} onChange={set('iracGroup')} placeholder="e.g. 4A" /></Field>
+        <Field label="Active Ingredient"><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="auto-filled from library" /></Field>
+        <Field label="Target pest">
+          <select value={f.targetPest} onChange={set('targetPest')}>
+            <option value="">— select pest —</option>
+            {SPRAY_PEST_LIST.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="Dose (ml/L)"><input type="number" step="0.1" value={f.doseMlPerL} onChange={set('doseMlPerL')} placeholder="pre-fills from last use" /></Field>
+        <Field label="Qty used (ml)"><input type="number" step="1" value={f.quantityUsed} onChange={set('quantityUsed')} placeholder="total ml used" /></Field>
+        <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
+        <Field label="PHI (days)"><input type="number" value={f.phiDays} onChange={set('phiDays')} placeholder="from label" /></Field>
+        <Field label="Rained within 4hrs?">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+            <input type="checkbox" checked={f.rainedWithin4h} onChange={(e) => setF((prev) => ({ ...prev, rainedWithin4h: e.target.checked }))} />
+            Yes — may need re-application
+          </label>
+        </Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="observations, conditions, etc." /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit} disabled={!f.product || !f.fieldId || !f.date}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── AddCustomProductForm ────────────────────────────────────────────────────
+function AddCustomProductForm({ onClose, onSave }) {
+  const [f, setF] = React.useState({
+    name: '', activeIngredient: '', irac: '', iracClass: '', moa: '',
+    mobility: 'Contact', pests: '', phi: '', reentry: '', whoClass: 'III',
+    resistanceRisk: 'Medium', rateML: '', notes: '',
+  });
+  const set = (k) => (e) => setF((prev) => ({ ...prev, [k]: e.target.value }));
+
+  function submit() {
+    if (!f.name || !f.activeIngredient || !f.irac) return;
+    onSave({
+      id: `custom_${Date.now()}`,
+      name: f.name, activeIngredient: f.activeIngredient, irac: f.irac,
+      iracClass: f.iracClass, moa: f.moa,
+      mobility: f.mobility,
+      pests: f.pests.split(',').map((p) => p.trim()).filter(Boolean),
+      phi: f.phi === '' ? null : Number(f.phi),
+      reentry: f.reentry === '' ? null : Number(f.reentry),
+      whoClass: f.whoClass, resistanceRisk: f.resistanceRisk,
+      rateML: f.rateML === '' ? null : Number(f.rateML),
+      notes: f.notes,
+      _custom: true,
+    });
+  }
+
+  return (
+    <Modal title="Add custom product" sub="Saved to your app — not to the built-in library." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Product name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Confidor 200 SL" /></Field>
+        <Field label="Active ingredient" span2><input value={f.activeIngredient} onChange={set('activeIngredient')} placeholder="e.g. Imidacloprid 200g/L" /></Field>
+        <Field label="IRAC group"><input value={f.irac} onChange={set('irac')} placeholder="e.g. 4A" /></Field>
+        <Field label="IRAC class"><input value={f.iracClass} onChange={set('iracClass')} placeholder="e.g. Neonicotinoid" /></Field>
+        <Field label="Mode of action" span2><input value={f.moa} onChange={set('moa')} placeholder="e.g. nAChR agonist" /></Field>
+        <Field label="Mobility">
+          <select value={f.mobility} onChange={set('mobility')}>
+            {['Contact','Systemic','Translaminar','Contact + Stomach','Contact + Knockdown'].map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="WHO class">
+          <select value={f.whoClass} onChange={set('whoClass')}>
+            {['I','II','III','IV'].map((c) => <option key={c} value={c}>WHO {c}</option>)}
+          </select>
+        </Field>
+        <Field label="PHI (days)"><input type="number" value={f.phi} onChange={set('phi')} /></Field>
+        <Field label="Re-entry (hrs)"><input type="number" value={f.reentry} onChange={set('reentry')} /></Field>
+        <Field label="Default dose (ml/L)"><input type="number" step="0.1" value={f.rateML} onChange={set('rateML')} /></Field>
+        <Field label="Resistance risk">
+          <select value={f.resistanceRisk} onChange={set('resistanceRisk')}>
+            {['Low','Low-Medium','Medium','Medium-High','High','Very Low','N/A'].map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="Target pests (comma-separated)" span2><input value={f.pests} onChange={set('pests')} placeholder="e.g. aphids, whitefly, thrips" /></Field>
+        <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit} disabled={!f.name || !f.activeIngredient || !f.irac}>Add product</button>
+      </div>
+    </Modal>
+  );
+}
+
+
 /* ---------------- Spray & fertigation ---------------- */
 
 function SprayTab({ rows, fieldName, scopePhi, scopeResistance, onAdd }) {
@@ -7790,6 +9086,7 @@ function CreditSummarySubTab({ sales }) {
 function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null);
+  const [editSale, setEditSale] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -7937,7 +9234,10 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                   </div>
                 </td>
                 <td className="notes">{r.notes || ''}</td>
-                <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
+                <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button className="link-btn" onClick={() => setEditSale(r)}>Edit</button>
+                  <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
+                </td>
               </tr>
             ))}
             {visibleSales.length === 0 && <tr><td colSpan={9} className="empty">{sales.length === 0 ? 'No sales logged yet — record egg or bird sales to build your profit picture.' : 'No sales in this period.'}</td></tr>}
@@ -7959,13 +9259,38 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
           onMarkPaid={() => onUpdateSale(payModal.id, { paymentStatus: 'paid' })}
         />
       )}
+      {editSale && (
+        <SaleForm
+          flock={flock}
+          prefill={editSale}
+          onClose={() => setEditSale(null)}
+          onSave={(updated) => { onUpdateSale(editSale.id, updated); setEditSale(null); }}
+        />
+      )}
     </>
   );
 }
 
-function SaleForm({ flock, onClose, onSave }) {
+function SaleForm({ flock, onClose, onSave, prefill }) {
   const layer = flock.type === 'layer';
-  const [f, setF] = useState({ date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' });
+  const isEdit = !!prefill;
+  const [f, setF] = useState(() => {
+    if (prefill) {
+      return {
+        date: prefill.date || todayISO(),
+        item: prefill.item || (layer ? 'Eggs (crates)' : 'Broilers'),
+        quantity: prefill.quantity != null ? String(prefill.quantity) : '',
+        unitPrice: prefill.unitPrice != null ? String(prefill.unitPrice) : '',
+        amount: prefill.amount != null ? String(prefill.amount) : '',
+        buyer: prefill.buyer || '',
+        notes: prefill.notes || '',
+        cashAmount: prefill.cashAmount != null ? String(prefill.cashAmount) : '',
+        momoAmount: prefill.momoAmount != null ? String(prefill.momoAmount) : '',
+        creditAmount: prefill.creditAmount != null ? String(prefill.creditAmount) : '',
+      };
+    }
+    return { date: todayISO(), item: layer ? 'Eggs (crates)' : 'Broilers', quantity: '', unitPrice: '', amount: '', buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '' };
+  });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
   const amount = f.amount !== '' ? Number(f.amount) : autoAmount;
@@ -7979,7 +9304,7 @@ function SaleForm({ flock, onClose, onSave }) {
     const credit = Number(f.creditAmount) || 0;
     const hasAnySplit = cash + momo + credit > 0;
     onSave({
-      id: newId(), date: f.date, item: f.item,
+      date: f.date, item: f.item,
       quantity: f.quantity === '' ? null : Number(f.quantity),
       unitPrice: f.unitPrice === '' ? null : Number(f.unitPrice),
       amount, buyer: f.buyer || null, notes: f.notes || null,
@@ -7987,11 +9312,11 @@ function SaleForm({ flock, onClose, onSave }) {
       momoAmount: hasAnySplit ? momo : 0,
       creditAmount: hasAnySplit ? credit : 0,
       paymentStatus: hasCreditSplit ? 'credit' : 'paid',
-      payments: [],
+      ...(isEdit ? {} : { id: newId(), payments: [] }),
     });
   }
   return (
-    <Modal title="Log sale" sub={amount ? `Amount: GH₵ ${num(amount, 2)}.` : 'Enter quantity × unit price, or type the amount directly.'} onClose={onClose}>
+    <Modal title={isEdit ? 'Edit sale' : 'Log sale'} sub={amount ? `Amount: GH₵ ${num(amount, 2)}.` : 'Enter quantity × unit price, or type the amount directly.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Item">
@@ -8021,7 +9346,7 @@ function SaleForm({ flock, onClose, onSave }) {
       )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>Save sale</button>
+        <button className="btn btn-gold" onClick={submit} disabled={splitTotal > 0 && !splitOk}>{isEdit ? 'Update sale' : 'Save sale'}</button>
       </div>
     </Modal>
   );
