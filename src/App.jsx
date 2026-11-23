@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext, Component } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext, Component } from 'react';
 import {
   ResponsiveContainer, ComposedChart, BarChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart, ReferenceDot,
