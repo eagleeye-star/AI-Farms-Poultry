@@ -601,18 +601,30 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
   /* ---- PEPPER section ---- */
   const pepperIncomeRows = useMemo(()=>{
     return _pepperHarvs.map(h=>{
+      const unit = h.unit || 'kg';
+      const isSack = unit !== 'kg';
       const kg  = Number(h.weightKg)||0;
+      const qty = Number(h.quantity)||0;
       const ppk = Number(h.pricePerKg)||0;
+      const ppu = Number(h.pricePerUnit)||0;
+      const rev = isSack ? qty * ppu : kg * ppk;
+      const hasPrice = isSack ? !!ppu : !!ppk;
+      const qtyLabel = isSack
+        ? `${num(qty,0)} ${unit}${h.grade?' ('+h.grade+')':''}${h.fieldName?' — '+h.fieldName:''}`
+        : `${num(kg,1)} kg${h.grade?' ('+h.grade+')':''}${h.fieldName?' — '+h.fieldName:''}`;
+      const unitPriceLabel = isSack
+        ? (ppu ? ghc(ppu)+'/'+unit : '—')
+        : (ppk ? ghc(ppk)+'/kg' : '—');
       return {
         id: h.id||newId(),
         date: h.date,
-        description: `${num(kg,1)} kg${h.grade?' ('+h.grade+')':''}${h.fieldName?' — '+h.fieldName:''}`,
-        amount: kg*ppk,
+        description: qtyLabel,
+        amount: rev,
         buyer: h.buyer||'—',
-        qty: `${num(kg,1)} kg`,
-        unitPrice: ppk ? ghc(ppk)+'/kg' : '—',
+        qty: isSack ? `${num(qty,0)} ${unit}` : `${num(kg,1)} kg`,
+        unitPrice: unitPriceLabel,
         field: h.fieldName||'—',
-        noPrice: !ppk,
+        noPrice: !hasPrice,
       };
     }).sort((a,b)=>new Date(b.date)-new Date(a.date));
   },[_pepperHarvs]);
@@ -744,13 +756,20 @@ export default function FinancialsModule({ data, sales, expenses, pepperHarvests
     // Bell Pepper harvests
     _pepperHarvs.forEach(h => {
       if ((h.paymentStatus || 'paid') === 'credit') {
-        const saleAmount = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+        const unit = h.unit || 'kg';
+        const isSack = unit !== 'kg';
+        const saleAmount = isSack
+          ? (Number(h.quantity) || 0) * (Number(h.pricePerUnit) || 0)
+          : (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
         const owed = calcOwedFin(h, saleAmount);
         if (owed > 0) {
+          const descLabel = isSack
+            ? `${num(h.quantity, 0)} ${unit}${h.grade ? ' (' + h.grade + ')' : ''}`
+            : `${num(h.weightKg, 1)} kg${h.grade ? ' (' + h.grade + ')' : ''}`;
           rows.push({
             id: h.id, date: h.date, buyer: h.buyer || 'Unknown',
             sectionLabel: 'Bell Pepper', sectionIcon: '🌶',
-            description: `${num(h.weightKg, 1)} kg${h.grade ? ' (' + h.grade + ')' : ''}`,
+            description: descLabel,
             saleAmount, owed,
           });
         }
