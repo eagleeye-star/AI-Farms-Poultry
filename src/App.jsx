@@ -13,25 +13,47 @@ import {
 } from './sync';
 import './App.css';
 import FinancialsModule from './FinancialsModule';
-import BackupModule from './BackupModule';
-import PerformanceModule from './PerformanceModule';
-import ProfitFlowModule from './ProfitFlowModule';
-import { normalizePerformance } from './performanceLogic';
-import { normalizeFlow, getUnits } from './flowLogic';
-import { OFFLINE, fetchDiskState, pushDiskState, subscribeDiskStatus, getDiskStatus, pingServer } from './offline';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1'; // legacy key — used only during migration
 
-/* ─── Accounts and local storage ─────────────────────────────────────────
-   Sign-in is by EMAIL + PASSWORD (Supabase Auth). Every account has its own
-   private farm record in the cloud, and its own copy on each phone, stored
-   under the account's user id. Anyone can create an account — that is how a
-   friend gets their own separate farm.
-   Older builds kept the farm under a PIN "profile" or a single legacy key;
-   findLegacyLocalData() lets an account claim that data once, with consent.
+/* ─── Multi-user profile system ───────────────────────────────────────────
+   Each profile gets its own localStorage key and Supabase row.
+   The user never needs an email/password — just a name + 4-digit PIN.
    ─────────────────────────────────────────────────────────────────────── */
-const PROFILE_DATA_KEY = (uid) => `aifarms_data_${uid}`; // per-account local copy
-const LEGACY_PROFILE_PREFIX = 'aifarms_data_';           // old PIN-profile blobs used the same prefix
+const PROFILES_KEY      = 'aifarms_profiles_v1';      // array of { id, name, farmName, pinHash }
+const ACTIVE_PROFILE_KEY = 'aifarms_active_profile';  // id of the currently unlocked profile
+const PROFILE_DATA_KEY  = (uid) => `aifarms_data_${uid}`; // per-profile data key
+
+/** Simple non-cryptographic PIN hash — good enough for local farm data. */
+function hashPin(pin) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < pin.length; i++) {
+    h ^= pin.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+function loadProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function saveProfiles(profiles) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)); } catch {}
+}
+function getActiveProfileId() {
+  try { return localStorage.getItem(ACTIVE_PROFILE_KEY) || null; } catch { return null; }
+}
+function setActiveProfileId(id) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+    else localStorage.removeItem(ACTIVE_PROFILE_KEY);
+  } catch {}
+}
+function getActiveProfile() {
+  const id = getActiveProfileId();
+  if (!id) return null;
+  return loadProfiles().find((p) => p.id === id) || null;
+}
 
 /**
  * Bump this whenever the shape of `data` changes in a way old code
@@ -204,8 +226,6 @@ function starterFlocks() {
 
 function freshData() {
   return {
-    performance: normalizePerformance(null),
-    flow: normalizeFlow(null),
     flocks: starterFlocks(),
     dailyLog: [], meds: [], vax: [], feed: [], weightSamples: [],
     sales: [],
@@ -261,9 +281,7 @@ function dataRichness(d) {
     (p.inputs || []).length +
     (g.animals || []).length + (g.heats || []).length + (g.matings || []).length +
     (g.kiddings || []).length + (g.kidMortality || []).length + (g.health || []).length +
-    (g.weights || []).length + (g.sales || []).length +
-    ((d.performance && d.performance.entries) || []).length +
-    ((d.flow && d.flow.allocations) || []).length
+    (g.weights || []).length + (g.sales || []).length
   );
 }
 
@@ -379,22 +397,8 @@ function migrate(saved) {
       batches: pepper.batches || [],
       nurseryBatches: pepper.nurseryBatches || [],
       cropExpenses: pepper.cropExpenses || [],
-      // Sacks are priced per Size 5 sack. Older paid-in-full sack records stored cash = small sacks × price,
-      // so bring that stored amount in line with Size 5 × price. Records with a MoMo/credit split or payments are left alone.
-      harvests: (pepper.harvests || []).map((h) => {
-        if (h.unit !== 'sack' || Number(h.momoAmount) || Number(h.creditAmount) || (h.payments || []).length) return h;
-        const price = Number(h.pricePerUnit) || 0;
-        const oldRev = (Number(h.quantity) || 0) * price;
-        const newRev = sackToSize5(h) * price;
-        if (Math.abs(oldRev - newRev) > 0.01 && Math.abs((Number(h.cashAmount) || 0) - oldRev) < 0.01) {
-          return { ...h, cashAmount: Math.round(newRev * 100) / 100 };
-        }
-        return h;
-      }),
     },
     goats: { ...defaultGoats(), ...(saved.goats || {}) },
-    performance: normalizePerformance(saved.performance),
-    flow: normalizeFlow(saved.flow),
     updatedAt: saved.updatedAt || new Date().toISOString(),
     // Always stamped with what THIS build produced, not what was read in —
     // once migrate() has run, the in-memory shape matches the current
@@ -403,57 +407,28 @@ function migrate(saved) {
   };
 }
 
-/** Local copy for one account. `accountId` is the signed-in user id, or
-    null when the app is running without cloud sign-in (local-only mode,
-    which still reads the original single-user key). A signed-in account never
-    falls back to another account's data. */
-function loadData(accountId) {
+function loadData(profileId) {
   try {
-    if (accountId) {
-      const raw = localStorage.getItem(PROFILE_DATA_KEY(accountId));
+    // Try profile-specific key first
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : null;
+    if (key) {
+      const raw = localStorage.getItem(key);
       if (raw) return migrate(JSON.parse(raw));
-      return freshData();
     }
+    // Fall back to legacy key (migration path — owner claims existing data)
     const legacy = localStorage.getItem(STORAGE_KEY);
     if (legacy) return migrate(JSON.parse(legacy));
   } catch (e) { /* ignore corrupt storage */ }
   return freshData();
 }
 
-function hasLocalCopy(accountId) {
-  try { return !!accountId && localStorage.getItem(PROFILE_DATA_KEY(accountId)) !== null; } catch { return false; }
-}
-
-function saveData(accountId, dataObj) {
+function saveData(profileId, dataObj) {
   try {
-    const key = accountId ? PROFILE_DATA_KEY(accountId) : STORAGE_KEY;
+    const key = profileId ? PROFILE_DATA_KEY(profileId) : STORAGE_KEY;
     localStorage.setItem(key, JSON.stringify(dataObj));
   } catch (e) {
     console.warn('Local save failed:', e);
   }
-}
-
-/** The fullest farm record left on this phone by an older build (the single
-    legacy key, or an old PIN profile). Used only to offer a one-time import
-    into a signed-in account. Returns { data, records } or null. */
-function findLegacyLocalData(excludeAccountId) {
-  let best = null;
-  try {
-    const keys = [STORAGE_KEY];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(LEGACY_PROFILE_PREFIX) && k !== PROFILE_DATA_KEY(excludeAccountId)) keys.push(k);
-    }
-    for (const k of keys) {
-      const raw = localStorage.getItem(k);
-      if (!raw) continue;
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch { continue; }
-      const records = dataRichness(parsed);
-      if (records > 0 && (!best || records > best.records)) best = { data: parsed, records };
-    }
-  } catch (e) { /* storage unavailable */ }
-  return best;
 }
 
 const FEED_STANDARD = SEED.feedStandard;
@@ -882,27 +857,6 @@ function NotificationBell({ alerts, onNavigate }) {
     catch { return new Set(); }
   });
   const ref = useRef(null);
-  const btnRef = useRef(null);
-  const [panelTop, setPanelTop] = useState(56);
-  const [panelBox, setPanelBox] = useState({ left: 8, width: 320 });
-
-  // The bell lives inside a scrolling toolbar, so an absolutely-positioned
-  // panel gets clipped (and runs off the left edge on a phone). Open it as a
-  // fixed panel under the bell, centred and never wider than the screen.
-  function toggleOpen() {
-    if (!open && btnRef.current) {
-      const r = btnRef.current.getBoundingClientRect();
-      setPanelTop(Math.max(8, Math.round(r.bottom + 6)));
-      // Place the panel from the bell's real position and keep it inside the
-      // visible screen width. (Centring on 50% of the page goes wrong when the
-      // toolbar is wider than the phone and stretches the page sideways.)
-      const vw = document.documentElement.clientWidth || window.innerWidth;
-      const width = Math.max(240, Math.min(360, vw - 16));
-      const left = Math.min(Math.max(8, Math.round(r.left + r.width / 2 - width / 2)), Math.max(8, vw - width - 8));
-      setPanelBox({ left, width });
-    }
-    setOpen((v) => !v);
-  }
 
   const visible = alerts.filter((a) => !dismissed.has(a.id));
   const critCount = visible.filter((a) => a.level === 'critical').length;
@@ -911,11 +865,7 @@ function NotificationBell({ alerts, onNavigate }) {
   useEffect(() => {
     function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
     document.addEventListener('mousedown', handleClick);
-    document.addEventListener('touchstart', handleClick);
-    return () => {
-      document.removeEventListener('mousedown', handleClick);
-      document.removeEventListener('touchstart', handleClick);
-    };
+    return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
   function dismiss(id) {
@@ -945,8 +895,7 @@ function NotificationBell({ alerts, onNavigate }) {
   return (
     <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
       <button
-        ref={btnRef}
-        onClick={toggleOpen}
+        onClick={() => setOpen((v) => !v)}
         style={{
           position: 'relative', background: 'transparent', border: 'none',
           cursor: 'pointer', padding: '6px 8px', borderRadius: 8,
@@ -971,11 +920,10 @@ function NotificationBell({ alerts, onNavigate }) {
 
       {open && (
         <div style={{
-          position: 'fixed', top: panelTop, left: panelBox.left, zIndex: 9999,
+          position: 'absolute', top: '110%', right: 0, zIndex: 9999,
           background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
           borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-          width: panelBox.width, maxWidth: 'calc(100vw - 16px)',
-          maxHeight: `calc(100dvh - ${panelTop + 12}px)`, overflowY: 'auto',
+          width: 340, maxHeight: 480, overflowY: 'auto',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '12px 14px 10px', borderBottom: '1px solid rgba(212,165,55,0.12)' }}>
@@ -1225,7 +1173,258 @@ function GlobalSearch({ data, flocks, onNavigate }) {
 const ThemeContext = createContext({ theme: 'dark', toggleTheme: () => {} });
 function useTheme() { return useContext(ThemeContext); }
 
+/* ═══════════════════════════════════════════════════════════════
+   ProfileGate — shown on app start when no profile is active.
+   Screens: 'list' → pick a profile or create new
+            'unlock' → enter PIN for chosen profile
+            'create' → enter name + farm name + PIN for new profile
+   ═══════════════════════════════════════════════════════════════ */
+function PinPad({ value, onChange, onSubmit, label, error }) {
+  const digits = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, '⌫'];
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {label && <div style={{ fontSize: 13, color: '#aaa', marginBottom: 10 }}>{label}</div>}
+      {/* PIN dots */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 18 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} style={{
+            width: 16, height: 16, borderRadius: '50%',
+            background: value.length > i ? '#D4A537' : 'rgba(255,255,255,0.15)',
+            border: '2px solid rgba(255,255,255,0.2)', transition: 'background 0.15s',
+          }} />
+        ))}
+      </div>
+      {/* Numpad */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, maxWidth: 220, margin: '0 auto' }}>
+        {digits.map((d, i) => {
+          if (d === null) return <div key={i} />;
+          const isBack = d === '⌫';
+          return (
+            <button key={i} type="button"
+              onClick={() => {
+                if (isBack) { onChange(value.slice(0, -1)); return; }
+                const next = value.length < 4 ? value + String(d) : value;
+                onChange(next);
+                if (next.length === 4) setTimeout(() => onSubmit(next), 120);
+              }}
+              style={{
+                height: 52, borderRadius: 12, fontSize: isBack ? 18 : 20, fontWeight: 700,
+                background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+                color: isBack ? '#888' : '#fff', cursor: 'pointer',
+              }}>{d}</button>
+          );
+        })}
+      </div>
+      {error && <div style={{ color: '#e05c5c', fontSize: 13, marginTop: 12 }}>{error}</div>}
+    </div>
+  );
+}
+
+function ProfileGate({ onUnlocked }) {
+  const [profiles, setProfiles] = useState(loadProfiles);
+  const [screen, setScreen] = useState(() => loadProfiles().length === 0 ? 'create' : 'list'); // 'list' | 'unlock' | 'create'
+  const [selectedId, setSelectedId] = useState(null);
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  // Create form state
+  const [cName, setCName]       = useState('');
+  const [cFarm, setCFarm]       = useState('');
+  const [cPin, setCPin]         = useState('');
+  const [cPin2, setCPin2]       = useState('');
+  const [cStep, setCStep]       = useState(1); // 1=details, 2=pin, 3=confirm
+  const [cError, setCError]     = useState('');
+
+  const hasMigrationData = (() => {
+    try { return !!localStorage.getItem(STORAGE_KEY); } catch { return false; }
+  })();
+
+  function handleUnlock(enteredPin) {
+    const profile = profiles.find((p) => p.id === selectedId);
+    if (!profile) return;
+    if (hashPin(enteredPin) === profile.pinHash) {
+      setActiveProfileId(profile.id);
+      onUnlocked(profile);
+    } else {
+      setPin('');
+      setPinError('Wrong PIN — try again');
+      setTimeout(() => setPinError(''), 2000);
+    }
+  }
+
+  function handleCreate() {
+    if (!cName.trim() || !cFarm.trim()) { setCError('Please fill in your name and farm name.'); return; }
+    setCStep(2); setCError('');
+  }
+
+  function handlePinSet(p) {
+    setCPin(p);
+    if (p.length === 4) { setCStep(3); setCPin2(''); }
+  }
+
+  function handlePinConfirm(p) {
+    setCPin2(p);
+    if (p.length === 4) {
+      if (p !== cPin) {
+        setCError('PINs don\'t match — try again');
+        setCPin(''); setCPin2(''); setCStep(2);
+        setTimeout(() => setCError(''), 2500);
+      } else {
+        finalizeCreate(p);
+      }
+    }
+  }
+
+  function finalizeCreate(confirmedPin) {
+    const id = Math.random().toString(36).slice(2, 12);
+    const profile = { id, name: cName.trim(), farmName: cFarm.trim(), pinHash: hashPin(confirmedPin), createdAt: new Date().toISOString() };
+    const updated = [...profiles, profile];
+    saveProfiles(updated);
+    setProfiles(updated);
+    setActiveProfileId(id);
+
+    // If there is legacy data in the old key and this is the FIRST profile,
+    // migrate it to the new profile key automatically.
+    if (hasMigrationData && profiles.length === 0) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) localStorage.setItem(PROFILE_DATA_KEY(id), raw);
+        // Keep the legacy key for now (don't delete) so there's a backup.
+      } catch {}
+    }
+
+    onUnlocked(profile);
+  }
+
+  const selectedProfile = profiles.find((p) => p.id === selectedId);
+
+  /* ── Render ── */
+  const cardStyle = {
+    background: 'rgba(30,30,30,0.98)', borderRadius: 20, padding: '32px 28px',
+    boxShadow: '0 24px 60px rgba(0,0,0,0.6)', width: '100%', maxWidth: 360,
+    border: '1px solid rgba(255,255,255,0.08)',
+  };
+
+  if (screen === 'unlock') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 40 }}>🌾</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>{selectedProfile?.farmName || 'AI Farms'}</div>
+            <div style={{ fontSize: 14, color: '#888', marginTop: 2 }}>Welcome back, {selectedProfile?.name}</div>
+          </div>
+          <PinPad value={pin} onChange={(v) => { setPin(v); setPinError(''); }} onSubmit={handleUnlock} label="Enter your 4-digit PIN" error={pinError} />
+          <button type="button" onClick={() => { setScreen('list'); setPin(''); setPinError(''); setSelectedId(null); }}
+            style={{ display: 'block', margin: '20px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+            ← Switch profile
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'create') {
+    return (
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+        <div style={cardStyle}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 36 }}>🌾</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+            <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+              {profiles.length === 0 ? 'Set up your farm profile to get started' : 'Create a new farm profile'}
+            </div>
+          </div>
+
+          {cStep === 1 && (
+            <div>
+              {hasMigrationData && profiles.length === 0 && (
+                <div style={{ background: 'rgba(212,165,55,0.1)', border: '1px solid rgba(212,165,55,0.3)', borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#D4A537', lineHeight: 1.5 }}>
+                  ✅ We found your existing farm data. It will be linked to your new profile automatically.
+                </div>
+              )}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Your Name</div>
+                <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. Gilbert"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase' }}>Farm Name</div>
+                <input value={cFarm} onChange={(e) => setCFarm(e.target.value)} placeholder="e.g. AI Farms"
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: 10, padding: '11px 14px', fontSize: 15, outline: 'none' }} />
+              </div>
+              {cError && <div style={{ color: '#e05c5c', fontSize: 13, marginBottom: 10 }}>{cError}</div>}
+              <button type="button" onClick={handleCreate}
+                style={{ width: '100%', padding: '13px', borderRadius: 12, background: '#D4A537', border: 'none', color: '#000', fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>
+                Next →
+              </button>
+            </div>
+          )}
+
+          {cStep === 2 && (
+            <div>
+              <PinPad value={cPin} onChange={handlePinSet} onSubmit={() => {}} label="Choose a 4-digit PIN" error={cError} />
+            </div>
+          )}
+
+          {cStep === 3 && (
+            <div>
+              <PinPad value={cPin2} onChange={handlePinConfirm} onSubmit={() => {}} label="Confirm your PIN" error={cError} />
+            </div>
+          )}
+
+          {profiles.length > 0 && (
+            <button type="button" onClick={() => { setScreen('list'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+              style={{ display: 'block', margin: '18px auto 0', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 13 }}>
+              ← Back
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // screen === 'list'
+  return (
+    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 20 }}>
+      <div style={cardStyle}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ fontSize: 36 }}>🌾</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#D4A537', marginTop: 6 }}>AI Farms Tracker</div>
+          <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>Select your farm profile</div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+          {profiles.map((p) => (
+            <button key={p.id} type="button"
+              onClick={() => { setSelectedId(p.id); setPin(''); setPinError(''); setScreen('unlock'); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', borderRadius: 14,
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                color: '#fff', cursor: 'pointer', textAlign: 'left',
+              }}>
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(212,165,55,0.2)', border: '2px solid rgba(212,165,55,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+                🧑‍🌾
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{p.farmName}</div>
+              </div>
+              <div style={{ marginLeft: 'auto', color: '#555', fontSize: 18 }}>›</div>
+            </button>
+          ))}
+        </div>
+
+        <button type="button" onClick={() => { setScreen('create'); setCStep(1); setCName(''); setCFarm(''); setCPin(''); setCPin2(''); setCError(''); }}
+          style={{ width: '100%', padding: '12px', borderRadius: 12, background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.3)', color: '#D4A537', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
+          + Add new farm profile
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AppRoot() {
+  const [activeProfile, setActiveProfile] = useState(getActiveProfile);
   const [theme, setTheme] = useState(() => {
     try { return localStorage.getItem('aifarms_theme') || 'dark'; } catch { return 'dark'; }
   });
@@ -1238,120 +1437,32 @@ export default function AppRoot() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // The signed-in account decides which farm is on screen. Signing in as a
-  // different person remounts the whole app (key below), so one account's
-  // data can never bleed into another's.
-  const [user, setUser] = useState(getUser);
-  const [cloudReady, setCloudReady] = useState(isCloudConfigured);
-  const [showCloudSetup, setShowCloudSetup] = useState(false);
-  // A phone with no cloud link and no farm records would otherwise open
-  // straight into an empty farm that looks like "starting over". Ask to
-  // connect first; the person can still choose to use this phone only.
-  const [skipFirstConnect, setSkipFirstConnect] = useState(() => {
-    try { return localStorage.getItem('aifarms_skip_first_connect') === '1'; } catch { return false; }
-  });
-  const [hasLocalFarm] = useState(() => !!findLegacyLocalData(null));
-
-  let screen;
-  if (OFFLINE) {
-    screen = (
-      <ToastConfirmProvider>
-        <OfflineGate>
-          <AppInner key="local" initialUser={null} onSignedOut={() => {}} />
-        </OfflineGate>
-      </ToastConfirmProvider>
-    );
-  } else if (!cloudReady && !skipFirstConnect && !hasLocalFarm && !showCloudSetup) {
-    screen = (
-      <CloudSetupScreen
-        firstRun
-        onDone={() => setCloudReady(isCloudConfigured())}
-        onCancel={() => {
-          try { localStorage.setItem('aifarms_skip_first_connect', '1'); } catch { /* ignore */ }
-          setSkipFirstConnect(true);
-        }}
-      />
-    );
-  } else if (showCloudSetup) {
-    screen = (
-      <CloudSetupScreen
-        onDone={() => { setCloudReady(isCloudConfigured()); setShowCloudSetup(false); }}
-        onCancel={() => setShowCloudSetup(false)}
-      />
-    );
-  } else if (cloudReady && !user) {
-    // Cloud is set up but nobody is signed in — email + password login.
-    screen = (
-      <AuthScreen
-        onSignedIn={(session) => setUser(session.user)}
-        onSetupCloud={() => setShowCloudSetup(true)}
-      />
-    );
-  } else {
-    screen = (
-      <ToastConfirmProvider>
-        <AppInner
-          key={user ? user.id : 'local'}
-          initialUser={user}
-          onSignedOut={() => setUser(null)}
-        />
-      </ToastConfirmProvider>
+  if (!activeProfile) {
+    return (
+      <ThemeContext.Provider value={{ theme, toggleTheme }}>
+        <ProfileGate onUnlocked={(profile) => setActiveProfile(profile)} />
+      </ThemeContext.Provider>
     );
   }
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
-      {screen}
+      <ToastConfirmProvider>
+        <AppInner
+          profileId={activeProfile.id}
+          profileName={activeProfile.name}
+          farmName={activeProfile.farmName}
+          onSwitchProfile={() => {
+            setActiveProfileId(null);
+            setActiveProfile(null);
+          }}
+        />
+      </ToastConfirmProvider>
     </ThemeContext.Provider>
   );
 }
 
-/** Laptop build: before the app opens, look at the copy saved in the laptop
-    folder and the copy in the browser, and start from the better one. This is
-    what brings the farm back if the browser's storage was ever cleared. */
-function OfflineGate({ children }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const disk = await fetchDiskState();
-        const d = disk && disk.data;
-        let local = null;
-        try { const raw = localStorage.getItem(STORAGE_KEY); if (raw) local = JSON.parse(raw); } catch { local = null; }
-        if (d && typeof d === 'object') {
-          const rd = dataRichness(d); const rl = local ? dataRichness(local) : -1;
-          const newer = !local || String(d.updatedAt || '') > String(local.updatedAt || '');
-          const wiped = local && rl < rd * 0.5;
-          if (!local || wiped || (newer && rd >= rl * 0.5)) {
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch { /* ignore */ }
-          }
-        }
-      } catch { /* run from browser storage */ }
-      if (alive) setReady(true);
-    })();
-    return () => { alive = false; };
-  }, []);
-  if (!ready) return <div style={{ padding: 40, color: 'var(--text-dim)' }}>Opening your farm…</div>;
-  return children;
-}
-
-function OfflineBar({ lastSaveLabel }) {
-  const [st, setSt] = useState(getDiskStatus());
-  useEffect(() => { pingServer(); const id = setInterval(pingServer, 30000); const un = subscribeDiskStatus(setSt); return () => { clearInterval(id); un(); }; }, []);
-  const on = st.server === 'on';
-  return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 14px', fontSize: 13, background: (on || location.protocol === "file:") ? 'rgba(122,154,102,0.12)' : 'rgba(193,95,65,0.12)', border: '1px solid var(--border)', borderRadius: 8, margin: '10px 14px' }}>
-      {typeof location !== 'undefined' && location.protocol === 'file:' && <span>📄 Saved in this browser. Use the <strong>Backup</strong> tab to download a copy regularly. Works without internet.</span>}
-      {!(typeof location !== 'undefined' && location.protocol === 'file:') && <span>{on ? '💾 Saving to your laptop folder' : '⚠ Not saving to the laptop folder (start the app with the Start AI Farms file). Data is still kept in this browser.'}</span>}
-      {on && st.lastSaved && <span style={{ color: 'var(--text-dim)' }}>Last saved {new Date(st.lastSaved).toLocaleTimeString()}</span>}
-      {!(typeof location !== 'undefined' && location.protocol === 'file:') && <span style={{ color: 'var(--text-dim)' }}>Works without internet.</span>}
-    </div>
-  );
-}
-
-function AppInner({ initialUser, onSignedOut }) {
-  const profileId = initialUser ? initialUser.id : null; // local-copy key (null = local-only mode)
+function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   const { showToast, askConfirm } = useToastConfirm();
   const [data, setData] = useState(() => loadData(profileId));
   const [workspace, setWorkspace] = useState('poultry');
@@ -1365,7 +1476,7 @@ function AppInner({ initialUser, onSignedOut }) {
   const [activeFlockId, setActiveFlockId] = useState(data.flocks[0].id);
   const restoreInputRef = useRef(null);
   const [sync, setSync] = useState({ status: 'idle', message: '', lastSync: null });
-  const [user, setUser] = useState(initialUser);
+  const [user, setUser] = useState(getUser);
   const [cloudReady, setCloudReady] = useState(isCloudConfigured);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
@@ -1384,7 +1495,6 @@ function AppInner({ initialUser, onSignedOut }) {
     // it fires. Only real gap was the missing guard against Safari private
     // mode / storage quota throwing here.
     saveData(profileId, data);
-    if (OFFLINE) pushDiskState(data);
   }, [data, profileId]);
 
   // Migration removed — was causing data loss on refresh across all devices.
@@ -1540,6 +1650,7 @@ function AppInner({ initialUser, onSignedOut }) {
       date: fmtDate(r.date).slice(0, 6),
       actual: r.closing ? Math.round(((Number(r.eggs) || 0) / r.closing) * 1000) / 10 : null,
       standard: hylineLayStandardForWeek(wk),
+      eggs: Number(r.eggs) || 0,
     };
   }), [dailyLog, activeFlock.startDate]);
 
@@ -1701,7 +1812,7 @@ function AppInner({ initialUser, onSignedOut }) {
 
   // ── Navigation handler for notifications & search results ──
   function handleNavigate({ workspace: ws, tab }) {
-    if (ws === '__backup__') { if (OFFLINE) { setWorkspace('backup'); setModal(null); } else backupData(); return; }
+    if (ws === '__backup__') { backupData(); return; }
     setWorkspace(ws);
     setModal(null);
     // Tabs inside workspaces can't be set from here directly,
@@ -1774,12 +1885,6 @@ function AppInner({ initialUser, onSignedOut }) {
   }
   function updateSale(id, patch) {
     setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
-  }
-  function deleteHarvest(id) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, harvests: (d.pepper.harvests || []).filter((h) => h.id !== id) } }));
-  }
-  function deleteSale(id) {
-    setData((d) => touch({ ...d, sales: (d.sales || []).filter((r) => r.id !== id) }));
   }
   function addSalePayment(saleId, payment) {
     setData((d) => touch({
@@ -1916,9 +2021,6 @@ function AppInner({ initialUser, onSignedOut }) {
       delete: (farmId, entryId) => patchCustomFarm(farmId, (f) => ({ ...f, [key]: (f[key] || []).filter((e) => e.id !== entryId) })),
     };
   }
-  function updateCustomLog(farmId, key, id, patch) {
-    patchCustomFarm(farmId, (f) => ({ ...f, [key]: (f[key] || []).map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
-  }
   const customScoutingH = customFarmListHandlers('scouting');
   const customHarvestH = customFarmListHandlers('harvests');
   const customHealthH = customFarmListHandlers('healthLog');
@@ -1941,8 +2043,8 @@ function AppInner({ initialUser, onSignedOut }) {
   function openInvoiceFromHarvest(harvest, fieldLabel) {
     setInvoicePrefill({
       kind: 'invoice', date: harvest.date, buyerName: harvest.buyer || '',
-      item: `Bell peppers${harvest.unit === 'sack' ? ' (Size 5 sacks)' : ''}${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
-      quantity: harvest.unit === 'sack' ? Number(sackToSize5(harvest).toFixed(2)) : (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
+      item: `Bell peppers${fieldLabel ? ` — ${fieldLabel}` : ''}${harvest.grade ? ` (${harvest.grade})` : ''}`,
+      quantity: (harvest.unit && harvest.unit !== 'kg') ? harvest.quantity : harvest.weightKg,
       unitPrice: (harvest.unit && harvest.unit !== 'kg') ? harvest.pricePerUnit : harvest.pricePerKg,
       amount: harvestRev(harvest),
     });
@@ -2196,7 +2298,6 @@ function AppInner({ initialUser, onSignedOut }) {
   const lastSyncedAtRef = useRef(null);   // updatedAt value we last confirmed synced — stops auto-sync looping on its own writes
   const firstSyncRef = useRef(true);      // sync sooner right after the app opens, for faster recovery
   const syncNowRef = useRef(null);        // always holds the latest syncNow closure, for stable event listeners
-  const firstLoadRef = useRef(!!initialUser && !hasLocalCopy(initialUser.id)); // account never opened on this phone yet
   const syncInFlightRef = useRef(false);  // blocks overlapping syncs — auto-sync now fires from several independent triggers
 
   async function syncNow(mode = 'auto') {
@@ -2252,7 +2353,7 @@ function AppInner({ initialUser, onSignedOut }) {
     } catch (err) {
       const msg = err.message || 'Sync failed';
       setSync({ status: 'error', message: msg, lastSync: sync.lastSync });
-      if (msg.includes('sign in')) { setUser(null); if (onSignedOut) onSignedOut(); }
+      if (msg.includes('sign in')) setUser(null);
     } finally {
       syncInFlightRef.current = false;
     }
@@ -2288,7 +2389,6 @@ function AppInner({ initialUser, onSignedOut }) {
   // starts from the real data rather than the seeded defaults.
   async function handleSignedIn(session) {
     setUser(session.user);
-    syncInFlightRef.current = true; // keep auto-sync from pushing a blank farm while we load the real one
     setSync({ status: 'syncing', message: 'Loading your farm…', lastSync: null });
     try {
       const remote = await pullRemote();
@@ -2300,32 +2400,6 @@ function AppInner({ initialUser, onSignedOut }) {
         });
         return;
       }
-
-      // Older builds kept the farm on the phone only (a single key, or a PIN
-      // profile). If this phone holds more records than the account does,
-      // offer to bring them in — once, and only with a yes.
-      const legacy = findLegacyLocalData(session.user.id);
-      const remoteRecords = remote ? dataRichness(remote.state) : 0;
-      if (legacy && legacy.records > remoteRecords) {
-        const useLocal = await askConfirm(
-          `This phone has farm records saved from before (${legacy.records} entries). ` +
-          (remoteRecords > 0
-            ? `${session.user.email} already has ${remoteRecords} entries in the cloud, and importing replaces them. `
-            : `Import them into ${session.user.email}? `) +
-          `Choose Cancel if these records belong to someone else.`,
-          { confirmLabel: 'Import them', danger: false }
-        );
-        if (useLocal) {
-          const imported = migrate(legacy.data);
-          const at = await pushRemote(imported);
-          setData({ ...imported, updatedAt: at });
-          setActiveFlockId(imported.flocks[0].id);
-          lastSyncedAtRef.current = at;
-          setSync({ status: 'ok', message: 'Imported this phone’s records and saved to cloud', lastSync: at });
-          return;
-        }
-      }
-
       if (remote) {
         const merged = migrate(remote.state);
         setData(merged);
@@ -2340,38 +2414,12 @@ function AppInner({ initialUser, onSignedOut }) {
       }
     } catch (err) {
       setSync({ status: 'error', message: err.message || 'Could not load from cloud', lastSync: null });
-    } finally {
-      syncInFlightRef.current = false;
     }
   }
-
-  // First time this account opens on this phone: load its farm from the cloud
-  // (the sign-in screen now lives above the app, so this runs on mount).
-  useEffect(() => {
-    if (!firstLoadRef.current || !initialUser || !isCloudConfigured()) return;
-    firstLoadRef.current = false;
-    handleSignedIn({ user: initialUser });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // A brand-new account has no farm name yet — ask once, right after it loads.
-  useEffect(() => {
-    if (!user || sync.status !== 'ok') return;
-    try {
-      const k = `aifarms_profile_prompted_${user.id}`;
-      if (localStorage.getItem(k)) return;
-      if (!(data.farmProfile && data.farmProfile.farmName)) {
-        localStorage.setItem(k, '1');
-        setShowProfileForm(true);
-      }
-    } catch { /* storage unavailable */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sync.status, user]);
 
   function handleSignOut() {
     signOut();
     setUser(null);
-    if (onSignedOut) onSignedOut();
     setSync({ status: 'idle', message: '', lastSync: null });
     lastSyncedAtRef.current = null;
     firstSyncRef.current = true;
@@ -2387,39 +2435,6 @@ function AppInner({ initialUser, onSignedOut }) {
     URL.revokeObjectURL(url);
     try { localStorage.setItem('aifarms_last_backup', todayISO()); } catch {}
   }
-  const isBackupShape = (parsed) => !!parsed && typeof parsed === 'object'
-    && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
-  async function applyRestore(parsed) {
-    if (isFromNewerSchema(parsed)) {
-      const proceed = await askConfirm(
-        `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
-        'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
-        'Update the app first if you can. Restore anyway?',
-        { confirmLabel: 'Restore anyway' }
-      );
-      if (!proceed) return;
-    }
-    const merged = migrate(parsed);
-    merged.updatedAt = new Date().toISOString();
-    const recordCount = dataRichness(merged);
-    setData(merged);
-    setActiveFlockId(merged.flocks[0].id);
-    showToast(`Backup restored — ${recordCount} record(s) loaded across the farm.`, 'green');
-  }
-  function summarizeData(d) {
-    const x = migrate(d || {});
-    const n = (a) => (a || []).length;
-    return [
-      { label: 'Poultry daily records', count: n(x.dailyLog) },
-      { label: 'Feed purchases', count: n(x.feed) },
-      { label: 'Poultry sales', count: n(x.sales) },
-      { label: 'Expenses', count: n(x.expenses) },
-      { label: 'Bell pepper records', count: n(x.pepper.harvests) + n(x.pepper.scouting) + n(x.pepper.sprays) + n(x.pepper.cropExpenses) },
-      { label: 'Goat records', count: n(x.goats.animals) + n(x.goats.sales) + n(x.goats.health) },
-      { label: 'Performance entries', count: n(x.performance.entries) },
-      { label: 'Profit placed (flow)', count: n(x.flow.allocations) },
-    ];
-  }
   function restoreData(file) {
     const reader = new FileReader();
     reader.onload = async () => {
@@ -2430,11 +2445,29 @@ function AppInner({ initialUser, onSignedOut }) {
         showToast('Could not read that file — it doesn\'t look like valid JSON.', 'rust');
         return;
       }
-      if (!isBackupShape(parsed)) {
+      // Loose but real shape check — catches "wrong file entirely" before
+      // migrate()'s defensive fallbacks turn it into a silently near-empty
+      // farm that LOOKS like a successful restore.
+      const looksLikeBackup = parsed && typeof parsed === 'object'
+        && ['flocks', 'dailyLog', 'pepper', 'expenses'].some((k) => k in parsed);
+      if (!looksLikeBackup) {
         showToast('That doesn\'t look like an AI Farms backup file — nothing was changed.', 'rust');
         return;
       }
-      await applyRestore(parsed);
+      if (isFromNewerSchema(parsed)) {
+        const proceed = await askConfirm(
+          `This backup was saved by a newer version of the app (format v${parsed.schemaVersion} vs this app's v${SCHEMA_VERSION}). ` +
+          'Restoring it here may not understand everything in it, or could lose something on the next save. ' +
+          'Update the app first if you can. Restore anyway?',
+          { confirmLabel: 'Restore anyway' }
+        );
+        if (!proceed) return;
+      }
+      const merged = migrate(parsed);
+      const recordCount = dataRichness(merged);
+      setData(merged);
+      setActiveFlockId(merged.flocks[0].id);
+      showToast(`Backup restored — ${recordCount} record(s) loaded across the farm.`, 'green');
     };
     reader.onerror = () => showToast('Could not read that file from your device — please try again.', 'rust');
     reader.readAsText(file);
@@ -2716,13 +2749,15 @@ function AppInner({ initialUser, onSignedOut }) {
     );
   }
 
-  // Signed out: AppRoot swaps in the email login screen.
-  if (cloudReady && !user) return null;
+  // Cloud is configured but nobody is signed in — show the login screen.
+  if (cloudReady && !user) {
+    return <AuthScreen onSignedIn={handleSignedIn} onSetupCloud={() => setShowCloudSetup(true)} />;
+  }
 
   return (
     <div className="app">
       <InstallPrompt />
-      <div className="workspace-switch" style={{ maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <div className="workspace-switch">
         <button
           className={`ws-btn${workspace === 'poultry' ? ' active' : ''}`}
           onClick={() => { setWorkspace('poultry'); setModal(null); }}
@@ -2747,23 +2782,11 @@ function AppInner({ initialUser, onSignedOut }) {
           className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
           onClick={() => { setWorkspace('financials'); setModal(null); }}
         >💰 Financials</button>
-        <button
-          className={`ws-btn${workspace === 'performance' ? ' active' : ''}`}
-          onClick={() => { setWorkspace('performance'); setModal(null); }}
-        >📊 Performance</button>
-        <button
-          className={`ws-btn${workspace === 'flow' ? ' active' : ''}`}
-          onClick={() => { setWorkspace('flow'); setModal(null); }}
-        >🔀 Profit Flow</button>
-        <button
-          className={`ws-btn${workspace === 'backup' ? ' active' : ''}`}
-          onClick={() => { setWorkspace('backup'); setModal(null); }}
-        >🛟 Backup</button>
       </div>
 
       {/* ── Global search + notification bell + tools ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px 14px', background: 'rgba(0,0,0,0.25)',
         borderBottom: '1px solid rgba(212,165,55,0.12)',
       }}>
@@ -2913,18 +2936,19 @@ function AppInner({ initialUser, onSignedOut }) {
         />
       )}
 
-      {OFFLINE ? <OfflineBar /> : (
       <SyncBar
         sync={sync}
         user={user}
         cloudReady={cloudReady}
+        profileName={profileName}
+        farmName={farmName}
         onSetupCloud={() => setShowCloudSetup(true)}
         onSync={() => syncNow('auto')}
         onPull={() => syncNow('pull')}
         onSignOut={handleSignOut}
+        onSwitchProfile={onSwitchProfile}
         onEditProfile={() => setShowProfileForm(true)}
       />
-      )}
 
       {sync.message && sync.message.includes('restored automatically') && (
         <div className="stale-banner" style={{ marginBottom: 18, borderColor: 'rgba(122, 154, 102, 0.5)' }}>
@@ -3195,7 +3219,6 @@ function AppInner({ initialUser, onSignedOut }) {
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
           onUpdateSale={updateSale}
-          onDeleteSale={deleteSale}
           onLogPayment={addSalePayment}
         />
       )}
@@ -3382,7 +3405,6 @@ function AppInner({ initialUser, onSignedOut }) {
           onTransplantNurseryBatch={transplantNurseryBatch}
           onInvoiceHarvest={openInvoiceFromHarvest}
           onUpdateHarvest={updateHarvest}
-          onDeleteHarvest={deleteHarvest}
           onHarvestPayment={addHarvestPayment}
           onSendEventToTask={sendSprayEventToTask}
           onAddCropExpense={addCropExpense}
@@ -3438,7 +3460,6 @@ function AppInner({ initialUser, onSignedOut }) {
           onDeleteScouting={customScoutingH.delete}
           onAddHarvest={customHarvestH.add}
           onDeleteHarvest={customHarvestH.delete}
-          onUpdateLog={updateCustomLog}
           onAddHealthLog={customHealthH.add}
           onDeleteHealthLog={customHealthH.delete}
           onAddFeedLog={customFeedH.add}
@@ -3471,39 +3492,6 @@ function AppInner({ initialUser, onSignedOut }) {
           onSaveExpenseTemplate={saveExpenseTemplate}
           onDeleteExpenseTemplate={deleteExpenseTemplate}
           onApplyExpenseTemplate={applyExpenseTemplate}
-        />
-      )}
-
-      {workspace === 'performance' && (
-        <PerformanceModule
-          perf={normalizePerformance(data.performance)}
-          data={data}
-          onChange={(performance) => setData((d) => ({ ...d, performance, updatedAt: new Date().toISOString() }))}
-          askConfirm={askConfirm}
-          showToast={showToast}
-          farmName={data.farmProfile && data.farmProfile.farmName}
-        />
-      )}
-
-      {workspace === 'flow' && (
-        <ProfitFlowModule
-          data={data}
-          flow={normalizeFlow(data.flow)}
-          onChange={(flow) => setData((d) => touch({ ...d, flow }))}
-          askConfirm={askConfirm}
-          showToast={showToast}
-        />
-      )}
-
-      {workspace === 'backup' && (
-        <BackupModule
-          data={data}
-          summarize={summarizeData}
-          isBackup={isBackupShape}
-          onDownload={() => { backupData(); showToast('Backup file downloaded.', 'green'); }}
-          onRestore={applyRestore}
-          schemaVersion={SCHEMA_VERSION}
-          newerThanApp={isFromNewerSchema}
         />
       )}
 
@@ -4753,7 +4741,7 @@ function LayingEggsTab({
 
       <p className="section-title" style={{ marginTop: 0 }}>Laying rate</p>
       <div className="grid grid-4">
-        <StatCard title="Today" value={henDayPct != null ? `${num(henDayPct, 1)}%` : '—'} tone="green" foot="hen-day %" />
+        <StatCard title="Today" value={henDayPct != null ? `${num(layTrendData[layTrendData.length - 1]?.eggs || 0)} eggs` : '—'} tone="green" foot={henDayPct != null ? `${num(henDayPct, 1)}% hen-day` : 'no data'} />
         <StatCard title="7-Day Average" value={weeklyLayPct != null ? `${num(weeklyLayPct, 1)}%` : '—'} tone="gold" />
         <StatCard title="30-Day Average" value={monthlyLayPct != null ? `${num(monthlyLayPct, 1)}%` : '—'} />
         <StatCard
@@ -4779,20 +4767,25 @@ function LayingEggsTab({
         </div>
       </div>
       <div className="panel">
-        <div className="panel-head"><h3>Hen-day % — actual vs. Hy-Line standard</h3></div>
+        <div className="panel-head"><h3>Daily eggs collected &amp; hen-day % vs. Hy-Line standard</h3></div>
         <div className="chart-card">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={windowed} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <ComposedChart data={windowed} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
               <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
-              <YAxis domain={[0, 100]} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
+              <YAxis yAxisId="eggs" tickLine={false} axisLine={false} />
+              <YAxis yAxisId="pct" orientation="right" tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
+              <Tooltip
+                contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
+                formatter={(val, name) => name === 'Actual %' || name === 'Hy-Line standard %' ? [`${num(val, 1)}%`, name] : [num(val), name]}
+              />
               <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-              <Line type="monotone" dataKey="actual" name="Actual %" stroke="#D4A537" strokeWidth={2} dot={false} connectNulls />
-              <Line type="monotone" dataKey="standard" name="Hy-Line standard %" stroke="#7A9A66" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
+              <Bar yAxisId="eggs" dataKey="eggs" name="Eggs collected" fill="#D4A537" opacity={0.75} barSize={8} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="pct" type="monotone" dataKey="actual" name="Actual %" stroke="#D4A537" strokeWidth={2} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="standard" name="Hy-Line standard %" stroke="#7A9A66" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
               {peakPoint && peakPoint.actual != null && (
                 <ReferenceDot
-                  x={peakPoint.date} y={peakPoint.actual} r={6}
+                  yAxisId="pct" x={peakPoint.date} y={peakPoint.actual} r={6}
                   fill="#D4A537" stroke="#241F18" strokeWidth={2}
                   label={{ value: `Peak ${num(layPeak.pct, 1)}%`, position: 'top', fill: '#D4A537', fontSize: 11 }}
                 />
@@ -4941,9 +4934,6 @@ function harvestRev(h) {
   if (unit === 'kg') {
     return (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
   }
-  // Sacks are SOLD as Size 5 sacks: the small farm sacks are repackaged (2.5 small = 1 Size 5),
-  // and the price is per Size 5 sack, so revenue is Size 5 count × price.
-  if (unit === 'sack') return sackToSize5(h) * (Number(h.pricePerUnit) || 0);
   return (Number(h.quantity) || 0) * (Number(h.pricePerUnit) || 0);
 }
 
@@ -4963,8 +4953,6 @@ function harvestQtyLabel(h) {
  *  Size 5 = 2.5 × 50 kg sacks, so Size 5 count = quantity ÷ 2.5.
  *  sackWeightKg defaults to 50 for old records. */
 function sackToSize5(h) {
-  // If the user counted the Size 5 sacks actually packed, that count wins over the calculation.
-  if (h.size5Manual && Number(h.size5Sacks) > 0) return Number(h.size5Sacks);
   const sackKg = Number(h.sackWeightKg) || 50;
   const size5Kg = 125; // 2.5 × 50 kg = 125 kg per Size 5
   const totalKg = (Number(h.quantity) || 0) * sackKg;
@@ -5103,7 +5091,7 @@ function PepperWorkspace({
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
-  onInvoiceHarvest, onUpdateHarvest, onDeleteHarvest: onDeletePepperHarvest, onHarvestPayment,
+  onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
   onSendEventToTask,
   onAddCropExpense, onUpdateCropExpense, onDeleteCropExpense,
 }) {
@@ -5159,14 +5147,26 @@ function PepperWorkspace({
     ? (latestScout.severity === 'High' ? 'rust' : latestScout.severity === 'Medium' ? 'gold' : 'green')
     : undefined;
 
-  // Pre-harvest interval: is any field still inside its "don't harvest yet" window?
+  // Pre-harvest interval: track ALL active PHI countdowns simultaneously.
+  // Safe harvest date = the LATEST expiry across every spray still inside its window.
   const phiWindows = fields.map((f) => {
     const fs = sprays.filter((s) => s.fieldId === f.id && s.phiDays);
     if (!fs.length) return null;
-    const last = fs[fs.length - 1];
-    const safe = addDaysISO(last.date, last.phiDays);
-    const daysLeft = daysBetween(todayISO(), safe);
-    return daysLeft > 0 ? { field: f, safe, daysLeft, product: last.product } : null;
+    // Build an expiry entry for every spray with a PHI, then pick the one
+    // with the furthest-out safe date (i.e. the one still blocking harvest longest).
+    let maxSafe = null;
+    let maxProduct = null;
+    let maxDaysLeft = 0;
+    fs.forEach((s) => {
+      const safe = addDaysISO(s.date, s.phiDays);
+      const daysLeft = daysBetween(todayISO(), safe);
+      if (daysLeft > 0 && (!maxSafe || safe > maxSafe)) {
+        maxSafe = safe;
+        maxDaysLeft = daysLeft;
+        maxProduct = s.product;
+      }
+    });
+    return maxSafe ? { field: f, safe: maxSafe, daysLeft: maxDaysLeft, product: maxProduct } : null;
   }).filter(Boolean);
   const scopePhi = phiWindows.filter((w) => inScope(w.field.id));
   const soonestClear = scopePhi.length ? Math.min(...scopePhi.map((w) => w.daysLeft)) : null;
@@ -5460,8 +5460,6 @@ function PepperWorkspace({
           onAdd={() => setModal('harvest')}
           onInvoice={(h) => onInvoiceHarvest(h, fieldName(h.fieldId))}
           onUpdateHarvest={onUpdateHarvest}
-          onDeleteHarvest={onDeletePepperHarvest}
-          fields={fields}
           onHarvestPayment={onHarvestPayment}
         />
       )}
@@ -6789,9 +6787,7 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
 
 /* ---------------- Harvest & sales ---------------- */
 
-function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onDeleteHarvest, fields, onHarvestPayment }) {
-  const { askConfirm } = useToastConfirm();
-  const [editRow, setEditRow] = useState(null);
+function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
@@ -6856,7 +6852,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
               const rev = harvestRev(r);
               const unit = r.unit || 'kg';
               const priceLabel = unit === 'kg' ? (r.pricePerKg != null ? `GH₵ ${num(r.pricePerKg, 2)}/kg` : '—')
-                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit === 'sack' ? 'Size 5' : unit}` : '—');
+                : (r.pricePerUnit != null ? `GH₵ ${num(r.pricePerUnit, 2)}/${unit}` : '—');
               return (
                 <tr key={r.id}>
                   <td className="mono">{fmtDate(r.date)}</td>
@@ -6883,11 +6879,7 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
                     </div>
                   </td>
                   <td className="notes">{r.notes || ''}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {onUpdateHarvest && <button className="link-btn" onClick={() => setEditRow(r)}>Edit</button>}{' '}
-                    <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
-                    {onDeleteHarvest && <>{' '}<button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this harvest record? Use this to remove a mistake or a duplicate.')) onDeleteHarvest(r.id); }}>Delete</button></>}
-                  </td>
+                  <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
                 </tr>
               );
             })}
@@ -6895,11 +6887,6 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
           </tbody>
         </table>
       </div>
-      {editRow && fields && (
-        <HarvestForm fields={fields} defaultField={editRow.fieldId} entry={editRow}
-          onClose={() => setEditRow(null)}
-          onSave={(e) => { const { id, ...rest } = e; onUpdateHarvest(editRow.id, rest); setEditRow(null); }} />
-      )}
       {payModal && (
         <LogPaymentModal
           sale={payModal}
@@ -6917,37 +6904,30 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
   );
 }
 
-function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
-  const isEdit = Boolean(entry);
-  const str = (v) => (v == null ? '' : String(v));
+function HarvestForm({ fields, defaultField, onClose, onSave }) {
   const [f, setF] = useState({
-    date: entry?.date || todayISO(), fieldId: entry?.fieldId || defaultField,
-    unit: entry?.unit || 'kg',
-    weightKg: str(entry?.weightKg),      // used when unit === 'kg'
-    quantity: str(entry?.quantity),      // used when unit === 'sack' or 'crate'
-    sackWeightKg: str(entry?.sackWeightKg) || '50', // weight of each farm sack (default 50 kg)
-    size5Packed: entry?.size5Manual ? str(entry.size5Sacks) : '',    // optional: Size 5 sacks actually packed (overrides the calculation)
-    grade: entry?.grade || GRADES[0],
-    pricePerKg: str(entry?.pricePerKg),    // used when unit === 'kg'
-    pricePerUnit: str(entry?.pricePerUnit),  // used when unit === 'sack' or 'crate'
-    buyer: entry?.buyer || '', notes: entry?.notes || '',
-    cashAmount: entry && (Number(entry.momoAmount) || Number(entry.creditAmount)) ? str(entry.cashAmount) : '',
-    momoAmount: entry && Number(entry.momoAmount) ? str(entry.momoAmount) : '',
-    creditAmount: entry && Number(entry.creditAmount) ? str(entry.creditAmount) : '',
+    date: todayISO(), fieldId: defaultField,
+    unit: 'kg',
+    weightKg: '',      // used when unit === 'kg'
+    quantity: '',      // used when unit === 'sack' or 'crate'
+    sackWeightKg: '50', // weight of each farm sack (default 50 kg)
+    grade: GRADES[0],
+    pricePerKg: '',    // used when unit === 'kg'
+    pricePerUnit: '',  // used when unit === 'sack' or 'crate'
+    buyer: '', notes: '', cashAmount: '', momoAmount: '', creditAmount: '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const isByWeight = f.unit === 'kg';
   const isSack = f.unit === 'sack';
-  // Size 5 equivalent — only meaningful for sacks. A counted number of packed Size 5 sacks wins.
-  const calcSize5 = ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125;
-  const previewSize5 = isSack ? (Number(f.size5Packed) > 0 ? Number(f.size5Packed) : calcSize5) : null;
-  // Sacks are priced per Size 5 sack, so revenue = Size 5 count × price
   const rev = isByWeight
     ? (Number(f.weightKg) || 0) * (Number(f.pricePerKg) || 0)
-    : isSack
-      ? previewSize5 * (Number(f.pricePerUnit) || 0)
-      : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
+    : (Number(f.quantity) || 0) * (Number(f.pricePerUnit) || 0);
+
+  // Size 5 equivalent — only meaningful for sacks
+  const previewSize5 = isSack
+    ? ((Number(f.quantity) || 0) * (Number(f.sackWeightKg) || 50)) / 125
+    : null;
 
   const splitTotal = (Number(f.cashAmount) || 0) + (Number(f.momoAmount) || 0) + (Number(f.creditAmount) || 0);
   const splitOk = splitTotal === 0 || Math.abs(splitTotal - rev) < 0.01;
@@ -6961,27 +6941,23 @@ function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
     const momo = Number(f.momoAmount) || 0;
     const credit = Number(f.creditAmount) || 0;
     const hasAnySplit = cash + momo + credit > 0;
-    const wasCredit = isEdit && (entry.paymentStatus || 'paid') === 'credit';
     const base = {
-      id: entry?.id || newId(), date: f.date, fieldId: f.fieldId,
+      id: newId(), date: f.date, fieldId: f.fieldId,
       unit: f.unit,
       grade: f.grade || null,
       buyer: f.buyer || null, notes: f.notes || null,
-      cashAmount: hasAnySplit ? cash : (wasCredit ? 0 : rev),
+      cashAmount: hasAnySplit ? cash : rev,
       momoAmount: hasAnySplit ? momo : 0,
       creditAmount: hasAnySplit ? credit : 0,
-      paymentStatus: hasCreditSplit ? 'credit' : (isEdit ? (entry.paymentStatus || 'paid') : 'paid'),
-      payments: isEdit ? (entry.payments || []) : [],
-      // clear fields from the previous "sell by" type so they cannot leak into the new one
-      weightKg: null, pricePerKg: null, quantity: null, sackWeightKg: null, size5Sacks: null, size5Manual: false, pricePerUnit: null,
+      paymentStatus: hasCreditSplit ? 'credit' : 'paid',
+      payments: [],
     };
     if (isByWeight) {
       onSave({ ...base, weightKg: Number(f.weightKg), pricePerKg: f.pricePerKg === '' ? null : Number(f.pricePerKg) });
     } else if (f.unit === 'sack') {
       const sackKg = Number(f.sackWeightKg) || 50;
-      const manual = Number(f.size5Packed) > 0;
-      const size5Sacks = manual ? Number(f.size5Packed) : ((Number(f.quantity) || 0) * sackKg) / 125;
-      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, size5Manual: manual, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
+      const size5Sacks = ((Number(f.quantity) || 0) * sackKg) / 125;
+      onSave({ ...base, quantity: Number(f.quantity), sackWeightKg: sackKg, size5Sacks, pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
     } else {
       onSave({ ...base, quantity: Number(f.quantity), pricePerUnit: f.pricePerUnit === '' ? null : Number(f.pricePerUnit) });
     }
@@ -6990,7 +6966,7 @@ function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
   const unitLabel = f.unit === 'sack' ? 'sack' : f.unit === 'crate' ? 'crate' : 'kg';
 
   return (
-    <Modal title={isEdit ? 'Edit harvest' : 'Log harvest'} sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
+    <Modal title="Log harvest" sub={rev ? `Revenue: GH₵ ${num(rev, 2)}.` : 'Enter quantity and price to see revenue.'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
         <Field label="Field">
@@ -7011,7 +6987,7 @@ function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
         {/* Quantity field — label changes with unit */}
         {isByWeight
           ? <Field label="Weight (kg)"><input type="number" step="0.1" min="0" value={f.weightKg} onChange={set('weightKg')} placeholder="e.g. 50" /></Field>
-          : <Field label={isSack ? 'No. of small sacks harvested' : `No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
+          : <Field label={`No. of ${unitLabel}s`}><input type="number" step="1" min="0" value={f.quantity} onChange={set('quantity')} placeholder={`how many ${unitLabel}s`} /></Field>
         }
 
         {/* Sack weight + Size 5 conversion — only shown when unit = sack */}
@@ -7021,13 +6997,8 @@ function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
           </Field>
         )}
         {isSack && previewSize5 != null && Number(f.quantity) > 0 && (
-          <Field label="= Size 5 sacks (what you sell)">
+          <Field label="= Size 5 sacks (market)">
             <input value={`${num(previewSize5, 2)} Size 5 sack${previewSize5 !== 1 ? 's' : ''}`} disabled style={{ color: '#D4A537', fontWeight: 600 }} />
-          </Field>
-        )}
-        {isSack && (
-          <Field label="Size 5 sacks actually packed (optional)">
-            <input type="number" step="0.5" min="0" value={f.size5Packed} onChange={set('size5Packed')} placeholder="leave blank to use the calculation" />
           </Field>
         )}
 
@@ -7040,7 +7011,7 @@ function HarvestForm({ fields, defaultField, entry, onClose, onSave }) {
         {/* Price field — label changes with unit */}
         {isByWeight
           ? <Field label="Price per kg (GH₵)"><input type="number" step="0.01" min="0" value={f.pricePerKg} onChange={set('pricePerKg')} placeholder="per kg" /></Field>
-          : <Field label={isSack ? 'Price per Size 5 sack (GH₵)' : `Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={isSack ? 'per Size 5 sack' : `per ${unitLabel}`} /></Field>
+          : <Field label={`Price per ${unitLabel} (GH₵)`}><input type="number" step="0.01" min="0" value={f.pricePerUnit} onChange={set('pricePerUnit')} placeholder={`per ${unitLabel}`} /></Field>
         }
 
         <Field label="Buyer"><input value={f.buyer} onChange={set('buyer')} placeholder="market, aggregator, trader…" /></Field>
@@ -7816,8 +7787,7 @@ function CreditSummarySubTab({ sales }) {
   );
 }
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onDeleteSale, onLogPayment }) {
-  const { askConfirm } = useToastConfirm();
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
@@ -7967,13 +7937,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
                   </div>
                 </td>
                 <td className="notes">{r.notes || ''}</td>
-                <td>
-                  <button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button>
-                  {onDeleteSale && (
-                    <button className="link-btn rust" style={{ marginLeft: 8 }}
-                      onClick={async () => { if (await askConfirm('Delete this sale record? Use this to remove a duplicate.')) onDeleteSale(r.id); }}>Delete</button>
-                  )}
-                </td>
+                <td><button className="link-btn" onClick={() => onInvoice(r)}>Invoice</button></td>
               </tr>
             ))}
             {visibleSales.length === 0 && <tr><td colSpan={9} className="empty">{sales.length === 0 ? 'No sales logged yet — record egg or bird sales to build your profit picture.' : 'No sales in this period.'}</td></tr>}
@@ -8190,7 +8154,7 @@ function ReminderForm({ scope, onClose, onSave }) {
 /* ======================== CLOUD SYNC UI ====================== */
 /* ============================================================= */
 
-function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignOut, onEditProfile }) {
+function SyncBar({ sync, user, cloudReady, profileName, farmName, onSetupCloud, onSync, onPull, onSignOut, onSwitchProfile, onEditProfile }) {
   const configured = cloudReady;
   const when = sync.lastSync ? new Date(sync.lastSync) : null;
   const label = !configured
@@ -8208,7 +8172,8 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
       <span className={`sync-dot ${configured ? sync.status : 'off'}`} />
       <span className="sync-label">
         {label}
-        {user && <span className="sync-user"> · {user.email}</span>}
+        {profileName && <span className="sync-user"> · 🧑‍🌾 {profileName}</span>}
+        {user && !profileName && <span className="sync-user"> · {user.email}</span>}
         {pendingSync && (
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 10,
@@ -8222,6 +8187,9 @@ function SyncBar({ sync, user, cloudReady, onSetupCloud, onSync, onPull, onSignO
       </span>
       <span className="sync-actions">
         <button className="link-btn" onClick={onEditProfile}>Farm Profile</button>
+        {onSwitchProfile && (
+          <button className="link-btn" onClick={onSwitchProfile}>Switch profile</button>
+        )}
         {!configured && (
           <button className="link-btn" onClick={onSetupCloud}>Set up cloud sync</button>
         )}
@@ -8284,7 +8252,7 @@ function AuthScreen({ onSignedIn, onSetupCloud }) {
         <p className="brand-eyebrow">AI Farms</p>
         <h1 className="brand-title" style={{ fontSize: 26, marginBottom: 4 }}>Farm Tracker</h1>
         <p className="brand-sub" style={{ marginBottom: 22 }}>
-          Poultry, crops &amp; goats · farm records
+          Poultry &amp; bell pepper · Eikwe, Western Region
         </p>
 
         <h2 className="auth-title">{title}</h2>
@@ -10791,7 +10759,6 @@ function GoatSaleForm({ animals, onClose, onSave }) {
 const FARM_CATEGORIES = [['crop', 'Crop'], ['livestock', 'Livestock']];
 
 function FarmsWorkspace({
-  onUpdateLog,
   farms, reminders, onAddFarm, onUpdateFarm, onDeleteFarm,
   onAddField, onUpdateField, onDeleteField,
   onAddReminder, onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
@@ -10854,7 +10821,6 @@ function FarmsWorkspace({
           onDeleteScouting={(id) => onDeleteScouting(activeFarm.id, id)}
           onAddHarvest={(entry) => onAddHarvest(activeFarm.id, entry)}
           onDeleteHarvest={(id) => onDeleteHarvest(activeFarm.id, id)}
-          onUpdateLog={(key, id, patch) => onUpdateLog(activeFarm.id, key, id, patch)}
         />
       ) : (
         <LivestockFarmDetail
@@ -10863,7 +10829,6 @@ function FarmsWorkspace({
           onDeleteHealthLog={(id) => onDeleteHealthLog(activeFarm.id, id)}
           onAddFeedLog={(entry) => onAddFeedLog(activeFarm.id, entry)}
           onDeleteFeedLog={(id) => onDeleteFeedLog(activeFarm.id, id)}
-          onUpdateLog={(key, id, patch) => onUpdateLog(activeFarm.id, key, id, patch)}
           onAddSale={(entry) => onAddSale(activeFarm.id, entry)}
           onDeleteSale={(id) => onDeleteSale(activeFarm.id, id)}
           onUpdateSale={onUpdateCustomSale}
@@ -10958,10 +10923,9 @@ function FarmForm({ farm, onClose, onSave, onDelete }) {
 
 function CropFarmDetail({
   farm, reminders, onAddField, onUpdateField, onDeleteField, onAddReminder,
-  onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest, onUpdateLog,
+  onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
 }) {
   const { askConfirm } = useToastConfirm();
-  const [editLog, setEditLog] = useState(null); // { key, entry }
   const [view, setView] = useState('fields'); // 'fields' | 'programme' | 'scouting' | 'harvest'
   const [modal, setModal] = useState(null);
   const [activeFieldId, setActiveFieldId] = useState(farm.fields?.[0]?.id || null);
@@ -11038,7 +11002,7 @@ function CropFarmDetail({
       {view === 'scouting' && (
         <GenericLogView
           title="Scouting" farm={farm} entries={farm.scouting || []}
-          onAdd={() => setModal('scouting')} onDelete={onDeleteScouting} onEdit={(e) => setEditLog({ key: 'scouting', entry: e })}
+          onAdd={() => setModal('scouting')} onDelete={onDeleteScouting}
           columns={[['date', 'Date'], ['notes', 'Observation'], ['severity', 'Severity']]}
         />
       )}
@@ -11046,7 +11010,7 @@ function CropFarmDetail({
       {view === 'harvest' && (
         <GenericLogView
           title="Harvest" farm={farm} entries={farm.harvests || []}
-          onAdd={() => setModal('harvest')} onDelete={onDeleteHarvest} onEdit={(e) => setEditLog({ key: 'harvests', entry: e })}
+          onAdd={() => setModal('harvest')} onDelete={onDeleteHarvest}
           columns={[['date', 'Date'], ['quantityKg', 'Qty (kg)'], ['notes', 'Notes']]}
         />
       )}
@@ -11068,15 +11032,6 @@ function CropFarmDetail({
           fields={[['date', 'Date', 'date'], ['severity', 'Severity', 'text'], ['notes', 'Observation', 'textarea']]}
           onClose={() => setModal(null)}
           onSave={(entry) => { onAddScouting(entry); setModal(null); }}
-        />
-      )}
-      {editLog && onUpdateLog && (
-        <SimpleLogForm
-          title="Edit entry"
-          entry={editLog.entry}
-          fields={LOG_FIELD_SPECS[editLog.key]}
-          onClose={() => setEditLog(null)}
-          onSave={(entry) => { const { id, ...rest } = entry; onUpdateLog(editLog.key, id, rest); setEditLog(null); }}
         />
       )}
       {modal === 'harvest' && (
@@ -11125,8 +11080,7 @@ function CustomFieldForm({ field, onClose, onSave }) {
 
 /* ---------------- Livestock farm detail (generic — any species) ---------------- */
 
-function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onUpdateLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
-  const [editLog, setEditLog] = useState(null); // { key, entry }
+function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFeedLog, onDeleteFeedLog, onAddSale, onDeleteSale, onUpdateSale, onLogPayment }) {
   const [view, setView] = useState('overview');
   const [modal, setModal] = useState(null);
   const [payModal, setPayModal] = useState(null); // { sale, saleAmount }
@@ -11177,14 +11131,14 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
       {view === 'health' && (
         <GenericLogView
           title="Health" farm={farm} entries={farm.healthLog || []}
-          onAdd={() => setModal('health')} onDelete={onDeleteHealthLog} onEdit={(e) => setEditLog({ key: 'healthLog', entry: e })}
+          onAdd={() => setModal('health')} onDelete={onDeleteHealthLog}
           columns={[['date', 'Date'], ['type', 'Type'], ['notes', 'Notes']]}
         />
       )}
       {view === 'feed' && (
         <GenericLogView
           title="Feed" farm={farm} entries={farm.feedLog || []}
-          onAdd={() => setModal('feed')} onDelete={onDeleteFeedLog} onEdit={(e) => setEditLog({ key: 'feedLog', entry: e })}
+          onAdd={() => setModal('feed')} onDelete={onDeleteFeedLog}
           columns={[['date', 'Date'], ['feedType', 'Feed'], ['quantityKg', 'Qty (kg)'], ['cost', 'Cost (GHS)']]}
         />
       )}
@@ -11254,15 +11208,6 @@ function LivestockFarmDetail({ farm, onAddHealthLog, onDeleteHealthLog, onAddFee
         </>
       )}
 
-      {editLog && onUpdateLog && (
-        <SimpleLogForm
-          title="Edit entry"
-          entry={editLog.entry}
-          fields={LOG_FIELD_SPECS[editLog.key]}
-          onClose={() => setEditLog(null)}
-          onSave={(entry) => { const { id, ...rest } = entry; onUpdateLog(editLog.key, id, rest); setEditLog(null); }}
-        />
-      )}
       {modal === 'health' && (
         <SimpleLogForm
           title="Add health record"
@@ -11339,14 +11284,7 @@ function CustomSaleForm({ onClose, onSave }) {
 
 /* ---------------- Shared small pieces ---------------- */
 
-const LOG_FIELD_SPECS = {
-  scouting: [['date', 'Date', 'date'], ['severity', 'Severity', 'text'], ['notes', 'Observation', 'textarea']],
-  harvests: [['date', 'Date', 'date'], ['quantityKg', 'Quantity (kg)', 'number'], ['notes', 'Notes', 'textarea']],
-  healthLog: [['date', 'Date', 'date'], ['type', 'Type (vaccination, treatment, etc.)', 'text'], ['notes', 'Notes', 'textarea']],
-  feedLog: [['date', 'Date', 'date'], ['feedType', 'Feed type', 'text'], ['quantityKg', 'Quantity (kg)', 'number'], ['cost', 'Cost (GHS)', 'number']],
-};
-
-function GenericLogView({ title, entries, onAdd, onDelete, onEdit, columns }) {
+function GenericLogView({ title, entries, onAdd, onDelete, columns }) {
   const { askConfirm } = useToastConfirm();
   const sorted = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
   return (
@@ -11369,10 +11307,7 @@ function GenericLogView({ title, entries, onAdd, onDelete, onEdit, columns }) {
                       {k === 'date' ? fmtDate(e[k]) : (e[k] ?? '—')}
                     </td>
                   ))}
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {onEdit && <button className="link-btn" onClick={() => onEdit(e)}>Edit</button>}{' '}
-                    <button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(e.id); }}>Delete</button>
-                  </td>
+                  <td><button className="link-btn rust" onClick={async () => { if (await askConfirm('Delete this entry?')) onDelete(e.id); }}>Delete</button></td>
                 </tr>
               ))}
             </tbody>
@@ -11386,13 +11321,13 @@ function GenericLogView({ title, entries, onAdd, onDelete, onEdit, columns }) {
 /** A small generic add-entry form driven by a field spec, used for every
     simple log (scouting, harvest, health, feed, sales) so those five don't
     each need their own bespoke form component. */
-function SimpleLogForm({ title, fields, entry, onClose, onSave }) {
-  const initial = { date: entry?.date || todayISO() };
-  fields.forEach(([key]) => { if (!(key in initial)) initial[key] = entry && entry[key] != null ? String(entry[key]) : ''; });
+function SimpleLogForm({ title, fields, onClose, onSave }) {
+  const initial = { date: todayISO() };
+  fields.forEach(([key]) => { if (!(key in initial)) initial[key] = ''; });
   const [f, setF] = useState(initial);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   function submit() {
-    const out = { id: entry?.id || newId() };
+    const out = { id: newId() };
     fields.forEach(([key, , type]) => {
       const v = f[key];
       out[key] = type === 'number' ? (v === '' ? null : Number(v)) : (v || null);
@@ -11655,7 +11590,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           <button className="btn btn-gold" onClick={() => setModal('expense')}>+ Add structure</button>
         </div>
 
-        <AssetsTable capital={capital} labelFor={labelFor} onDelete={onDeleteExpense} onEdit={(id) => setModal('expense:' + id)} fundUnits={getUnits(data)} />
+        <AssetsTable capital={capital} labelFor={labelFor} onDelete={onDeleteExpense} />
 
         <p className="stat-foot">
           A net house or coop serves many seasons, so its cost is spread across its useful life rather
@@ -11726,7 +11661,6 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
           entry={modal.startsWith('expense:') ? running.concat(capital).find((r) => r.id === modal.split(':')[1]) : null}
           fields={fields}
           flocks={flocks}
-          fundUnits={getUnits(data)}
           onClose={() => setModal(null)}
           onSave={(e) => {
             if (modal.startsWith('expense:')) onUpdateExpense(e.id, e);
@@ -11817,23 +11751,7 @@ function FarmWorkspace({ data, onAddExpense, onUpdateExpense, onDeleteExpense, o
   );
 }
 
-const FUND_SOURCES = [
-  ['', 'Not recorded'],
-  ['profit', 'Profit from a farm or field'],
-  ['savings', 'Savings'],
-  ['owner', 'My own pocket (owner money)'],
-  ['loan', 'Loan'],
-  ['gift', 'Gift or support'],
-  ['other', 'Other'],
-];
-const fundLabel = (r, units) => {
-  if (!r.fundSource) return '—';
-  const base = (FUND_SOURCES.find(([k]) => k === r.fundSource) || [, r.fundSource])[1];
-  if (r.fundSource === 'profit') return `Profit: ${((units || []).find((u) => u.id === r.fundUnitId) || {}).name || 'a farm'}`;
-  return r.fundNote ? `${base} (${r.fundNote})` : base;
-};
-
-function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
+function ExpenseForm({ entry, fields, flocks, onClose, onSave }) {
   const isEdit = Boolean(entry);
   const [f, setF] = useState({
     date: entry?.date || todayISO(),
@@ -11846,11 +11764,7 @@ function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
     target: entry?.target || 'shared',
     usefulLifeYears: entry?.usefulLifeYears ?? 4,
     notes: entry?.notes || '',
-    fundSource: entry?.fundSource || '',
-    fundUnitId: entry?.fundUnitId || '',
-    fundNote: entry?.fundNote || '',
   });
-  const [fundErr, setFundErr] = useState('');
   const isCapital = f.kind === 'capital';
 
   function set(k) {
@@ -11884,10 +11798,8 @@ function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
 
   function submit() {
     if (!f.date || f.amount === '') return;
-    if (isCapital && f.fundSource === 'profit' && !f.fundUnitId) { setFundErr('Choose which farm or field the profit came from.'); return; }
     onSave({
       id: entry?.id || newId(), date: f.date,
-      ...(isCapital ? { fundSource: f.fundSource || null, fundUnitId: f.fundSource === 'profit' ? f.fundUnitId : null, fundNote: f.fundSource && f.fundSource !== 'profit' ? (f.fundNote || null) : null } : { fundSource: null, fundUnitId: null, fundNote: null }),
       capital: isCapital,
       category: isCapital ? f.capexCategory : f.category,
       description: f.description || null,
@@ -11961,32 +11873,8 @@ function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
           </Field>
         )}
 
-        {isCapital && (
-          <Field label="Where did the money come from?" span2>
-            <select value={f.fundSource} onChange={(e) => { setFundErr(''); setF({ ...f, fundSource: e.target.value, fundUnitId: '' }); }}>
-              {FUND_SOURCES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-          </Field>
-        )}
-        {isCapital && f.fundSource === 'profit' && (
-          <Field label="Which farm or field's profit?" span2>
-            <select value={f.fundUnitId} onChange={(e) => { setFundErr(''); setF({ ...f, fundUnitId: e.target.value }); }}>
-              <option value="">Choose…</option>
-              {(fundUnits || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </Field>
-        )}
-        {isCapital && f.fundSource && f.fundSource !== 'profit' && (
-          <Field label={f.fundSource === 'loan' ? 'Who is the loan from? (optional)' : 'Details (optional)'} span2>
-            <input value={f.fundNote} onChange={set('fundNote')} placeholder={f.fundSource === 'loan' ? 'e.g. bank loan, a friend' : 'e.g. from the wedding gift'} />
-          </Field>
-        )}
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
-      {fundErr && <p style={{ color: '#e05c5c', fontSize: 13, margin: '4px 0' }}>{fundErr}</p>}
-      {isCapital && f.fundSource === 'profit' && f.fundUnitId && (
-        <p className="stat-foot" style={{ marginTop: 4 }}>This will also show in Profit Flow as equipment bought with that farm's profit, and reduce its held cash by GH₵ {num(amount, 2)}.</p>
-      )}
 
       {isCapital && perYear != null && (
         <p className="stat-foot" style={{ marginTop: 4 }}>
@@ -12006,7 +11894,7 @@ function ExpenseForm({ entry, fields, flocks, fundUnits, onClose, onSave }) {
 
 /* ---------------- Assets & structures table ---------------- */
 
-function AssetsTable({ capital, labelFor, onDelete, onEdit, fundUnits }) {
+function AssetsTable({ capital, labelFor, onDelete }) {
   if (!capital.length) {
     return (
       <p className="empty" style={{ padding: '18px 0' }}>
@@ -12021,7 +11909,7 @@ function AssetsTable({ capital, labelFor, onDelete, onEdit, fundUnits }) {
         <thead>
           <tr>
             <th>Built</th><th>Structure</th><th>Description</th><th>Assigned to</th>
-            <th>Cost</th><th>Funded by</th><th>Life</th><th>Per year</th><th>Written off</th><th>Book value</th><th></th>
+            <th>Cost</th><th>Life</th><th>Per year</th><th>Written off</th><th>Book value</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -12032,15 +11920,11 @@ function AssetsTable({ capital, labelFor, onDelete, onEdit, fundUnits }) {
               <td>{r.description || '—'}</td>
               <td>{labelFor(r)}</td>
               <td className="mono">GH₵ {num(r.amount, 2)}</td>
-              <td>{fundLabel(r, fundUnits)}</td>
               <td className="mono">{r.usefulLifeYears}y</td>
               <td className="mono">GH₵ {num(annualCharge(r), 2)}</td>
               <td className="mono">GH₵ {num(chargedToDate(r), 2)}</td>
               <td className="mono"><span className="tag green">GH₵ {num(bookValue(r), 2)}</span></td>
-              <td style={{ whiteSpace: 'nowrap' }}>
-                {onEdit && <button className="link-btn" onClick={() => onEdit(r.id)}>Edit</button>}{' '}
-                <button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button>
-              </td>
+              <td><button className="link-btn rust" onClick={() => onDelete(r.id)}>Delete</button></td>
             </tr>
           ))}
         </tbody>
@@ -13730,7 +13614,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
                     <td>{h.grade ? <span className="tag green">{h.grade}</span> : '—'}</td>
                     <td className="mono">{harvestQtyLabel(h)}</td>
                     <td><span className={`tag ${unit === 'kg' ? '' : unit === 'sack' ? 'gold' : 'green'}`}>{unit}</span></td>
-                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit === 'sack' ? 'Size 5' : unit}` : '—')}</td>
+                    <td className="mono">{unit === 'kg' ? (h.pricePerKg ? `GH₵ ${num(h.pricePerKg,2)}/kg` : '—') : (h.pricePerUnit ? `GH₵ ${num(h.pricePerUnit,2)}/${unit}` : '—')}</td>
                     <td className="mono gold">{ghc(amt)}</td>
                   </tr>
                 );
@@ -14004,7 +13888,7 @@ function InstallPrompt() {
  * to point a device at a different project. Entering details here saves them
  * on the device, so a deploy that forgot its env vars is still usable.
  */
-function CloudSetupScreen({ onDone, onCancel, firstRun = false }) {
+function CloudSetupScreen({ onDone, onCancel }) {
   const current = getCloudConfig();
   const [url, setUrl] = useState(current.source === 'device' ? current.url : '');
   const [key, setKey] = useState(current.source === 'device' ? current.key : '');
@@ -14035,13 +13919,9 @@ function CloudSetupScreen({ onDone, onCancel, firstRun = false }) {
     <div className="auth-screen">
       <div className="auth-card">
         <p className="brand-eyebrow">AI Farms</p>
-        <h1 className="brand-title" style={{ fontSize: 24, marginBottom: 4 }}>
-          {firstRun ? 'Connect to your farm' : 'Connect cloud sync'}
-        </h1>
+        <h1 className="brand-title" style={{ fontSize: 24, marginBottom: 4 }}>Connect cloud sync</h1>
         <p className="brand-sub" style={{ marginBottom: 20 }}>
-          {firstRun
-            ? 'This phone is not connected yet. Connect it once, then sign in with your email to load your farm records.'
-            : 'So your phone and PC share the same farm records.'}
+          So your phone and PC share the same farm records.
         </p>
 
         {fromEnv ? (
@@ -14077,7 +13957,7 @@ function CloudSetupScreen({ onDone, onCancel, firstRun = false }) {
             </button>
 
             <div className="auth-links">
-              <button className="link-btn" onClick={onCancel}>{firstRun ? 'Use on this phone only' : '← Back'}</button>
+              <button className="link-btn" onClick={onCancel}>← Back</button>
               {current.source === 'device' && (
                 <button className="link-btn rust" onClick={disconnect}>Disconnect this device</button>
               )}
