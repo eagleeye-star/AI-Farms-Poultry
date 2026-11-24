@@ -1579,10 +1579,13 @@ function NotificationBell({ alerts, onNavigate }) {
 
       {open && (
         <div style={{
-          position: 'absolute', top: '110%', right: 0, zIndex: 9999,
+          position: 'fixed',
+          top: (() => { const r = ref.current?.getBoundingClientRect(); return r ? r.bottom + 6 : 60; })(),
+          right: 8,
+          zIndex: 9999,
           background: '#1E1A12', border: '1px solid rgba(212,165,55,0.25)',
           borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-          width: 340, maxHeight: 480, overflowY: 'auto',
+          width: 340, maxWidth: 'calc(100vw - 16px)', maxHeight: '70vh', overflowY: 'auto',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '12px 14px 10px', borderBottom: '1px solid rgba(212,165,55,0.12)' }}>
