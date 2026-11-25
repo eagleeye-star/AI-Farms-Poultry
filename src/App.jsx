@@ -390,6 +390,22 @@ function _advCropAlerts(data) {
   const harvests = pepper.harvests || [];
   const soilReadings = pepper.soilReadings || [];
 
+  // 0. Low input stock alerts (global — not per field)
+  const inputStock = pepper.inputs || [];
+  inputStock.forEach((inp) => {
+    if (inp.reorderAt != null && Number(inp.quantity) <= Number(inp.reorderAt)) {
+      const isCritical = Number(inp.quantity) <= 0;
+      alerts.push(_advMakeAlert({
+        severity: isCritical ? 'critical' : 'warning',
+        category: 'crop',
+        source: 'Input Stock',
+        title: `Low stock: ${inp.name} — ${inp.quantity} ${inp.unit || ''} remaining`,
+        body: `${inp.name}${inp.type ? ` (${inp.type})` : ''} has fallen to ${inp.quantity} ${inp.unit || 'units'}, at or below your reorder level of ${inp.reorderAt} ${inp.unit || 'units'}.${isCritical ? ' Stock is exhausted — reorder immediately.' : ' Time to reorder before you run out.'}`,
+        action: { workspace: 'pepper', tab: 'inputs' },
+      }));
+    }
+  });
+
   fields.forEach((field) => {
     const fieldName = field.name || 'Field';
     const daysFromTransplant = _advDaysBetween(field.transplantDate, today);
@@ -3750,6 +3766,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           ...(activeFlock.type === 'layer' ? [['laying', 'Laying & Eggs']] : []),
           ['sales', 'Sales & Profit'],
           ['advances', 'Buyer Advances'],
+          ['brooding', '🐣 Brooding'],
           ['health', 'Health'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
@@ -3798,6 +3815,15 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           vaxPending={vaxPending}
           revenueChartData={revenueChartData}
           onExport={exportWeeklyReport}
+          flockBudget={activeFlock.budget || {}}
+          flockCostBreakdown={{
+            chicks: Number(activeFlock.setupCost) || 0,
+            feed: totalFeedCost,
+            meds: (data.meds || []).filter((m) => m.flockId === activeFlock.id).reduce((s, m) => s + (Number(m.cost) || 0), 0),
+            litter: litterCost,
+            labour: flockRunning + flockPettyCost + (activeFlock.broodingFuelCosts || []).reduce((s, f) => s + (Number(f.cost) || 0), 0),
+          }}
+          onSetFlockBudget={(budget) => saveFlock({ ...activeFlock, budget })}
         />
       )}
 
@@ -4003,6 +4029,13 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           onAdd={() => setModal('reminder')}
           onToggle={toggleReminder}
           onDelete={deleteReminder}
+        />
+      )}
+
+      {tab === 'brooding' && (
+        <BroodingTab
+          flock={activeFlock}
+          onSaveFlock={saveFlock}
         />
       )}
 
@@ -4257,6 +4290,7 @@ function DashboardTab({
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
   mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, revenueChartData, onExport,
+  flockBudget, flockCostBreakdown, onSetFlockBudget,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
@@ -4265,6 +4299,7 @@ function DashboardTab({
   // are what actually matters day to day. Default to a 90-day window with
   // the option to see everything.
   const [chartWindow, setChartWindow] = useState(90);
+  const [showFlockBudgetModal, setShowFlockBudgetModal] = React.useState(false);
   const windowedChart = chartWindow === 0 ? chartData : chartData.slice(-chartWindow);
   const windowedFeedChart = chartWindow === 0 ? feedChartData : feedChartData.slice(-chartWindow);
   const feedTone = feedDaysLeft == null ? undefined : feedDaysLeft <= 3 ? 'rust' : feedDaysLeft <= 7 ? 'gold' : 'green';
@@ -4351,10 +4386,38 @@ function DashboardTab({
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot="sales logged for this flock" />
-        <StatCard title="Cost" value={`GH₵ ${num(flockCost, 2)}`} tone="rust" foot="feed + litter + setup" />
+        <StatCard title="Spent So Far" value={`GH₵ ${num(flockCost, 2)}`} tone="rust" foot="feed + litter + setup (running total)" />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
         <StatCard title="Break-even" value={totalRevenue >= flockCost ? 'Reached' : `GH₵ ${num(flockCost - totalRevenue, 2)}`} foot={totalRevenue >= flockCost ? 'sales cover costs' : 'more sales to break even'} />
       </div>
+
+      {/* Flock budget vs actual */}
+      {onSetFlockBudget && flockCostBreakdown && (() => {
+        const hasBudget = flockBudget && Object.keys(flockBudget).length > 0;
+        return (
+          <div style={{ marginTop: 20, marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', margin: 0 }}>Budget vs Actual — This Flock</p>
+              <button className="btn" style={{ fontSize: 11, padding: '3px 10px' }} onClick={() => setShowFlockBudgetModal(true)}>
+                {hasBudget ? '✏️ Edit budget' : '+ Set budget'}
+              </button>
+            </div>
+            {hasBudget
+              ? <BudgetVsActual categories={POULTRY_BUDGET_CATS} budget={flockBudget} actuals={flockCostBreakdown} />
+              : <p style={{ fontSize: 13, color: 'var(--text3)', margin: '0 0 16px' }}>No budget set yet. Click <strong>+ Set budget</strong> to plan this flock's expenses.</p>
+            }
+            {showFlockBudgetModal && (
+              <BudgetSetModal
+                title="Set flock budget"
+                categories={POULTRY_BUDGET_CATS}
+                currentBudget={flockBudget}
+                onClose={() => setShowFlockBudgetModal(false)}
+                onSave={(b) => { onSetFlockBudget(b); setShowFlockBudgetModal(false); }}
+              />
+            )}
+          </div>
+        );
+      })()}
 
       <div className="grid grid-4" style={{ marginTop: 16 }}>
         <StatCard
@@ -5087,6 +5150,390 @@ function FeedForm({ entry, lastBalance, onClose, onSave }) {
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit}>{isEdit ? 'Save changes' : 'Save record'}</button>
       </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Brooding tab ---------------- */
+
+// Standard temperature targets (°C) by week of age — Hy-Line / Ross 308 combined reference
+const BROODING_TEMP_TARGETS = [
+  { week: 1, floorC: 32, airC: 30, label: 'Week 1 (Day 1–7)' },
+  { week: 2, floorC: 29, airC: 27, label: 'Week 2 (Day 8–14)' },
+  { week: 3, floorC: 26, airC: 24, label: 'Week 3 (Day 15–21)' },
+  { week: 4, floorC: 23, airC: 21, label: 'Week 4 (Day 22–28)' },
+  { week: 5, floorC: 21, airC: 19, label: 'Week 5 (Day 29–35)' },
+  { week: 6, floorC: 20, airC: 18, label: 'Week 6 (Day 36–42)' },
+];
+
+function BroodingTab({ flock, onSaveFlock }) {
+  const [view, setView] = React.useState('summary'); // 'summary' | 'log' | 'fuel'
+  const [showLogForm, setShowLogForm] = React.useState(false);
+  const [showFuelForm, setShowFuelForm] = React.useState(false);
+  const [editingEntry, setEditingEntry] = React.useState(null);
+  const [editingFuel, setEditingFuel] = React.useState(null);
+
+  const logs = flock.broodingLogs || [];
+  const fuelCosts = flock.broodingFuelCosts || [];
+
+  // Compute flock age in weeks from startDate
+  const flockAgeWeeks = flock.startDate
+    ? Math.floor(daysBetween(flock.startDate, todayISO()) / 7) + 1
+    : null;
+  const currentTarget = flockAgeWeeks != null
+    ? BROODING_TEMP_TARGETS.find((t) => t.week === Math.min(flockAgeWeeks, 6))
+    : null;
+
+  // Latest log entry
+  const sortedLogs = [...logs].sort((a, b) => (a.date > b.date ? -1 : 1));
+  const latestLog = sortedLogs[0] || null;
+
+  // Brooder mortality total (separate from main flock mortality)
+  const totalBrooderMortality = logs.reduce((s, l) => s + (Number(l.mortality) || 0), 0);
+
+  // Total fuel cost
+  const totalFuelCost = fuelCosts.reduce((s, f) => s + (Number(f.cost) || 0), 0);
+
+  function saveLog(entry) {
+    const updated = editingEntry
+      ? logs.map((l) => (l.id === editingEntry.id ? { ...entry, id: editingEntry.id } : l))
+      : [...logs, { ...entry, id: newId() }];
+    onSaveFlock({ ...flock, broodingLogs: updated });
+    setShowLogForm(false);
+    setEditingEntry(null);
+  }
+
+  function deleteLog(id) {
+    onSaveFlock({ ...flock, broodingLogs: logs.filter((l) => l.id !== id) });
+  }
+
+  function saveFuel(entry) {
+    const updated = editingFuel
+      ? fuelCosts.map((f) => (f.id === editingFuel.id ? { ...entry, id: editingFuel.id } : f))
+      : [...fuelCosts, { ...entry, id: newId() }];
+    onSaveFlock({ ...flock, broodingFuelCosts: updated });
+    setShowFuelForm(false);
+    setEditingFuel(null);
+  }
+
+  function deleteFuel(id) {
+    onSaveFlock({ ...flock, broodingFuelCosts: fuelCosts.filter((f) => f.id !== id) });
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, color: 'var(--gold)', fontSize: 16 }}>🐣 Chick Brooding</h3>
+        {flockAgeWeeks != null && (
+          <span style={{ fontSize: 12, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 20, padding: '3px 10px', color: 'var(--text2)' }}>
+            Week {Math.min(flockAgeWeeks, 6)}+ of age
+          </span>
+        )}
+      </div>
+
+      {/* Current temp target card */}
+      {currentTarget && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', marginBottom: 18 }}>
+          <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)' }}>
+            Hy-Line / Ross 308 — {currentTarget.label}
+          </p>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text3)' }}>Floor / brooder</p>
+              <p style={{ margin: 0, fontSize: 24, fontWeight: 800, color: 'var(--gold)' }}>{currentTarget.floorC}°C</p>
+            </div>
+            <div>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text3)' }}>Air temp</p>
+              <p style={{ margin: 0, fontSize: 24, fontWeight: 800, color: 'var(--text1)' }}>{currentTarget.airC}°C</p>
+            </div>
+            {latestLog && latestLog.tempC != null && (
+              <div>
+                <p style={{ margin: 0, fontSize: 11, color: 'var(--text3)' }}>Last recorded</p>
+                <p style={{ margin: 0, fontSize: 24, fontWeight: 800, color: Number(latestLog.tempC) < currentTarget.airC - 2 || Number(latestLog.tempC) > currentTarget.floorC + 2 ? 'var(--rust)' : 'var(--green)' }}>
+                  {latestLog.tempC}°C
+                </p>
+              </div>
+            )}
+          </div>
+          {flockAgeWeeks > 6 && (
+            <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--text3)' }}>Chicks are past brooding phase (6+ weeks). Ambient housing temperature should suffice.</p>
+          )}
+        </div>
+      )}
+
+      {/* Full week-by-week reference table */}
+      <details style={{ marginBottom: 18 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text2)', fontWeight: 600, padding: '6px 0' }}>
+          Full temperature reference (all 6 weeks)
+        </summary>
+        <div className="table-wrap" style={{ marginTop: 10 }}>
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Week</th>
+                <th>Floor / brooder</th>
+                <th>Air temp</th>
+                <th>Standard</th>
+              </tr>
+            </thead>
+            <tbody>
+              {BROODING_TEMP_TARGETS.map((t) => (
+                <tr key={t.week} style={flockAgeWeeks != null && t.week === Math.min(flockAgeWeeks, 6) ? { background: 'rgba(212,165,55,.12)' } : {}}>
+                  <td style={{ fontWeight: flockAgeWeeks != null && t.week === Math.min(flockAgeWeeks, 6) ? 700 : undefined }}>{t.label}</td>
+                  <td className="mono">{t.floorC}°C</td>
+                  <td className="mono">{t.airC}°C</td>
+                  <td style={{ fontSize: 11, color: 'var(--text3)' }}>Hy-Line / Ross 308</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      {/* Sub-nav */}
+      <nav className="tabs" style={{ marginBottom: 16 }}>
+        {[['summary', 'Summary'], ['log', 'Daily Brooding Log'], ['fuel', 'Heat / Fuel Costs']].map(([id, label]) => (
+          <button key={id} className={`tab${view === id ? ' active' : ''}`} onClick={() => setView(id)}>{label}</button>
+        ))}
+      </nav>
+
+      {view === 'summary' && (
+        <div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 20 }}>
+            <div className="stat-card">
+              <span className="stat-label">Brooder mortality</span>
+              <span className="stat-value" style={{ color: totalBrooderMortality > 0 ? 'var(--rust)' : undefined }}>{totalBrooderMortality}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Log entries</span>
+              <span className="stat-value">{logs.length}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Total fuel cost</span>
+              <span className="stat-value" style={{ fontSize: 15 }}>GH₵ {num(totalFuelCost, 2)}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Fuel entries</span>
+              <span className="stat-value">{fuelCosts.length}</span>
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 0 }}>
+            Use the <strong>Daily Brooding Log</strong> tab to record actual temperatures and brooder mortality each day.
+            Use <strong>Heat / Fuel Costs</strong> to track charcoal, gas, or electricity spend on heating.
+          </p>
+        </div>
+      )}
+
+      {view === 'log' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+            <button className="btn btn-green" onClick={() => { setEditingEntry(null); setShowLogForm(true); }}>+ Add entry</button>
+          </div>
+          {showLogForm && (
+            <BroodingLogForm
+              entry={editingEntry}
+              onClose={() => { setShowLogForm(false); setEditingEntry(null); }}
+              onSave={saveLog}
+            />
+          )}
+          {sortedLogs.length === 0 ? (
+            <p style={{ color: 'var(--text3)', fontSize: 14 }}>No brooding log entries yet. Click <strong>+ Add entry</strong> to record today's temperature and mortality.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Temp (°C)</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                    <th>Mortality</th>
+                    <th>Notes</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedLogs.map((l) => {
+                    const ageWeeks = flock.startDate ? Math.floor(daysBetween(flock.startDate, l.date) / 7) + 1 : null;
+                    const target = ageWeeks != null ? BROODING_TEMP_TARGETS.find((t) => t.week === Math.min(ageWeeks, 6)) : null;
+                    const tempVal = l.tempC != null ? Number(l.tempC) : null;
+                    let tempStatus = null;
+                    if (target && tempVal != null) {
+                      if (tempVal < target.airC - 2) tempStatus = 'low';
+                      else if (tempVal > target.floorC + 2) tempStatus = 'high';
+                      else tempStatus = 'ok';
+                    }
+                    return (
+                      <tr key={l.id}>
+                        <td>{l.date}</td>
+                        <td className="mono">{l.tempC != null ? `${l.tempC}°C` : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--text3)', fontSize: 12 }}>{target ? `${target.airC}–${target.floorC}°C` : '—'}</td>
+                        <td>
+                          {tempStatus === 'ok' && <span style={{ color: 'var(--green)', fontWeight: 600 }}>✓ OK</span>}
+                          {tempStatus === 'low' && <span style={{ color: '#5bc0de', fontWeight: 600 }}>↓ Low</span>}
+                          {tempStatus === 'high' && <span style={{ color: 'var(--rust)', fontWeight: 600 }}>↑ High</span>}
+                          {tempStatus == null && '—'}
+                        </td>
+                        <td className="mono" style={{ color: (Number(l.mortality) || 0) > 0 ? 'var(--rust)' : undefined }}>
+                          {Number(l.mortality) || 0}
+                        </td>
+                        <td style={{ fontSize: 12, color: 'var(--text3)', maxWidth: 160 }}>{l.notes || '—'}</td>
+                        <td>
+                          <button className="btn" style={{ fontSize: 11, padding: '2px 8px', marginRight: 4 }} onClick={() => { setEditingEntry(l); setShowLogForm(true); }}>Edit</button>
+                          <button className="btn btn-danger" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => deleteLog(l.id)}>Del</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === 'fuel' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+            <button className="btn btn-green" onClick={() => { setEditingFuel(null); setShowFuelForm(true); }}>+ Add cost</button>
+          </div>
+          {showFuelForm && (
+            <BroodingFuelForm
+              entry={editingFuel}
+              onClose={() => { setShowFuelForm(false); setEditingFuel(null); }}
+              onSave={saveFuel}
+            />
+          )}
+          <div className="stat-card" style={{ display: 'inline-block', marginBottom: 16 }}>
+            <span className="stat-label">Total heat / fuel spend</span>
+            <span className="stat-value" style={{ fontSize: 16 }}>GH₵ {num(totalFuelCost, 2)}</span>
+          </div>
+          {fuelCosts.length === 0 ? (
+            <p style={{ color: 'var(--text3)', fontSize: 14 }}>No fuel costs recorded yet. Click <strong>+ Add cost</strong> to log charcoal, gas, or electricity spend.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Fuel type</th>
+                    <th>Qty / description</th>
+                    <th>Cost (GH₵)</th>
+                    <th>Notes</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...fuelCosts].sort((a, b) => (a.date > b.date ? -1 : 1)).map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.date}</td>
+                      <td>{f.fuelType || '—'}</td>
+                      <td style={{ fontSize: 13 }}>{f.qty || '—'}</td>
+                      <td className="mono">GH₵ {num(Number(f.cost) || 0, 2)}</td>
+                      <td style={{ fontSize: 12, color: 'var(--text3)' }}>{f.notes || '—'}</td>
+                      <td>
+                        <button className="btn" style={{ fontSize: 11, padding: '2px 8px', marginRight: 4 }} onClick={() => { setEditingFuel(f); setShowFuelForm(true); }}>Edit</button>
+                        <button className="btn btn-danger" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => deleteFuel(f.id)}>Del</button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+                    <td colSpan={3}>Total</td>
+                    <td className="mono">GH₵ {num(totalFuelCost, 2)}</td>
+                    <td colSpan={2}></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BroodingLogForm({ entry, onClose, onSave }) {
+  const [date, setDate] = React.useState(entry?.date || todayISO());
+  const [tempC, setTempC] = React.useState(entry?.tempC != null ? String(entry.tempC) : '');
+  const [mortality, setMortality] = React.useState(entry?.mortality != null ? String(entry.mortality) : '0');
+  const [notes, setNotes] = React.useState(entry?.notes || '');
+
+  function submit(e) {
+    e.preventDefault();
+    onSave({ date, tempC: tempC !== '' ? Number(tempC) : null, mortality: Number(mortality) || 0, notes });
+  }
+
+  return (
+    <Modal title={entry ? 'Edit brooding log entry' : 'Add brooding log entry'} sub="Record actual temperature and brooder mortality for the day." onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="form-grid">
+          <Field label="Date">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+          </Field>
+          <Field label="Brooder temp (°C)" hint="Measured at chick level">
+            <input type="number" step="0.1" value={tempC} onChange={(e) => setTempC(e.target.value)} placeholder="e.g. 30" />
+          </Field>
+          <Field label="Brooder mortality (birds)" hint="Deaths in the brooder today only">
+            <input type="number" min="0" step="1" value={mortality} onChange={(e) => setMortality(e.target.value)} placeholder="0" />
+          </Field>
+          <Field label="Notes" hint="Behaviour, huddling, panting, etc.">
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+          </Field>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-green">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function BroodingFuelForm({ entry, onClose, onSave }) {
+  const [date, setDate] = React.useState(entry?.date || todayISO());
+  const [fuelType, setFuelType] = React.useState(entry?.fuelType || 'Charcoal');
+  const [qty, setQty] = React.useState(entry?.qty || '');
+  const [cost, setCost] = React.useState(entry?.cost != null ? String(entry.cost) : '');
+  const [notes, setNotes] = React.useState(entry?.notes || '');
+
+  function submit(e) {
+    e.preventDefault();
+    if (!cost) return;
+    onSave({ date, fuelType, qty, cost: Number(cost), notes });
+  }
+
+  return (
+    <Modal title={entry ? 'Edit fuel cost' : 'Add heat / fuel cost'} sub="Log charcoal, gas, or electricity spend for brooding heat." onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="form-grid">
+          <Field label="Date">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+          </Field>
+          <Field label="Fuel type">
+            <select value={fuelType} onChange={(e) => setFuelType(e.target.value)}>
+              <option>Charcoal</option>
+              <option>Firewood</option>
+              <option>Gas (LPG)</option>
+              <option>Electricity</option>
+              <option>Kerosene</option>
+              <option>Other</option>
+            </select>
+          </Field>
+          <Field label="Quantity / description" hint="e.g. 2 bags, 5 kg, 10 kWh">
+            <input type="text" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Optional" />
+          </Field>
+          <Field label="Cost (GH₵)" hint="Total amount paid">
+            <input type="number" step="0.01" min="0" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0.00" required />
+          </Field>
+          <Field label="Notes">
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+          </Field>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-green">Save</button>
+        </div>
+      </form>
     </Modal>
   );
 }
@@ -6095,6 +6542,7 @@ function PepperWorkspace({
           scopePhi={scopePhi} soonestClear={soonestClear} scopeResistance={scopeResistance}
           harvestChart={harvestChart} pressureChart={pressureChart} harvestScoped={harvestScoped}
           datOf={datOf}
+          onAddHarvest={() => setModal('harvest')}
         />
       )}
 
@@ -6234,6 +6682,7 @@ function PepperWorkspace({
             cropExpenses={pepper.cropExpenses || []}
             onAddExpense={() => setModal('crop-expense')}
             onDeleteExpense={onDeleteCropExpense}
+            onUpdateField={onUpdateField}
           />
         </CropsFinancialsErrorBoundary>
       )}
@@ -6334,7 +6783,7 @@ function PepperDashboard({
   fieldsScoped, totalPlants, totalKg, revenue, totalCost, inputCost, setupCost,
   structureCost, structureInvested, otherRunning, expenses, scope,
   margin, avgPrice, latestScout, pressureTone, scopePhi, soonestClear, scopeResistance,
-  harvestChart, pressureChart, harvestScoped, datOf,
+  harvestChart, pressureChart, harvestScoped, datOf, onAddHarvest,
 }) {
   // Structures assigned to one field, so Field A and Field B compare fairly.
   const fieldCapex = (id) => {
@@ -6353,6 +6802,23 @@ function PepperDashboard({
 
   return (
     <>
+      {/* Quick harvest entry button */}
+      {onAddHarvest && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+          <button
+            onClick={onAddHarvest}
+            style={{
+              background: 'var(--gold)', color: '#111', border: 'none', borderRadius: 8,
+              padding: '9px 20px', fontWeight: 700, fontSize: 14, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 7,
+              boxShadow: '0 2px 8px rgba(0,0,0,.35)',
+            }}
+          >
+            🌶 + Log Harvest
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-4">
         <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'all fields' : 'in this field'} />
         <StatCard
@@ -6376,6 +6842,28 @@ function PepperDashboard({
         <StatCard title="Margin" value={`GH₵ ${num(margin, 2)}`} tone={margin >= 0 ? 'green' : 'rust'} foot={margin >= 0 ? 'in profit' : 'below break-even'} />
         <StatCard title="Avg Price" value={avgPrice != null ? `GH₵ ${num(avgPrice, 2)}` : '—'} foot="per kg sold" />
       </div>
+
+      {/* Input cost per kg / per sack metrics */}
+      {(() => {
+        const totalKgAll = harvestScoped.reduce((s, h) => s + (Number(h.weightKg) || 0), 0);
+        const totalSacks = harvestScoped.filter((h) => (h.unit || 'kg') === 'sack').reduce((s, h) => s + (Number(h.quantity) || 0), 0);
+        const avgSackKg = totalSacks > 0
+          ? harvestScoped.filter((h) => (h.unit || 'kg') === 'sack').reduce((s, h) => s + (Number(h.sackWeightKg) || 50) * (Number(h.quantity) || 0), 0) / totalSacks
+          : 50;
+        const costPerKg = totalKgAll > 0 ? inputCost / totalKgAll : null;
+        const kgEquivFromSacks = totalSacks * avgSackKg;
+        const totalKgEquiv = totalKgAll + kgEquivFromSacks;
+        const costPerKgEquiv = totalKgEquiv > 0 ? inputCost / totalKgEquiv : null;
+        const costPerSack = totalSacks > 0 ? inputCost / totalSacks : null;
+        if (inputCost <= 0) return null;
+        return (
+          <div className="grid grid-4" style={{ marginTop: 16 }}>
+            {costPerKg != null && <StatCard title="Input Cost / kg" value={`GH₵ ${num(costPerKg, 2)}`} tone="rust" foot="spray & input cost per kg sold" />}
+            {costPerKgEquiv != null && totalSacks > 0 && <StatCard title="Input Cost / kg (all)" value={`GH₵ ${num(costPerKgEquiv, 2)}`} tone="rust" foot={`incl. sack weight (avg ${num(avgSackKg,0)} kg/sack)`} />}
+            {costPerSack != null && <StatCard title="Input Cost / sack" value={`GH₵ ${num(costPerSack, 2)}`} tone="rust" foot={`${num(totalSacks, 0)} sack${totalSacks !== 1 ? 's' : ''} sold`} />}
+          </div>
+        );
+      })()}
 
       {/* Payment mode breakdown — pepper */}
       {(() => {
@@ -7326,13 +7814,28 @@ function ScoutingTab({ rows, fieldName, onAdd }) {
 
 function ScoutForm({ fields, defaultField, onClose, onSave }) {
   const [f, setF] = useState({ date: todayISO(), fieldId: defaultField, pest: PEST_OPTIONS[0], severity: 'Low', pctAffected: '', action: '', notes: '' });
+  const [photoDataUrl, setPhotoDataUrl] = useState(null);
+  const [photoName, setPhotoName] = useState('');
+  const fileRef = React.useRef(null);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  function handlePhotoChange(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setPhotoName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => setPhotoDataUrl(ev.target.result);
+    reader.readAsDataURL(file);
+  }
+
   function submit() {
     if (!f.date || !f.fieldId) return;
     onSave({
       id: newId(), date: f.date, fieldId: f.fieldId, pest: f.pest, severity: f.severity,
       pctAffected: f.pctAffected === '' ? null : Number(f.pctAffected),
       action: f.action || null, notes: f.notes || null,
+      photo: photoDataUrl || null,
+      photoName: photoName || null,
     });
   }
   return (
@@ -7357,6 +7860,22 @@ function ScoutForm({ fields, defaultField, onClose, onSave }) {
         <Field label="% plants affected"><input type="number" value={f.pctAffected} onChange={set('pctAffected')} /></Field>
         <Field label="Action taken"><input value={f.action} onChange={set('action')} placeholder="e.g. sprayed, rogued plants" /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
+        <Field label="📷 Photo (optional)" span2>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handlePhotoChange} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => fileRef.current?.click()}>
+              {photoDataUrl ? '📷 Change photo' : '📷 Attach photo'}
+            </button>
+            {photoName && <span style={{ fontSize: 12, color: 'var(--text3)' }}>{photoName}</span>}
+          </div>
+          {photoDataUrl && (
+            <div style={{ marginTop: 8, position: 'relative', display: 'inline-block' }}>
+              <img src={photoDataUrl} alt="Scouting photo" style={{ maxWidth: '100%', maxHeight: 180, borderRadius: 6, border: '1px solid var(--border)' }} />
+              <button type="button" onClick={() => { setPhotoDataUrl(null); setPhotoName(''); }}
+                style={{ position: 'absolute', top: 4, right: 4, background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 12 }}>✕</button>
+            </div>
+          )}
+        </Field>
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -7430,19 +7949,149 @@ function calcRotationScore(fieldSprays, allProducts) {
   return { score: 'green', label: 'Good', detail: `${new Set(groups).size} different IRAC groups in last ${groups.length} sprays` };
 }
 
+// ── Built-in product edit modal ─────────────────────────────────────────────
+function BuiltinProductEditModal({ product, defaultProduct, onClose, onSave }) {
+  const [f, setF] = React.useState({
+    rateML: String(product.rateML ?? ''),
+    phi: String(product.phi ?? ''),
+    reentry: String(product.reentry ?? ''),
+    notes: product.notes || '',
+    pests: (product.pests || []).join(', '),
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    onSave({
+      rateML: f.rateML === '' ? defaultProduct.rateML : Number(f.rateML),
+      phi: f.phi === '' ? defaultProduct.phi : Number(f.phi),
+      reentry: f.reentry === '' ? defaultProduct.reentry : Number(f.reentry),
+      notes: f.notes || defaultProduct.notes,
+      pests: f.pests ? f.pests.split(',').map((s) => s.trim()).filter(Boolean) : defaultProduct.pests,
+    });
+  }
+  return (
+    <Modal title={`Edit: ${product.name}`} sub="Edits are saved locally to your device. Reset to default restores the original." onClose={onClose}>
+      <div className="form-grid">
+        <Field label={`Default rate (ml/L) — default: ${defaultProduct.rateML}`}>
+          <input type="number" step="0.5" value={f.rateML} onChange={set('rateML')} placeholder={String(defaultProduct.rateML)} />
+        </Field>
+        <Field label={`PHI (days) — default: ${defaultProduct.phi}`}>
+          <input type="number" step="1" value={f.phi} onChange={set('phi')} placeholder={String(defaultProduct.phi)} />
+        </Field>
+        <Field label={`Re-entry interval (hrs) — default: ${defaultProduct.reentry}`}>
+          <input type="number" step="1" value={f.reentry} onChange={set('reentry')} placeholder={String(defaultProduct.reentry)} />
+        </Field>
+        <Field label="Target pests (comma-separated)" span2>
+          <input value={f.pests} onChange={set('pests')} placeholder="e.g. aphids, whitefly, thrips" />
+        </Field>
+        <Field label="Notes / tips" span2>
+          <textarea rows={3} value={f.notes} onChange={set('notes')} placeholder={defaultProduct.notes} />
+        </Field>
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--text3)', margin: '6px 0 10px' }}>
+        ⚠ Only rate, PHI, re-entry, pests and notes can be edited. Product name, IRAC group and active ingredient are fixed.
+      </p>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save edits</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Tank Calculator (Spray volume → ml per product) ─────────────────────────
+function TankCalculatorView({ allProducts }) {
+  const [tankL, setTankL] = React.useState('16');
+  const [selectedProduct, setSelectedProduct] = React.useState('');
+  const [customRate, setCustomRate] = React.useState('');
+
+  const product = allProducts.find((p) => p.name === selectedProduct);
+  const rateML = customRate !== '' ? Number(customRate) : (product?.rateML ?? null);
+  const tankSize = Number(tankL) || 0;
+  const totalML = rateML != null && tankSize > 0 ? rateML * tankSize : null;
+
+  return (
+    <div>
+      <h3 style={{ fontSize: 15, marginBottom: 6 }}>🧪 Spray Tank Calculator</h3>
+      <p style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+        Enter your tank size and select a product to get the exact amount to mix.
+      </p>
+      <div className="panel" style={{ padding: 16, maxWidth: 460 }}>
+        <div className="form-grid">
+          <Field label="Tank size (litres)">
+            <input type="number" step="1" min="1" value={tankL} onChange={(e) => setTankL(e.target.value)} placeholder="e.g. 16" />
+          </Field>
+          <Field label="Product">
+            <select value={selectedProduct} onChange={(e) => { setSelectedProduct(e.target.value); setCustomRate(''); }}>
+              <option value="">— choose from library —</option>
+              {allProducts.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
+            </select>
+          </Field>
+          <Field label={`Rate (ml per litre)${product?.rateML != null ? ` — library: ${product.rateML} ml/L` : ''}`}>
+            <input type="number" step="0.1" min="0"
+              value={customRate !== '' ? customRate : (product?.rateML ?? '')}
+              onChange={(e) => setCustomRate(e.target.value)}
+              placeholder="ml per litre of water" />
+          </Field>
+        </div>
+
+        {totalML != null ? (
+          <div style={{ marginTop: 16, background: 'rgba(212,165,55,0.1)', border: '1px solid rgba(212,165,55,0.3)', borderRadius: 8, padding: '14px 18px' }}>
+            <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 4 }}>
+              {product?.name || 'Product'} · {rateML} ml/L · {tankSize} L tank
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: '#D4A537' }}>
+              {num(totalML, 1)} ml
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
+              = {num(totalML / 1000, 3)} litres of product per full tank
+            </div>
+            {totalML >= 1000 && (
+              <div style={{ fontSize: 12, color: '#e07070', marginTop: 6 }}>
+                ⚠️ That's over 1 litre of product — double-check your rate.
+              </div>
+            )}
+          </div>
+        ) : (
+          <p style={{ fontSize: 12, color: 'var(--text3)', marginTop: 12 }}>
+            Select a product and enter tank size to calculate.
+          </p>
+        )}
+
+        {product && (
+          <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text3)', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+            <strong style={{ color: 'var(--text2)' }}>{product.name}:</strong> {product.notes || 'No notes.'}<br />
+            {product.phi != null && <span>PHI: {product.phi} days · </span>}
+            {product.whoClass && <span>WHO class: {product.whoClass}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── SprayLibraryTab component ───────────────────────────────────────────────
+const BUILTIN_SPRAY_OVERRIDES_KEY = 'aifarms_builtin_spray_overrides';
+function loadBuiltinOverrides() {
+  try { return JSON.parse(localStorage.getItem(BUILTIN_SPRAY_OVERRIDES_KEY) || '{}'); } catch { return {}; }
+}
+function saveBuiltinOverrides(overrides) {
+  try { localStorage.setItem(BUILTIN_SPRAY_OVERRIDES_KEY, JSON.stringify(overrides)); } catch {}
+}
+
 function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, onDeleteCustomProduct, onAddSpray }) {
-  const [view, setView] = React.useState('log'); // 'log' | 'library' | 'lookup' | 'stock'
+  const [view, setView] = React.useState('log'); // 'log' | 'library' | 'lookup' | 'stock' | 'tankCalc'
   const [showAddProductForm, setShowAddProductForm] = React.useState(false);
   const [showLogForm, setShowLogForm] = React.useState(false);
   const [lookupPest, setLookupPest] = React.useState('');
   const [librarySearch, setLibrarySearch] = React.useState('');
   const [selectedProduct, setSelectedProduct] = React.useState(null);
+  const [editingBuiltin, setEditingBuiltin] = React.useState(null); // product id being edited
+  const [builtinOverrides, setBuiltinOverrides] = React.useState(loadBuiltinOverrides);
 
   const allProducts = React.useMemo(() => [
-    ...BUILTIN_SPRAY_LIBRARY,
+    ...BUILTIN_SPRAY_LIBRARY.map((p) => builtinOverrides[p.id] ? { ...p, ...builtinOverrides[p.id], _edited: true } : p),
     ...(customProducts || []).map((p) => ({ ...p, _custom: true })),
-  ], [customProducts]);
+  ], [customProducts, builtinOverrides]);
 
   const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
 
@@ -7504,7 +8153,7 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
     <div>
       {/* Sub-tab bar */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-        {[['log','📋 Spray Log'],['library','📚 Product Library'],['lookup','🔍 Pest Lookup'],['stock','📊 Rotation Scores']].map(([id, label]) => (
+        {[['log','📋 Spray Log'],['library','📚 Product Library'],['lookup','🔍 Pest Lookup'],['stock','📊 Rotation Scores'],['tankCalc','🧪 Tank Calculator']].map(([id, label]) => (
           <button key={id}
             className={`tab${view === id ? ' active' : ''}`}
             style={{ fontSize: 13, padding: '5px 12px' }}
@@ -7526,7 +8175,7 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
                 <tr>
                   <th>Date</th><th>Field</th><th>Product</th><th>IRAC</th>
                   <th>Target pest</th><th>Dose (ml/L)</th><th>PHI (d)</th>
-                  <th>Cost (GH₵)</th><th>Rain?</th><th>Notes</th>
+                  <th>Cost (GH₵)</th><th>Wind</th><th>Rain</th><th>Notes</th>
                 </tr>
               </thead>
               <tbody>
@@ -7543,12 +8192,13 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
                       <td className="mono">{r.doseMlPerL != null ? `${r.doseMlPerL} ml/L` : (r.rate || '—')}</td>
                       <td className="mono">{r.phiDays != null ? r.phiDays : '—'}</td>
                       <td className="mono">{r.cost != null ? `GH₵${num(r.cost,2)}` : '—'}</td>
-                      <td style={{ textAlign: 'center' }}>{r.rainedWithin4h ? '🌧️' : ''}</td>
+                      <td style={{ fontSize: 11, color: 'var(--text3)' }}>{r.windCondition ? r.windCondition : (r.rainedWithin4h != null ? (r.rainedWithin4h ? '🌧️' : '') : '—')}</td>
+                      <td style={{ fontSize: 11, color: r.rainCondition === 'Heavy rain — reapply' ? 'var(--rust)' : 'var(--text3)' }}>{r.rainCondition || '—'}</td>
                       <td className="notes" style={{ fontSize: 11 }}>{r.notes || ''}</td>
                     </tr>
                   );
                 })}
-                {sprays.length === 0 && <tr><td colSpan={10} className="empty">No sprays logged yet.</td></tr>}
+                {sprays.length === 0 && <tr><td colSpan={11} className="empty">No sprays logged yet.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -7585,6 +8235,7 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
                   <div>
                     <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{p.name}</span>
                     {p._custom && <span style={{ marginLeft: 8, fontSize: 10, background: 'rgba(212,165,55,0.2)', color: '#D4A537', borderRadius: 4, padding: '1px 6px' }}>Custom</span>}
+                    {p._edited && <span style={{ marginLeft: 8, fontSize: 10, background: 'rgba(100,160,255,0.2)', color: '#80aaff', borderRadius: 4, padding: '1px 6px' }}>Edited</span>}
                     <span style={{ display: 'block', fontSize: 12, color: 'var(--text-faint)', marginTop: 2 }}>{p.activeIngredient}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -7603,8 +8254,16 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
                     <div><strong>Resistance risk:</strong> <span style={{ color: p.resistanceRisk === 'High' ? '#ef5350' : p.resistanceRisk === 'Low' ? '#4caf50' : '#D4A537' }}>{p.resistanceRisk}</span></div>
                     <div><strong>Default dose:</strong> {p.rateML} ml/L</div>
                     {p.notes && <div style={{ color: '#aaa', fontStyle: 'italic' }}>{p.notes}</div>}
-                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
                       <button className="btn btn-green" style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); setShowLogForm({ prefillProduct: p }); }}>Log spray with this product</button>
+                      {!p._custom && (
+                        <button className="btn" style={{ fontSize: 12, background: 'rgba(212,165,55,0.12)', color: '#D4A537', border: '1px solid rgba(212,165,55,0.3)' }}
+                          onClick={(e) => { e.stopPropagation(); setEditingBuiltin(p.id); }}>✏ Edit</button>
+                      )}
+                      {!p._custom && p._edited && (
+                        <button className="btn" style={{ fontSize: 12, background: 'rgba(100,100,100,0.15)', color: '#888', border: '1px solid rgba(255,255,255,0.1)' }}
+                          onClick={(e) => { e.stopPropagation(); const o = { ...builtinOverrides }; delete o[p.id]; setBuiltinOverrides(o); saveBuiltinOverrides(o); }}>↩ Reset to default</button>
+                      )}
                       {p._custom && <button className="btn" style={{ fontSize: 12, background: 'rgba(239,83,80,0.15)', color: '#ef5350', border: '1px solid rgba(239,83,80,0.3)' }} onClick={(e) => { e.stopPropagation(); onDeleteCustomProduct(p.id); setSelectedProduct(null); }}>Delete custom</button>}
                     </div>
                   </div>
@@ -7737,6 +8396,31 @@ function SprayLibraryTab({ fields, sprays, customProducts, onAddCustomProduct, o
           </div>
         </div>
       )}
+
+      {/* ── TANK CALCULATOR view ─────────────────────────────────────────── */}
+      {view === 'tankCalc' && (
+        <TankCalculatorView allProducts={allProducts} />
+      )}
+
+      {/* ── Built-in product edit modal ───────────────────────────────── */}
+      {editingBuiltin && (() => {
+        const baseP = BUILTIN_SPRAY_LIBRARY.find((p) => p.id === editingBuiltin);
+        const currentP = allProducts.find((p) => p.id === editingBuiltin);
+        if (!baseP || !currentP) return null;
+        return (
+          <BuiltinProductEditModal
+            product={currentP}
+            defaultProduct={baseP}
+            onClose={() => setEditingBuiltin(null)}
+            onSave={(edits) => {
+              const o = { ...builtinOverrides, [editingBuiltin]: edits };
+              setBuiltinOverrides(o);
+              saveBuiltinOverrides(o);
+              setEditingBuiltin(null);
+            }}
+          />
+        );
+      })()}
 
       {/* ── Log spray form ─────────────────────────────────────────────── */}
       {showLogForm && (
@@ -7994,6 +8678,7 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
     date: todayISO(), fieldId: defaultField, type: prefill?.type || 'Insecticide',
     product: prefill?.product || '', activeIngredient: '', rate: prefill?.rate || '',
     quantityUsed: '', cost: '', phiDays: '', notes: prefill?.notes || '',
+    windCondition: '', rainCondition: '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const safePreview = f.phiDays !== '' ? addDaysISO(f.date, f.phiDays) : null;
@@ -8017,6 +8702,8 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
       quantityUsed: f.quantityUsed === '' ? null : Number(f.quantityUsed),
       cost: f.cost === '' ? null : Number(f.cost),
       phiDays: f.phiDays === '' ? null : Number(f.phiDays), notes: f.notes || null,
+      windCondition: f.windCondition || null,
+      rainCondition: f.rainCondition || null,
     });
   }
 
@@ -8074,6 +8761,23 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
         <Field label="Qty used (ml/g)"><input type="number" step="0.01" value={f.quantityUsed} onChange={set('quantityUsed')} placeholder="deducts from input stock" /></Field>
         <Field label="Cost (GH₵)"><input type="number" step="0.01" value={f.cost} onChange={set('cost')} /></Field>
         <Field label="Pre-harvest interval (days)"><input type="number" value={f.phiDays} onChange={set('phiDays')} placeholder="from label" /></Field>
+        <Field label="🌬 Wind conditions">
+          <select value={f.windCondition} onChange={set('windCondition')}>
+            <option value="">— not recorded —</option>
+            <option value="Calm">Calm (ideal)</option>
+            <option value="Light breeze">Light breeze (&lt;10 km/h)</option>
+            <option value="Moderate wind">Moderate wind (10–20 km/h)</option>
+            <option value="Strong wind">Strong wind (&gt;20 km/h, avoid spray)</option>
+          </select>
+        </Field>
+        <Field label="🌧 Rain within 4h?">
+          <select value={f.rainCondition} onChange={set('rainCondition')}>
+            <option value="">— not recorded —</option>
+            <option value="No rain">No rain</option>
+            <option value="Light drizzle after">Light drizzle after spray</option>
+            <option value="Heavy rain — reapply">Heavy rain — reapply needed</option>
+          </select>
+        </Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -14739,13 +15443,115 @@ const PERIOD_OPTS_CROP = [
   { value: 'custom',label: 'Custom' },
 ];
 
-function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpense, onDeleteExpense }) {
+/* ── Budget set modal (shared for pepper fields and poultry flocks) ── */
+function BudgetSetModal({ title, categories, currentBudget, onClose, onSave }) {
+  const [vals, setVals] = React.useState(() => {
+    const b = currentBudget || {};
+    const out = {};
+    categories.forEach((c) => { out[c.key] = b[c.key] != null ? String(b[c.key]) : ''; });
+    return out;
+  });
+  function submit() {
+    const budget = {};
+    categories.forEach((c) => { if (vals[c.key] !== '') budget[c.key] = Number(vals[c.key]); });
+    onSave(budget);
+  }
+  return (
+    <Modal title={title || 'Set Budget'} sub="Enter planned spend per category for this cycle." onClose={onClose}>
+      <div className="form-grid">
+        {categories.map((c) => (
+          <Field key={c.key} label={`${c.label} (GH₵)`}>
+            <input
+              type="number" step="0.01" min="0"
+              value={vals[c.key]}
+              onChange={(e) => setVals({ ...vals, [c.key]: e.target.value })}
+              placeholder="0.00"
+            />
+          </Field>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-green" onClick={submit}>Save budget</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* Helper: render a budget vs actual comparison table */
+function BudgetVsActual({ categories, budget, actuals, title }) {
+  if (!budget || Object.keys(budget).length === 0) return null;
+  const totalBudget = categories.reduce((s, c) => s + (Number(budget[c.key]) || 0), 0);
+  const totalActual = categories.reduce((s, c) => s + (Number(actuals[c.key]) || 0), 0);
+  const totalVar = totalActual - totalBudget;
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {title && <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', margin: '0 0 8px' }}>{title}</p>}
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Category</th><th>Budget</th><th>Actual</th><th>Variance</th><th>%</th></tr></thead>
+          <tbody>
+            {categories.map((c) => {
+              const bud = Number(budget[c.key]) || 0;
+              const act = Number(actuals[c.key]) || 0;
+              const v = act - bud;
+              const pct = bud > 0 ? ((v / bud) * 100).toFixed(0) : null;
+              if (bud === 0 && act === 0) return null;
+              return (
+                <tr key={c.key}>
+                  <td>{c.label}</td>
+                  <td className="mono">{bud > 0 ? `GH₵ ${num(bud, 2)}` : '—'}</td>
+                  <td className="mono">{act > 0 ? `GH₵ ${num(act, 2)}` : '—'}</td>
+                  <td className="mono" style={{ color: v > 0 ? 'var(--rust)' : v < 0 ? 'var(--green)' : undefined }}>
+                    {bud > 0 ? `${v >= 0 ? '+' : ''}GH₵ ${num(v, 2)}` : '—'}
+                  </td>
+                  <td className="mono" style={{ color: v > 0 ? 'var(--rust)' : v < 0 ? 'var(--green)' : undefined }}>
+                    {pct != null ? `${v >= 0 ? '+' : ''}${pct}%` : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+              <td>Total</td>
+              <td className="mono">{totalBudget > 0 ? `GH₵ ${num(totalBudget, 2)}` : '—'}</td>
+              <td className="mono">{totalActual > 0 ? `GH₵ ${num(totalActual, 2)}` : '—'}</td>
+              <td className="mono" style={{ color: totalVar > 0 ? 'var(--rust)' : totalVar < 0 ? 'var(--green)' : undefined }}>
+                {totalBudget > 0 ? `${totalVar >= 0 ? '+' : ''}GH₵ ${num(totalVar, 2)}` : '—'}
+              </td>
+              <td className="mono" style={{ color: totalVar > 0 ? 'var(--rust)' : totalVar < 0 ? 'var(--green)' : undefined }}>
+                {totalBudget > 0 ? `${totalVar >= 0 ? '+' : ''}${((totalVar / totalBudget) * 100).toFixed(0)}%` : '—'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const PEPPER_BUDGET_CATS = [
+  { key: 'sprays',  label: 'Sprays & Inputs' },
+  { key: 'labour',  label: 'Labour & Misc' },
+  { key: 'setup',   label: 'Setup / Land prep' },
+  { key: 'other',   label: 'Other expenses' },
+];
+
+const POULTRY_BUDGET_CATS = [
+  { key: 'chicks',  label: 'Day-old chicks' },
+  { key: 'feed',    label: 'Feed' },
+  { key: 'meds',    label: 'Meds & vaccines' },
+  { key: 'litter',  label: 'Litter' },
+  { key: 'labour',  label: 'Labour & other' },
+];
+
+function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpense, onDeleteExpense, onUpdateField }) {
   const ghc = (v) => `GH₵ ${num(v, 2)}`;
   const [fieldTab, setFieldTab] = useState('all');   // 'all' | field.id
   const [period, setPeriod]     = useState('all');
   const [customStart, setCS]    = useState('');
   const [customEnd,   setCE]    = useState('');
   const [subTab, setSubTab]     = useState('summary'); // 'summary' | 'income' | 'expenses'
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
 
   // ── defensive: guard against missing dates or fieldIds in old records ──
   const safeHarvests     = (harvests     || []).filter((h) => h && h.date);
@@ -14875,6 +15681,81 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
           </div>
         )}
       </div>
+
+      {/* Input cost per kg / per sack metrics */}
+      {(() => {
+        const totalKgSold = visHarvests.reduce((s, h) => (h.unit || 'kg') === 'kg' ? s + (Number(h.weightKg) || 0) : s, 0);
+        const totalSacks = visHarvests.filter((h) => (h.unit || 'kg') === 'sack').reduce((s, h) => s + (Number(h.quantity) || 0), 0);
+        const sackKgTotal = visHarvests.filter((h) => (h.unit || 'kg') === 'sack').reduce((s, h) => s + (Number(h.sackWeightKg) || 50) * (Number(h.quantity) || 0), 0);
+        const totalKgEquiv = totalKgSold + sackKgTotal;
+        const sprayInputCost = sprayCost;
+        if (sprayInputCost <= 0 || (totalKgSold === 0 && totalSacks === 0)) return null;
+        const costPerKg = totalKgSold > 0 ? sprayInputCost / totalKgSold : null;
+        const costPerKgEquiv = totalKgEquiv > 0 ? sprayInputCost / totalKgEquiv : null;
+        const costPerSack = totalSacks > 0 ? sprayInputCost / totalSacks : null;
+        return (
+          <div className="stat-grid" style={{ marginBottom: 16 }}>
+            {costPerKg != null && (
+              <div className="stat-card">
+                <span className="stat-label">Input Cost / kg</span>
+                <span className="stat-value rust">{ghc(costPerKg)}</span>
+                <span className="stat-foot">spray costs ÷ kg sold</span>
+              </div>
+            )}
+            {costPerKgEquiv != null && totalSacks > 0 && (
+              <div className="stat-card">
+                <span className="stat-label">Input Cost / kg (all)</span>
+                <span className="stat-value rust">{ghc(costPerKgEquiv)}</span>
+                <span className="stat-foot">incl. sack kg equivalent</span>
+              </div>
+            )}
+            {costPerSack != null && (
+              <div className="stat-card">
+                <span className="stat-label">Input Cost / sack</span>
+                <span className="stat-value rust">{ghc(costPerSack)}</span>
+                <span className="stat-foot">{num(totalSacks, 0)} sack{totalSacks !== 1 ? 's' : ''} in period</span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Budget vs Actual — shown only when a single field is selected */}
+      {fieldTab !== 'all' && onUpdateField && (() => {
+        const selField = fields.find((f) => f.id === fieldTab);
+        if (!selField) return null;
+        const budget = selField.budget || {};
+        const actuals = {
+          sprays: sprayCost,
+          labour: visExp.filter((e) => !e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0),
+          setup: visSetup,
+          other: visExp.filter((e) => e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0),
+        };
+        const hasBudget = Object.keys(budget).length > 0;
+        return (
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', margin: 0 }}>Budget vs Actual — {selField.name}</p>
+              <button className="btn" style={{ fontSize: 11, padding: '3px 10px' }} onClick={() => setShowBudgetModal(true)}>
+                {hasBudget ? '✏️ Edit budget' : '+ Set budget'}
+              </button>
+            </div>
+            {hasBudget
+              ? <BudgetVsActual categories={PEPPER_BUDGET_CATS} budget={budget} actuals={actuals} />
+              : <p style={{ fontSize: 13, color: 'var(--text3)', margin: 0 }}>No budget set for this field yet. Click <strong>+ Set budget</strong> to plan your spend.</p>
+            }
+            {showBudgetModal && (
+              <BudgetSetModal
+                title={`Set budget — ${selField.name}`}
+                categories={PEPPER_BUDGET_CATS}
+                currentBudget={budget}
+                onClose={() => setShowBudgetModal(false)}
+                onSave={(b) => { onUpdateField(fieldTab, { budget: b }); setShowBudgetModal(false); }}
+              />
+            )}
+          </div>
+        );
+      })()}
 
       {/* Per-field breakdown only when viewing all fields */}
       {fieldTab === 'all' && fields.length > 1 && (
