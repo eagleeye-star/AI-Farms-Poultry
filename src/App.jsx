@@ -8790,11 +8790,24 @@ function SprayForm({ fields, inputStock = [], defaultField, prefill, onClose, on
 
 /* ---------------- Harvest & sales ---------------- */
 
+// Derive the 4-category payment status for a harvest row
+function harvestPayCat(r) {
+  const status = r.paymentStatus || 'paid';
+  const owed = calcOwed(r, harvestRev(r));
+  const hasPart = status === 'credit' && owed > 0 && (r.payments || []).length > 0;
+  if (status === 'paid' && (r.payments || []).length === 0) return 'cash';
+  if (status === 'paid' && (r.payments || []).length > 0) return 'settled';
+  if (hasPart) return 'partial';
+  return 'unpaid';
+}
+
 function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpdateHarvest, onHarvestPayment }) {
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [payFilter, setPayFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('date');
 
   const totalOwed = rows.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') {
@@ -8803,7 +8816,22 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
     return s;
   }, 0);
 
-  const visibleRows = filterByPeriod(rows, period, customStart, customEnd);
+  // Count per category for filter buttons
+  const catCounts = { all: rows.length, cash: 0, unpaid: 0, partial: 0, settled: 0 };
+  rows.forEach((r) => { catCounts[harvestPayCat(r)] = (catCounts[harvestPayCat(r)] || 0) + 1; });
+
+  let visibleRows = filterByPeriod(rows, period, customStart, customEnd);
+  if (payFilter !== 'all') visibleRows = visibleRows.filter((r) => harvestPayCat(r) === payFilter);
+  // Sort
+  visibleRows = [...visibleRows].sort((a, b) => {
+    if (sortBy === 'status') {
+      const order = { unpaid: 0, partial: 1, settled: 2, cash: 3 };
+      return (order[harvestPayCat(a)] ?? 9) - (order[harvestPayCat(b)] ?? 9);
+    }
+    if (sortBy === 'revenue') return harvestRev(b) - harvestRev(a);
+    // default: date desc
+    return a.date > b.date ? -1 : 1;
+  });
   const periodKg = visibleRows.reduce((s, r) => s + (Number(r.weightKg) || 0), 0);
   const periodRev = visibleRows.reduce((s, r) => s + harvestRev(r), 0);
   const periodSacks = visibleRows.filter((r) => (r.unit || 'kg') === 'sack').reduce((s, r) => s + (Number(r.quantity) || 0), 0);
@@ -8837,6 +8865,36 @@ function HarvestTab({ rows, fieldName, totalKg, revenue, onAdd, onInvoice, onUpd
         customStart={customStart} customEnd={customEnd}
         onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
       />
+
+      {/* Payment status filter + sort */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Filter:</span>
+        {[
+          { key: 'all',     label: `All (${catCounts.all})` },
+          { key: 'cash',    label: `✓ Cash (${catCounts.cash || 0})` },
+          { key: 'unpaid',  label: `○ Owing (${catCounts.unpaid || 0})` },
+          { key: 'partial', label: `⬤ Part-paid (${catCounts.partial || 0})` },
+          { key: 'settled', label: `✓ Settled (${catCounts.settled || 0})` },
+        ].map(({ key, label }) => (
+          <button key={key} onClick={() => setPayFilter(key)}
+            style={{
+              fontSize: 12, padding: '4px 11px', borderRadius: 20, border: '1px solid var(--border)', cursor: 'pointer',
+              background: payFilter === key ? 'var(--gold)' : 'var(--card)',
+              color: payFilter === key ? '#111' : 'var(--text2)',
+              fontWeight: payFilter === key ? 700 : 400,
+            }}>
+            {label}
+          </button>
+        ))}
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginLeft: 8 }}>Sort:</span>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text1)', cursor: 'pointer' }}>
+          <option value="date">Date (newest first)</option>
+          <option value="status">Status (owing first)</option>
+          <option value="revenue">Revenue (highest first)</option>
+        </select>
+      </div>
+
       {period !== 'all' && visibleRows.length > 0 && (
         <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
           {visibleRows.length} harvest(s)
@@ -9386,8 +9444,11 @@ function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete, onAddSale }) {
   const [fulfillModal, setFulfillModal] = useState(null); // advance record to mark partial/full
   const { askConfirm } = useToastConfirm();
 
+  const [advFilter, setAdvFilter] = useState('all');
+  const [advSort, setAdvSort] = useState('date');
+
   const sorted = [...advances].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  const visible = filterByPeriod(sorted, period, customStart, customEnd);
+  let visible = filterByPeriod(sorted, period, customStart, customEnd);
 
   const totalReceived  = advances.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const totalFulfilled = advances.reduce((s, r) => s + (Number(r.fulfilledAmount) || 0), 0);
@@ -9396,6 +9457,24 @@ function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete, onAddSale }) {
   const pending    = advances.filter((r) => (r.status || 'pending') === 'pending');
   const partial    = advances.filter((r) => (r.status || 'pending') === 'partial');
   const fulfilled  = advances.filter((r) => (r.status || 'pending') === 'fulfilled');
+
+  // Count per category
+  const advCatCounts = {
+    all: advances.length,
+    pending: pending.length,
+    partial: partial.length,
+    fulfilled: fulfilled.length,
+  };
+
+  if (advFilter !== 'all') visible = visible.filter((r) => (r.status || 'pending') === advFilter);
+  visible = [...visible].sort((a, b) => {
+    if (advSort === 'status') {
+      const order = { pending: 0, partial: 1, fulfilled: 2 };
+      return (order[a.status || 'pending'] ?? 9) - (order[b.status || 'pending'] ?? 9);
+    }
+    if (advSort === 'amount') return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+    return (b.date || '').localeCompare(a.date || '');
+  });
 
   function statusColor(s) {
     if (s === 'fulfilled') return '#7A9A66';
@@ -9438,6 +9517,34 @@ function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete, onAddSale }) {
         customStart={customStart} customEnd={customEnd}
         onCustomStart={setCS} onCustomEnd={setCE}
       />
+
+      {/* Filter + sort */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Filter:</span>
+        {[
+          { key: 'all',       label: `All (${advCatCounts.all})` },
+          { key: 'pending',   label: `⚠️ Pending (${advCatCounts.pending})` },
+          { key: 'partial',   label: `⏳ Partial (${advCatCounts.partial})` },
+          { key: 'fulfilled', label: `✓ Fulfilled (${advCatCounts.fulfilled})` },
+        ].map(({ key, label }) => (
+          <button key={key} onClick={() => setAdvFilter(key)}
+            style={{
+              fontSize: 12, padding: '4px 11px', borderRadius: 20, border: '1px solid var(--border)', cursor: 'pointer',
+              background: advFilter === key ? 'var(--gold)' : 'var(--card)',
+              color: advFilter === key ? '#111' : 'var(--text2)',
+              fontWeight: advFilter === key ? 700 : 400,
+            }}>
+            {label}
+          </button>
+        ))}
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginLeft: 8 }}>Sort:</span>
+        <select value={advSort} onChange={(e) => setAdvSort(e.target.value)}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text1)', cursor: 'pointer' }}>
+          <option value="date">Date (newest first)</option>
+          <option value="status">Status (pending first)</option>
+          <option value="amount">Amount (highest first)</option>
+        </select>
+      </div>
 
       {visible.length === 0 ? (
         <p className="empty" style={{ padding: '18px 0' }}>
@@ -9798,9 +9905,36 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [salesSubTab, setSalesSubTab] = useState('list');
+  const [payFilter, setPayFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('date');
 
   // Period-filtered sales
-  const visibleSales = filterByPeriod(sales, period, customStart, customEnd);
+  let visibleSales = filterByPeriod(sales, period, customStart, customEnd);
+
+  // Payment category helper for poultry sales
+  function salePayCat(r) {
+    const status = r.paymentStatus || 'paid';
+    const owed = calcOwed(r, saleOrigCredit(r));
+    if (status === 'paid' && (r.payments || []).length === 0) return 'cash';
+    if (status === 'paid' && (r.payments || []).length > 0) return 'settled';
+    if (status === 'credit' && owed > 0 && (r.payments || []).length > 0) return 'partial';
+    if (status === 'credit') return 'unpaid';
+    return 'cash';
+  }
+
+  // Count per category
+  const saleCatCounts = { all: sales.length, cash: 0, unpaid: 0, partial: 0, settled: 0 };
+  sales.forEach((r) => { const c = salePayCat(r); saleCatCounts[c] = (saleCatCounts[c] || 0) + 1; });
+
+  if (payFilter !== 'all') visibleSales = visibleSales.filter((r) => salePayCat(r) === payFilter);
+  visibleSales = [...visibleSales].sort((a, b) => {
+    if (sortBy === 'status') {
+      const order = { unpaid: 0, partial: 1, settled: 2, cash: 3 };
+      return (order[salePayCat(a)] ?? 9) - (order[salePayCat(b)] ?? 9);
+    }
+    if (sortBy === 'revenue') return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+    return a.date > b.date ? -1 : 1;
+  });
 
   // Period-filtered cost components — each source has a date field
   const periodFeedCost  = filterByPeriod(feedRecords || [], period, customStart, customEnd)
@@ -9871,6 +10005,35 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         customStart={customStart} customEnd={customEnd}
         onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
       />
+
+      {/* ── Payment status filter + sort ── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Filter:</span>
+        {[
+          { key: 'all',     label: `All (${saleCatCounts.all})` },
+          { key: 'cash',    label: `✓ Cash (${saleCatCounts.cash || 0})` },
+          { key: 'unpaid',  label: `○ Owing (${saleCatCounts.unpaid || 0})` },
+          { key: 'partial', label: `⬤ Part-paid (${saleCatCounts.partial || 0})` },
+          { key: 'settled', label: `✓ Settled (${saleCatCounts.settled || 0})` },
+        ].map(({ key, label }) => (
+          <button key={key} onClick={() => setPayFilter(key)}
+            style={{
+              fontSize: 12, padding: '4px 11px', borderRadius: 20, border: '1px solid var(--border)', cursor: 'pointer',
+              background: payFilter === key ? 'var(--gold)' : 'var(--card)',
+              color: payFilter === key ? '#111' : 'var(--text2)',
+              fontWeight: payFilter === key ? 700 : 400,
+            }}>
+            {label}
+          </button>
+        ))}
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginLeft: 8 }}>Sort:</span>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text1)', cursor: 'pointer' }}>
+          <option value="date">Date (newest first)</option>
+          <option value="status">Status (owing first)</option>
+          <option value="revenue">Amount (highest first)</option>
+        </select>
+      </div>
 
       {/* ── Hero P&L row — updates with period ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '14px 0 10px' }}>
